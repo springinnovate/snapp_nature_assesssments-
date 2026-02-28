@@ -28,9 +28,12 @@ This script requires GDAL/OGR with GeoPackage support and processes
 features and rasters in a streaming/block-wise manner to limit memory use.
 """
 
+import argparse
+
 from osgeo import gdal, ogr, osr
-import pandas as pd
 from tqdm import tqdm
+import numpy as np
+import pandas as pd
 
 gdal.UseExceptions()
 
@@ -43,6 +46,7 @@ HUC_VECTOR_PATH = r"D:\repositories\zonal_stats_toolkit\snappdata\WBD_National_G
 ANNUAL_VALUE_FIELD = "marginal_annualvalue_2020"
 MARGINAL_NPV_FIELD = "marginal_npv_2020"
 HUC_FIELD = "huc12"
+WETLAND_AREA_HA_FIELD = "wetland_area_ha_2023"
 
 OUT_GPKG_PATH = r"hucs_joined_with_value_fields.gpkg"
 OUT_GPKG_REPROJECTED_PATH = r"hucs_joined_with_value_fields_reprojected.gpkg"
@@ -325,8 +329,105 @@ def _simplify_gpkg(in_gpkg_path, out_gpkg_path, tol):
     in_ds = None
 
 
+def _calculate_area_weighted_sum(raster_path):
+    """Compute the area-weighted sum of raster values in hectares.
+
+    Opens a single-band raster, removes NoData and non-finite values,
+    and computes the sum of remaining pixel values multiplied by the
+    pixel area in hectares. Pixel area is derived from the raster
+    geotransform assuming projected units in meters.
+
+    Args:
+        raster_path (str): Path to a single-band raster file.
+
+    Returns:
+        float: Area-weighted sum equal to:
+
+            sum(valid_pixel_values) * pixel_area_ha
+
+        where ``pixel_area_ha`` is the per-pixel area converted from
+        square meters to hectares.
+    """
+    px_w, px_h, _ = _get_mask_pixel_size_and_srs(raster_path)
+    pixel_area_ha = abs(px_w * px_h) / 10_000
+    raster = gdal.OpenEx(raster_path, gdal.OF_RASTER)
+    band = raster.GetRasterBand(1)
+    array = band.ReadAsArray()
+    nodata = band.GetNoDataValue()
+    if nodata is not None:
+        array = array[array != nodata]
+    array = array[np.isfinite(array)]
+
+    area_weighted_sum = np.sum(array) * pixel_area_ha
+    return area_weighted_sum
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="Run HUC valuation rasterization workflow."
+    )
+    parser.add_argument(
+        "--analysis",
+        action="store_true",
+        help=(
+            "If set, calculate the sum of annual_value_masked_to_wetlands and "
+            "marginal_npv_masked_to_wetlands multiplied by pixel area and "
+            "compare to table-based calculations "
+            "(ANNUAL_VALUE_FIELD * WETLAND_AREA_HA_FIELD and "
+            "MARGINAL_NPV_FIELD * WETLAND_AREA_HA_FIELD)."
+        ),
+    )
+    args = parser.parse_args()
+
     huc_table = pd.read_csv(HUC_TABLE_PATH)
+    if args.analysis:
+        print("Running analysis pathway")
+        table_annual_value = sum(
+            huc_table[ANNUAL_VALUE_FIELD] * huc_table[WETLAND_AREA_HA_FIELD]
+        )
+        table_marginal_value = sum(
+            huc_table[MARGINAL_NPV_FIELD] * huc_table[WETLAND_AREA_HA_FIELD]
+        )
+        raster_annual_value = _calculate_area_weighted_sum(OUT_ANNUAL_RASTER_PATH)
+        raster_npv_value = _calculate_area_weighted_sum(OUT_NPV_RASTER_PATH)
+
+        diff_annual = raster_annual_value - table_annual_value
+        diff_marginal = raster_npv_value - table_marginal_value
+
+        pct_annual = (
+            diff_annual / table_annual_value * 100
+            if table_annual_value != 0
+            else float("nan")
+        )
+        pct_marginal = (
+            diff_marginal / table_marginal_value * 100
+            if table_marginal_value != 0
+            else float("nan")
+        )
+
+        print("\n===== ANALYSIS COMPARISON =====\n")
+
+        print("ANNUAL VALUE ($)")
+        print(f"  Table total : ${table_annual_value:,.2f}")
+        print(f"  Raster total: ${raster_annual_value:,.2f}")
+        print(f"  Difference  : ${diff_annual:,.2f} ({pct_annual:,.6f}%)\n")
+
+        print("MARGINAL NPV ($)")
+        print(f"  Table total : ${table_marginal_value:,.2f}")
+        print(f"  Raster total: ${raster_npv_value:,.2f}")
+        print(f"  Difference  : ${diff_marginal:,.2f} ({pct_marginal:,.6f}%)\n")
+
+        return
+
+    table_huc_int = (
+        pd.to_numeric(huc_table[HUC_FIELD], errors="coerce").dropna().astype("int64")
+    )
+    table_av = pd.to_numeric(huc_table[ANNUAL_VALUE_FIELD], errors="coerce")
+    table_npv = pd.to_numeric(huc_table[MARGINAL_NPV_FIELD], errors="coerce")
+    table_map = dict(zip(table_huc_int, zip(table_av, table_npv)))
+    huc_table = pd.read_csv(HUC_TABLE_PATH)
+    print(huc_table)
+    return
 
     table_huc_int = (
         pd.to_numeric(huc_table[HUC_FIELD], errors="coerce").dropna().astype("int64")
