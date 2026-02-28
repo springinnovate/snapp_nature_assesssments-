@@ -350,16 +350,38 @@ def _calculate_area_weighted_sum(raster_path):
     """
     px_w, px_h, _ = _get_mask_pixel_size_and_srs(raster_path)
     pixel_area_ha = abs(px_w * px_h) / 10_000
+
     raster = gdal.OpenEx(raster_path, gdal.OF_RASTER)
     band = raster.GetRasterBand(1)
-    array = band.ReadAsArray()
-    nodata = band.GetNoDataValue()
-    if nodata is not None:
-        array = array[array != nodata]
-    array = array[np.isfinite(array)]
 
-    area_weighted_sum = np.sum(array) * pixel_area_ha
-    return area_weighted_sum
+    xsize = raster.RasterXSize
+    ysize = raster.RasterYSize
+
+    block_x, block_y = band.GetBlockSize()
+    if block_x == 0 or block_y == 0:
+        block_x, block_y = 256, 256
+
+    nodata = band.GetNoDataValue()
+    total = 0.0
+
+    for yoff in tqdm(range(0, ysize, block_y)):
+        ywin = min(block_y, ysize - yoff)
+        for xoff in range(0, xsize, block_x):
+            xwin = min(block_x, xsize - xoff)
+
+            array = band.ReadAsArray(xoff, yoff, xwin, ywin)
+
+            if nodata is not None:
+                array = array[array != nodata]
+
+            array = array[np.isfinite(array)]
+
+            if array.size:
+                total += np.sum(array)
+
+    raster = None
+
+    return total * pixel_area_ha
 
 
 def main():
@@ -367,7 +389,7 @@ def main():
         description="Run HUC valuation rasterization workflow."
     )
     parser.add_argument(
-        "--analysis",
+        "--validate-totals",
         action="store_true",
         help=(
             "If set, calculate the sum of annual_value_masked_to_wetlands and "
@@ -380,8 +402,8 @@ def main():
     args = parser.parse_args()
 
     huc_table = pd.read_csv(HUC_TABLE_PATH)
-    if args.analysis:
-        print("Running analysis pathway")
+    if args.validate_totals:
+        print("Running validation")
         table_annual_value = sum(
             huc_table[ANNUAL_VALUE_FIELD] * huc_table[WETLAND_AREA_HA_FIELD]
         )
