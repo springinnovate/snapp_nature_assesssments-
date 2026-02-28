@@ -1,3 +1,33 @@
+"""Join HUC-level valuation data to watershed polygons and rasterize to a wetlands mask grid.
+
+This script performs the following workflow:
+
+1. Reads a CSV table containing HUC12 identifiers and associated
+   annual value and marginal NPV fields.
+2. Joins these tabular values to a national HUC vector dataset and
+   writes the result to a GeoPackage.
+3. Reprojects the joined GeoPackage to match the spatial reference
+   system (SRS) of a wetlands mask raster.
+4. Simplifies watershed geometries using a tolerance derived from
+   the mask pixel size (in pixel units).
+5. Rasterizes the annual value and marginal NPV attributes to new
+   single-band GeoTIFF rasters aligned to the wetlands mask grid.
+6. Applies a binary wetlands mask so that output raster values are
+   set to NoData outside wetland pixels.
+
+Outputs include:
+- A joined GeoPackage with valuation attributes.
+- A reprojected and simplified GeoPackage aligned to the mask SRS.
+- Rasterized annual value and marginal NPV GeoTIFFs masked to wetlands.
+
+Configuration is controlled via module-level constants defining input
+paths, field names, NoData value, simplification tolerance (in pixels),
+and topology preservation behavior.
+
+This script requires GDAL/OGR with GeoPackage support and processes
+features and rasters in a streaming/block-wise manner to limit memory use.
+"""
+
 from osgeo import gdal, ogr, osr
 import pandas as pd
 from tqdm import tqdm
@@ -27,6 +57,27 @@ SIMPLIFY_PRESERVE_TOPOLOGY = True
 
 
 def _create_like_mask(mask_ds, out_path, nodata, gdal_type):
+    """Create a single-band GeoTIFF matching the spatial metadata of a mask dataset.
+
+    The output dataset copies the geotransform, projection, and raster
+    dimensions from ``mask_ds``. If a file already exists at ``out_path``,
+    it is deleted before creation. The output is created with tiling,
+    LZW compression, and BigTIFF enabled if safer.
+
+    Args:
+        mask_ds (gdal.Dataset): Source dataset whose spatial metadata
+            (dimensions, geotransform, projection) will be copied.
+        out_path (str): Path to the output GeoTIFF file.
+        nodata (float | int): NoData value to assign to the output band.
+        gdal_type (int): GDAL data type (e.g., gdal.GDT_Float32) for
+            the output raster band.
+
+    Returns:
+        gdal.Dataset: The created GDAL dataset opened in write mode.
+
+    Raises:
+        RuntimeError: If the dataset cannot be created by the GDAL driver.
+    """
     drv = gdal.GetDriverByName("GTiff")
     try:
         drv.Delete(out_path)
@@ -54,6 +105,22 @@ def _create_like_mask(mask_ds, out_path, nodata, gdal_type):
 
 
 def _apply_binary_mask(raster_path, mask_ds, nodata):
+    """Apply a binary mask to a raster in place.
+
+    Opens the raster at ``raster_path`` in update mode and sets all pixel
+    values to ``nodata`` where the corresponding mask pixel is not equal
+    to 1. Processing is performed in blocks based on the raster band’s
+    native block size (or 256x256 if undefined) to limit memory usage.
+
+    Args:
+        raster_path (str): Path to the raster file to modify in place.
+        mask_ds (gdal.Dataset): GDAL dataset containing a single-band
+            binary mask aligned with the target raster.
+        nodata (float | int): NoData value to assign to masked pixels.
+
+    Returns:
+        None
+    """
     ds = gdal.Open(raster_path, gdal.GA_Update)
     band = ds.GetRasterBand(1)
     mask_band = mask_ds.GetRasterBand(1)
@@ -80,7 +147,22 @@ def _apply_binary_mask(raster_path, mask_ds, nodata):
     ds = None
 
 
-def _mask_pixel_size_and_srs(mask_path):
+def _get_mask_pixel_size_and_srs(mask_path):
+    """Return pixel size and spatial reference for a raster mask.
+
+    Opens the dataset at ``mask_path`` in read-only mode, extracts the
+    geotransform and projection, and returns the absolute pixel width,
+    absolute pixel height, and spatial reference object.
+
+    Args:
+        mask_path (str): Path to the raster mask file.
+
+    Returns:
+        tuple[float, float, osr.SpatialReference]: A tuple containing:
+            - Pixel width (absolute value of geotransform[1]).
+            - Pixel height (absolute value of geotransform[5]).
+            - Spatial reference parsed from the dataset projection WKT.
+    """
     ds = gdal.Open(mask_path, gdal.GA_ReadOnly)
     gt = ds.GetGeoTransform()
     wkt = ds.GetProjection()
@@ -91,12 +173,49 @@ def _mask_pixel_size_and_srs(mask_path):
 
 
 def _clone_layer_schema(src_lyr, dst_lyr):
+    """Copy all field definitions from one OGR layer to another.
+
+    Iterates over the source layer definition and creates matching
+    fields on the destination layer. Only attribute schema (field
+    definitions) is copied; features and geometry are not transferred.
+
+    Args:
+        src_lyr (ogr.Layer): Source layer whose field definitions
+            will be read.
+        dst_lyr (ogr.Layer): Destination layer where fields will
+            be created.
+
+    Returns:
+        None
+    """
     defn = src_lyr.GetLayerDefn()
     for i in range(defn.GetFieldCount()):
         dst_lyr.CreateField(defn.GetFieldDefn(i))
 
 
 def _reproject_gpkg_to_srs(in_gpkg_path, out_gpkg_path, target_srs):
+    """Reproject all features from a GeoPackage to a target spatial reference.
+
+    Opens the input GeoPackage, reads the first layer, and writes a new
+    GeoPackage at ``out_gpkg_path`` with all geometries transformed to
+    ``target_srs``. The output layer preserves the original layer name,
+    geometry type, and attribute schema. An existing output file is
+    deleted if present. A spatial index is created on the output layer.
+
+    Args:
+        in_gpkg_path (str): Path to the input GeoPackage.
+        out_gpkg_path (str): Path where the reprojected GeoPackage
+            will be written.
+        target_srs (osr.SpatialReference): Target spatial reference
+            system for reprojection.
+
+    Returns:
+        None
+
+    Raises:
+        RuntimeError: If the input dataset cannot be opened or the
+            output dataset cannot be created.
+    """
     in_ds = ogr.Open(in_gpkg_path, 0)
     in_lyr = in_ds.GetLayer(0)
     layer_name = in_lyr.GetName()
@@ -139,6 +258,32 @@ def _reproject_gpkg_to_srs(in_gpkg_path, out_gpkg_path, target_srs):
 
 
 def _simplify_gpkg(in_gpkg_path, out_gpkg_path, tol):
+    """Simplify geometries in a GeoPackage and write to a new file.
+
+    Opens the input GeoPackage, reads the first layer, and writes a new
+    GeoPackage at ``out_gpkg_path`` with simplified geometries. The
+    output layer preserves the original layer name, spatial reference,
+    geometry type, and attribute schema. An existing output file is
+    deleted if present. A spatial index is created on the output layer.
+
+    Geometry simplification is performed using either
+    ``SimplifyPreserveTopology`` or ``Simplify`` depending on the value
+    of ``SIMPLIFY_PRESERVE_TOPOLOGY``.
+
+    Args:
+        in_gpkg_path (str): Path to the input GeoPackage.
+        out_gpkg_path (str): Path where the simplified GeoPackage
+            will be written.
+        tol (float): Tolerance distance for geometry simplification,
+            in the units of the layer's spatial reference.
+
+    Returns:
+        None
+
+    Raises:
+        RuntimeError: If the input dataset cannot be opened or the
+            output dataset cannot be created.
+    """
     in_ds = ogr.Open(in_gpkg_path, 0)
     in_lyr = in_ds.GetLayer(0)
     layer_name = in_lyr.GetName()
@@ -235,7 +380,7 @@ def main():
     out_ds = None
     huc_vector = None
 
-    px_w, px_h, mask_srs = _mask_pixel_size_and_srs(WETLANDS_MASK_RASTER_PATH)
+    px_w, px_h, mask_srs = _get_mask_pixel_size_and_srs(WETLANDS_MASK_RASTER_PATH)
     tol = SIMPLIFY_TOLERANCE_PIXELS * max(px_w, px_h)
 
     _reproject_gpkg_to_srs(OUT_GPKG_PATH, OUT_GPKG_REPROJECTED_PATH, mask_srs)
