@@ -536,7 +536,7 @@ def main():
     npv_ds = None
     vec_ds = None
 
-    # _apply_binary_mask(OUT_ANNUAL_RASTER_PATH, mask_ds, NODATA_VALUE)
+    _apply_binary_mask(OUT_ANNUAL_RASTER_PATH, mask_ds, NODATA_VALUE)
     _apply_binary_mask(OUT_NPV_RASTER_PATH, mask_ds, NODATA_VALUE)
     mask_ds = None
 
