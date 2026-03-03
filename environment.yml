@@ -1,0 +1,30 @@
+# environment.yml
+name: geo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - proj
+  - pyproj
+  - gdal
+  - fiona
+  - geopandas
+  - shapely>=2
+  - rtree
+  - libspatialindex
+  - numpy
+  - scipy
+  - cython
+  - c-compiler
+  - cxx-compiler
+  - make
+  - tqdm
+  - retrying
+  - filelock
+  - sqlalchemy
+  - boto3
+  - botocore
+  - psutil
+  - numexpr
+  - git
