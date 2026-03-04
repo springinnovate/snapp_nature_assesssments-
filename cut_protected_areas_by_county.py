@@ -41,7 +41,7 @@ INTERMEDIATE_DIR = "./intermediate"
 PUBLIC_LANDS_VECTOR_PATH = "./data/public_lands_only_fixed.gpkg"
 COUNTIES_VECTOR_PATH = "./data/gz_2010_us_050_00_5m/gz_2010_us_050_00_5m.shp"
 CUT_PUBLIC_LANDS_VECTOR_PATH = (
-    f"{OUT_DIR}/public_lands_cut_by_gz_2010_us_050_00_5m.gpkg"
+    f"{OUT_DIR}/gz_2010_us_050_00_5m_cut_by_public_lands.gpkg"
 )
 
 SIMPLIFY_TOLERANCE_IN_TARGET_UNITS = 50
@@ -326,8 +326,8 @@ def main():
     task_graph.add_task(
         func=cut_public_lands_by_counties,
         args=(
-            pl_clean,
             cty_clean,
+            pl_clean,
             CUT_PUBLIC_LANDS_VECTOR_PATH,
             "public_lands_cut",
             ["geometry"],
@@ -336,6 +336,9 @@ def main():
         dependent_task_list=[clean_public_lands_task, clean_counties_task],
         task_name="cut public lands by county",
     )
+
+    task_graph.join()
+    task_graph.close()
 
 
 if __name__ == "__main__":
