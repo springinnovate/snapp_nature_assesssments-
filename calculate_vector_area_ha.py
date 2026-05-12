@@ -107,15 +107,10 @@ def _csv_fieldnames(src_layer: ogr.Layer) -> list[str]:
     return fieldnames
 
 
-def _safe_text(value: str) -> str:
-    """Replace undecodable legacy text with valid UTF-8 replacement chars."""
-    return value.encode("utf-8", errors="replace").decode("utf-8")
-
-
 def _safe_field_value(value):
     """Make OGR field values safe for UTF-8 CSV and GeoPackage output."""
     if isinstance(value, str):
-        return _safe_text(value)
+        return value.encode("utf-8", errors="replace").decode("utf-8")
     if isinstance(value, list):
         return [_safe_field_value(item) for item in value]
     return value
