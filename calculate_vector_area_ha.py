@@ -29,31 +29,6 @@ FID_FIELD = "source_fid"
 HECTARES_PER_SQUARE_METER = 1.0 / 10000.0
 
 
-def _open_layer(vector_path: Path, layer_name: str | None, layer_index: int):
-    """Open a vector layer from ``vector_path``."""
-    ds = gdal.OpenEx(str(vector_path), gdal.OF_VECTOR)
-    if ds is None:
-        raise RuntimeError(f"Could not open vector dataset: {vector_path}")
-
-    if layer_name is not None:
-        layer = ds.GetLayerByName(layer_name)
-        if layer is None:
-            available = [ds.GetLayer(i).GetName() for i in range(ds.GetLayerCount())]
-            raise RuntimeError(
-                f"Layer '{layer_name}' not found in {vector_path}. "
-                f"Available layers: {available}"
-            )
-    else:
-        layer = ds.GetLayer(layer_index)
-        if layer is None:
-            raise RuntimeError(
-                f"Layer index {layer_index} not found in {vector_path}; "
-                f"dataset has {ds.GetLayerCount()} layer(s)."
-            )
-
-    return ds, layer
-
-
 def _make_output_paths(vector_path: Path, output_dir: Path | None) -> tuple[Path, Path]:
     """Return timestamped GeoPackage and CSV output paths."""
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
@@ -199,15 +174,14 @@ def _safe_field_value(value):
 def calculate_vector_area_ha(
     vector_path: Path,
     output_dir: Path | None = None,
-    layer_name: str | None = None,
-    layer_index: int = 0,
 ) -> tuple[Path, Path, int]:
     """Write a GeoPackage and CSV with per-feature area in hectares."""
     vector_path = vector_path.resolve()
     if output_dir is not None:
         output_dir = output_dir.resolve()
 
-    src_ds, src_layer = _open_layer(vector_path, layer_name, layer_index)
+    src_ds = gdal.OpenEx(str(vector_path), gdal.OF_VECTOR)
+    src_layer = src_ds.GetLayer()
     src_srs = src_layer.GetSpatialRef()
     area_ha = _make_area_calculator(src_srs)
     output_gpkg_path, output_csv_path = _make_output_paths(vector_path, output_dir)
