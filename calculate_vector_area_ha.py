@@ -86,7 +86,15 @@ def _make_area_calculator(srs: osr.SpatialReference):
 
 
 def _csv_fieldnames(src_layer: ogr.Layer) -> list[str]:
-    """Build CSV field order with area first, then FID and source fields."""
+    """Build the CSV field order for the output table.
+
+    Args:
+        src_layer: Input vector layer whose attribute fields should be copied.
+
+    Returns:
+        CSV field names with ``area_ha`` first, followed by ``source_fid`` and
+        the source attribute fields.
+    """
     src_defn = src_layer.GetLayerDefn()
     fieldnames = [AREA_FIELD, FID_FIELD]
     for i in range(src_defn.GetFieldCount()):
