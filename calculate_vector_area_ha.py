@@ -85,24 +85,6 @@ def _make_area_calculator(srs: osr.SpatialReference):
     )
 
 
-def _copy_schema_with_area_field(src_layer: ogr.Layer, dst_layer: ogr.Layer) -> None:
-    """Copy source fields and add ``area_ha`` when it is absent."""
-    src_defn = src_layer.GetLayerDefn()
-    has_area_field = False
-
-    for i in range(src_defn.GetFieldCount()):
-        field_defn = src_defn.GetFieldDefn(i)
-        if field_defn.GetName() == AREA_FIELD:
-            has_area_field = True
-        dst_layer.CreateField(field_defn)
-
-    if not has_area_field:
-        area_defn = ogr.FieldDefn(AREA_FIELD, ogr.OFTReal)
-        area_defn.SetWidth(32)
-        area_defn.SetPrecision(10)
-        dst_layer.CreateField(area_defn)
-
-
 def _csv_fieldnames(src_layer: ogr.Layer) -> list[str]:
     """Build CSV field order with area first, then FID and source fields."""
     src_defn = src_layer.GetLayerDefn()
@@ -115,40 +97,6 @@ def _csv_fieldnames(src_layer: ogr.Layer) -> list[str]:
             continue
         fieldnames.append(name)
     return fieldnames
-
-
-def _output_geometry_type(src_layer: ogr.Layer) -> int:
-    """Return a permissive output geometry type for mixed polygon datasets."""
-    geom_type = src_layer.GetGeomType()
-    flat_geom_type = ogr.GT_Flatten(geom_type)
-
-    if flat_geom_type == ogr.wkbPolygon:
-        return ogr.wkbMultiPolygon
-    if flat_geom_type == ogr.wkbLineString:
-        return ogr.wkbMultiLineString
-    if flat_geom_type == ogr.wkbPoint:
-        return ogr.wkbMultiPoint
-    return geom_type
-
-
-def _promote_geometry_if_needed(geom: ogr.Geometry, dst_geom_type: int) -> ogr.Geometry:
-    """Promote single-part geometries when the output layer is multi-part."""
-    flat_src_type = ogr.GT_Flatten(geom.GetGeometryType())
-    flat_dst_type = ogr.GT_Flatten(dst_geom_type)
-
-    if flat_src_type == ogr.wkbPolygon and flat_dst_type == ogr.wkbMultiPolygon:
-        multi_geom = ogr.Geometry(ogr.wkbMultiPolygon)
-        multi_geom.AddGeometry(geom)
-        return multi_geom
-    if flat_src_type == ogr.wkbLineString and flat_dst_type == ogr.wkbMultiLineString:
-        multi_geom = ogr.Geometry(ogr.wkbMultiLineString)
-        multi_geom.AddGeometry(geom)
-        return multi_geom
-    if flat_src_type == ogr.wkbPoint and flat_dst_type == ogr.wkbMultiPoint:
-        multi_geom = ogr.Geometry(ogr.wkbMultiPoint)
-        multi_geom.AddGeometry(geom)
-        return multi_geom
-    return geom
 
 
 def _safe_text(value: str) -> str:
@@ -184,6 +132,11 @@ def calculate_vector_area_ha(
     output_gpkg_path = output_directory / f"{output_stem}.gpkg"
     output_csv_path = output_directory / f"{output_stem}.csv"
     output_gpkg_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_fieldnames = _csv_fieldnames(src_layer)
+
+    src_layer.ResetReading()
+    source_fids = [src_feature.GetFID() for src_feature in src_layer]
+    src_layer.ResetReading()
 
     gpkg_driver = ogr.GetDriverByName("GPKG")
     if output_gpkg_path.exists():
@@ -193,24 +146,19 @@ def calculate_vector_area_ha(
     if dst_ds is None:
         raise RuntimeError(f"Could not create output GeoPackage: {output_gpkg_path}")
 
-    out_layer_name = output_gpkg_path.stem
-    dst_geom_type = _output_geometry_type(src_layer)
-    dst_layer = dst_ds.CreateLayer(
-        out_layer_name,
-        src_srs,
-        dst_geom_type,
+    dst_layer = dst_ds.CopyLayer(
+        src_layer,
+        output_gpkg_path.stem,
         options=["SPATIAL_INDEX=YES"],
     )
     if dst_layer is None:
-        raise RuntimeError(f"Could not create output layer: {out_layer_name}")
+        raise RuntimeError(f"Could not create output layer: {output_gpkg_path.stem}")
 
-    _copy_schema_with_area_field(src_layer, dst_layer)
-    dst_defn = dst_layer.GetLayerDefn()
-    csv_fieldnames = _csv_fieldnames(src_layer)
-    src_defn = src_layer.GetLayerDefn()
-    src_field_names = [
-        src_defn.GetFieldDefn(i).GetName() for i in range(src_defn.GetFieldCount())
-    ]
+    if dst_layer.GetLayerDefn().GetFieldIndex(AREA_FIELD) == -1:
+        area_defn = ogr.FieldDefn(AREA_FIELD, ogr.OFTReal)
+        area_defn.SetWidth(32)
+        area_defn.SetPrecision(10)
+        dst_layer.CreateField(area_defn)
 
     feature_count = 0
     with output_csv_path.open(
@@ -219,33 +167,23 @@ def calculate_vector_area_ha(
         writer = csv.DictWriter(csv_file, fieldnames=csv_fieldnames)
         writer.writeheader()
 
-        src_layer.ResetReading()
-        for src_feature in src_layer:
-            geom = src_feature.GetGeometryRef()
+        dst_layer.ResetReading()
+        for dst_feature, source_fid in zip(dst_layer, source_fids):
+            geom = dst_feature.GetGeometryRef()
             if geom is None or geom.IsEmpty():
                 feature_area_ha = 0.0
-                out_geom = None
             else:
-                geom_clone = geom.Clone()
-                feature_area_ha = area_ha(geom_clone)
-                out_geom = _promote_geometry_if_needed(geom_clone, dst_geom_type)
+                feature_area_ha = area_ha(geom)
 
-            dst_feature = ogr.Feature(dst_defn)
-            for field_name in src_field_names:
-                field_value = src_feature.GetField(field_name)
-                if field_value is not None:
-                    dst_feature.SetField(field_name, _safe_field_value(field_value))
             dst_feature.SetField(AREA_FIELD, float(feature_area_ha))
-            if out_geom is not None:
-                dst_feature.SetGeometry(out_geom)
-            dst_layer.CreateFeature(dst_feature)
+            dst_layer.SetFeature(dst_feature)
 
             csv_row = {
                 AREA_FIELD: feature_area_ha,
-                FID_FIELD: src_feature.GetFID(),
+                FID_FIELD: source_fid,
             }
             for field_name in csv_fieldnames[2:]:
-                csv_row[field_name] = _safe_field_value(src_feature.GetField(field_name))
+                csv_row[field_name] = _safe_field_value(dst_feature.GetField(field_name))
             writer.writerow(csv_row)
 
             dst_feature = None
@@ -289,8 +227,6 @@ def main(argv: list[str] | None = None) -> int:
     output_gpkg_path, output_csv_path, feature_count = calculate_vector_area_ha(
         args.vector_path,
         output_dir=args.output_dir,
-        layer_name=args.layer,
-        layer_index=args.layer_index,
     )
     print(f"Processed {feature_count} feature(s).")
     print(f"Wrote vector: {output_gpkg_path}")
