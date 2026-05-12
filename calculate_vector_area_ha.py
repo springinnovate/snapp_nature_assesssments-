@@ -30,7 +30,18 @@ HECTARES_PER_SQUARE_METER = 1.0 / 10000.0
 
 
 def _make_area_calculator(srs: osr.SpatialReference):
-    """Create a function that returns area in hectares for an OGR geometry."""
+    """Create an area calculator for the input layer CRS.
+
+    Args:
+        srs: Spatial reference for the input layer.
+
+    Returns:
+        A callable that accepts an OGR geometry and returns area in hectares.
+
+    Raises:
+        RuntimeError: If the spatial reference is missing or does not describe
+            projected or geographic coordinates.
+    """
     if srs is None:
         raise RuntimeError(
             "Input layer has no CRS. Area cannot be calculated safely because "
