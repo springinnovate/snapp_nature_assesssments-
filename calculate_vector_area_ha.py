@@ -126,13 +126,11 @@ def _csv_safe_field_value(value):
 
 def calculate_vector_area_ha(
     vector_path: Path,
-    output_dir: Path | None = None,
 ) -> tuple[Path, Path, int]:
     """Write area-annotated vector and CSV outputs for an input vector.
 
     Args:
         vector_path: Path to the input vector dataset.
-        output_dir: Directory where outputs should be written.
 
     Returns:
         Output GeoPackage path, output CSV path, and processed feature count.
@@ -143,7 +141,7 @@ def calculate_vector_area_ha(
     area_ha = _make_area_calculator(src_srs)
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     output_stem = f"{vector_path.stem}_area_ha_{timestamp}"
-    output_directory = output_dir if output_dir is not None else vector_path.parent
+    output_directory = Path.cwd()
     output_gpkg_path = output_directory / f"{output_stem}.gpkg"
     output_csv_path = output_directory / f"{output_stem}.csv"
     output_gpkg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,26 +222,10 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Path to an input vector dataset, such as a .shp or .gpkg.",
     )
-    parser.add_argument(
-        "--layer",
-        help="Layer name to read. Defaults to the first layer.",
-    )
-    parser.add_argument(
-        "--layer-index",
-        type=int,
-        default=0,
-        help="Zero-based layer index to read when --layer is not set. Default: 0.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        help="Directory for outputs. Defaults to the input vector directory.",
-    )
     args = parser.parse_args(argv)
 
     output_gpkg_path, output_csv_path, feature_count = calculate_vector_area_ha(
         args.vector_path,
-        output_dir=args.output_dir,
     )
     print(f"Processed {feature_count} feature(s).")
     print(f"Wrote vector: {output_gpkg_path}")
