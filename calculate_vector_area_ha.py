@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 
 from osgeo import gdal, ogr, osr
-from pyproj import CRS, Geod
+import pyproj
 from shapely import wkb
 from shapely.geometry.base import BaseGeometry
 
@@ -27,15 +27,6 @@ gdal.UseExceptions()
 AREA_FIELD = "area_ha"
 FID_FIELD = "source_fid"
 HECTARES_PER_SQUARE_METER = 1.0 / 10000.0
-
-
-def _ogr_srs_to_pyproj_crs(srs: osr.SpatialReference) -> CRS:
-    """Convert an OGR spatial reference to a pyproj CRS."""
-    authority_name = srs.GetAuthorityName(None)
-    authority_code = srs.GetAuthorityCode(None)
-    if authority_name and authority_code:
-        return CRS.from_user_input(f"{authority_name}:{authority_code}")
-    return CRS.from_wkt(srs.ExportToWkt())
 
 
 def _make_area_calculator(srs: osr.SpatialReference):
@@ -58,17 +49,17 @@ def _make_area_calculator(srs: osr.SpatialReference):
         return projected_area_ha
 
     if srs.IsGeographic():
-        crs = _ogr_srs_to_pyproj_crs(srs)
+        crs = pyproj.CRS.from_wkt(srs.ExportToWkt())
         geod = crs.get_geod()
         if geod is None:
             ellipsoid = crs.ellipsoid
             if ellipsoid.semi_major_metre and ellipsoid.inverse_flattening:
-                geod = Geod(
+                geod = pyproj.Geod(
                     a=ellipsoid.semi_major_metre,
                     rf=ellipsoid.inverse_flattening,
                 )
             else:
-                geod = Geod(ellps="WGS84")
+                geod = pyproj.Geod(ellps="WGS84")
 
         def geographic_area_ha(geom: ogr.Geometry) -> float:
             shapely_geom: BaseGeometry = wkb.loads(bytes(geom.ExportToWkb()))
