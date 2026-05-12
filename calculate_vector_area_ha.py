@@ -29,14 +29,6 @@ FID_FIELD = "source_fid"
 HECTARES_PER_SQUARE_METER = 1.0 / 10000.0
 
 
-def _make_output_paths(vector_path: Path, output_dir: Path | None) -> tuple[Path, Path]:
-    """Return timestamped GeoPackage and CSV output paths."""
-    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    output_stem = f"{vector_path.stem}_area_ha_{timestamp}"
-    directory = output_dir if output_dir is not None else vector_path.parent
-    return directory / f"{output_stem}.gpkg", directory / f"{output_stem}.csv"
-
-
 def _ogr_srs_to_pyproj_crs(srs: osr.SpatialReference) -> CRS:
     """Convert an OGR spatial reference to a pyproj CRS."""
     authority_name = srs.GetAuthorityName(None)
@@ -184,7 +176,11 @@ def calculate_vector_area_ha(
     src_layer = src_ds.GetLayer()
     src_srs = src_layer.GetSpatialRef()
     area_ha = _make_area_calculator(src_srs)
-    output_gpkg_path, output_csv_path = _make_output_paths(vector_path, output_dir)
+    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    output_stem = f"{vector_path.stem}_area_ha_{timestamp}"
+    output_directory = output_dir if output_dir is not None else vector_path.parent
+    output_gpkg_path = output_directory / f"{output_stem}.gpkg"
+    output_csv_path = output_directory / f"{output_stem}.csv"
     output_gpkg_path.parent.mkdir(parents=True, exist_ok=True)
 
     gpkg_driver = ogr.GetDriverByName("GPKG")
