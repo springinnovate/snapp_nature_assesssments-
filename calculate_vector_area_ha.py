@@ -107,12 +107,20 @@ def _csv_fieldnames(src_layer: ogr.Layer) -> list[str]:
     return fieldnames
 
 
-def _safe_field_value(value):
-    """Make OGR field values safe for UTF-8 CSV and GeoPackage output."""
+def _csv_safe_field_value(value):
+    """Make an OGR field value safe for UTF-8 CSV output.
+
+    Args:
+        value: OGR field value to write to the CSV table.
+
+    Returns:
+        The original value, with strings converted to valid UTF-8 and list
+        values sanitized item by item.
+    """
     if isinstance(value, str):
         return value.encode("utf-8", errors="replace").decode("utf-8")
     if isinstance(value, list):
-        return [_safe_field_value(item) for item in value]
+        return [_csv_safe_field_value(item) for item in value]
     return value
 
 
@@ -186,7 +194,9 @@ def calculate_vector_area_ha(
                 FID_FIELD: source_fid,
             }
             for field_name in csv_fieldnames[2:]:
-                csv_row[field_name] = _safe_field_value(dst_feature.GetField(field_name))
+                csv_row[field_name] = _csv_safe_field_value(
+                    dst_feature.GetField(field_name)
+                )
             writer.writerow(csv_row)
 
             dst_feature = None
