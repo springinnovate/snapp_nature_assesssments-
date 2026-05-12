@@ -129,10 +129,6 @@ def calculate_vector_area_ha(
     output_dir: Path | None = None,
 ) -> tuple[Path, Path, int]:
     """Write a GeoPackage and CSV with per-feature area in hectares."""
-    vector_path = vector_path.resolve()
-    if output_dir is not None:
-        output_dir = output_dir.resolve()
-
     src_ds = gdal.OpenEx(str(vector_path), gdal.OF_VECTOR)
     src_layer = src_ds.GetLayer()
     src_srs = src_layer.GetSpatialRef()
