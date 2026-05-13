@@ -1,9 +1,8 @@
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from os import cpu_count
 
 import geopandas as gpd
 import numpy as np
-import pandas as pd
 import shapely
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
@@ -28,23 +27,26 @@ def merge_field(values):
     return ''
 
 
-def dissolve_component(item):
-    component, group, geometry_name, crs = item
+def merge_component(component, idx, gdf, columns, geometry_name):
+    group = gdf.iloc[idx]
 
-    attrs = {
+    row = {
         column: merge_field(group[column])
-        for column in group.columns
-        if column not in (geometry_name, 'component')
+        for column in columns
     }
 
-    attrs['component'] = component
-    attrs[geometry_name] = shapely.union_all(group[geometry_name].values)
+    row['component'] = component
 
-    return attrs
+    if len(group) == 1:
+        row[geometry_name] = group[geometry_name].iloc[0]
+    else:
+        row[geometry_name] = shapely.union_all(group[geometry_name].values)
+
+    return row
 
 
 def main():
-    with tqdm(total=8) as pbar:
+    with tqdm(total=9) as pbar:
         pbar.set_description('Reading layer')
         gdf = gpd.read_file(PATH, layer=LAYER_NAME)
         pbar.update()
@@ -71,8 +73,6 @@ def main():
         starts = list(range(0, len(gdf), CHUNK_SIZE))
         left_parts = []
         right_parts = []
-
-        from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
             futures = [executor.submit(query_chunk, start) for start in starts]
@@ -108,25 +108,69 @@ def main():
 
         print(f'Components: {gdf["component"].nunique():,}')
 
-        pbar.set_description('Preparing dissolve jobs')
+        pbar.set_description('Preparing dissolve groups')
         geometry_name = gdf.geometry.name
         crs = gdf.crs
-        jobs = [
-            (component, group.copy(), geometry_name, crs)
-            for component, group in gdf.groupby('component', sort=False)
+        columns = [
+            column
+            for column in gdf.columns
+            if column not in (geometry_name, 'component')
         ]
+
+        groups = gdf.groupby('component', sort=False).indices
+        sizes = np.array([len(idx) for idx in groups.values()])
+
+        print(f'Singleton components: {(sizes == 1).sum():,}')
+        print(f'Multi-feature components: {(sizes > 1).sum():,}')
+        print(f'Largest component: {sizes.max():,}')
+
+        singletons = [
+            (component, idx)
+            for component, idx in groups.items()
+            if len(idx) == 1
+        ]
+
+        multis = [
+            (component, idx)
+            for component, idx in groups.items()
+            if len(idx) > 1
+        ]
+
         pbar.update()
 
-        pbar.set_description('Dissolving')
         rows = []
 
-        with ProcessPoolExecutor(max_workers=N_WORKERS) as executor:
-            futures = [executor.submit(dissolve_component, job) for job in jobs]
+        pbar.set_description('Copying singletons')
+        for component, idx in tqdm(singletons, desc='Singleton components'):
+            rows.append(
+                merge_component(
+                    component,
+                    idx,
+                    gdf,
+                    columns,
+                    geometry_name,
+                )
+            )
+        pbar.update()
+
+        pbar.set_description('Dissolving multi-feature components')
+        with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
+            futures = [
+                executor.submit(
+                    merge_component,
+                    component,
+                    idx,
+                    gdf,
+                    columns,
+                    geometry_name,
+                )
+                for component, idx in multis
+            ]
 
             for future in tqdm(
                 as_completed(futures),
                 total=len(futures),
-                desc='Dissolve components',
+                desc='Dissolve multi-components',
             ):
                 rows.append(future.result())
 
