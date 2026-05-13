@@ -27,6 +27,25 @@ def merge_field(values):
     return ''
 
 
+def polygonal_only(geom):
+    geom = shapely.make_valid(geom)
+
+    if geom.geom_type in ('Polygon', 'MultiPolygon'):
+        return geom
+
+    if geom.geom_type == 'GeometryCollection':
+        parts = [
+            part
+            for part in geom.geoms
+            if part.geom_type in ('Polygon', 'MultiPolygon')
+        ]
+
+        if parts:
+            return shapely.union_all(parts)
+
+    return None
+
+
 def merge_component(component, idx, gdf, columns, geometry_name):
     group = gdf.iloc[idx]
 
@@ -38,10 +57,31 @@ def merge_component(component, idx, gdf, columns, geometry_name):
     row['component'] = component
 
     if len(group) == 1:
-        row[geometry_name] = group[geometry_name].iloc[0]
-    else:
-        row[geometry_name] = shapely.union_all(group[geometry_name].values)
+        geom = group[geometry_name].iloc[0]
+        row[geometry_name] = shapely.make_valid(geom) if not shapely.is_valid(geom) else geom
+        row[geometry_name] = polygonal_only(row[geometry_name])
+        return row
 
+    geoms = group[geometry_name].values
+
+    try:
+        row[geometry_name] = shapely.union_all(geoms)
+        row[geometry_name] = polygonal_only(row[geometry_name])
+        return row
+    except shapely.errors.GEOSException as exc:
+        print(f'Union failed for component {component} with {len(group):,} features; retrying make_valid. {exc}')
+
+    geoms = shapely.make_valid(geoms)
+
+    try:
+        row[geometry_name] = shapely.union_all(geoms)
+        row[geometry_name] = polygonal_only(row[geometry_name])
+        return row
+    except shapely.errors.GEOSException as exc:
+        print(f'make_valid union failed for component {component}; retrying buffer(0). {exc}')
+
+    row[geometry_name] = shapely.union_all(shapely.buffer(geoms, 0))
+    row[geometry_name] = polygonal_only(row[geometry_name])
     return row
 
 
@@ -175,6 +215,7 @@ def main():
                 rows.append(future.result())
 
         out = gpd.GeoDataFrame(rows, geometry=geometry_name, crs=crs)
+        out = out[out.geometry.notna()].copy()
         out = out.sort_values('component').reset_index(drop=True)
         pbar.update()
 
