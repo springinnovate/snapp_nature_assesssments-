@@ -17,10 +17,22 @@ OUT_LAYER = 'county_dissolved_public_lands'
 
 N_WORKERS = min(4, max(1, cpu_count() - 1))
 SLOW_COUNTY_SECONDS = 10
-HEARTBEAT_SECONDS = 15
+HEARTBEAT_SECONDS = 5
 
 COUNTY_STATUS = {}
 COUNTY_STATUS_LOCK = Lock()
+
+
+def format_stats(stats):
+    return ' '.join(
+        f'{key}={value:,}' if isinstance(value, int) else f'{key}={value}'
+        for key, value in stats.items()
+    )
+
+
+def log_line(message):
+    with COUNTY_STATUS_LOCK:
+        print(message, flush=True)
 
 
 def set_county_status(geoid, stage, **stats):
@@ -34,6 +46,17 @@ def set_county_status(geoid, stage, **stats):
             'updated': now,
             **stats,
         }
+
+        elapsed = now - started
+        fields = format_stats(stats)
+
+        print(
+            f'STAGE GEOID={geoid} '
+            f'elapsed={elapsed:.1f}s '
+            f'stage={stage} '
+            f'{fields}',
+            flush=True,
+        )
 
 
 def clear_county_status(geoid):
@@ -50,13 +73,15 @@ def print_county_status():
     for geoid, status in sorted(statuses):
         elapsed = now - status['started']
         idle = now - status['updated']
-        fields = ' '.join(
-            f'{key}={value:,}' if isinstance(value, int) else f'{key}={value}'
-            for key, value in status.items()
-            if key not in ('stage', 'started', 'updated')
+        fields = format_stats(
+            {
+                key: value
+                for key, value in status.items()
+                if key not in ('stage', 'started', 'updated')
+            }
         )
 
-        tqdm.write(
+        log_line(
             f'RUNNING GEOID={geoid} '
             f'elapsed={elapsed:.1f}s '
             f'idle={idle:.1f}s '
@@ -268,10 +293,10 @@ def main():
 
         pbar.update()
 
-        print(f'PAD-US features: {len(padus):,}')
-        print(f'County features: {len(counties):,}')
-        print(f'Workers: {N_WORKERS:,}')
-        print(f'CRS: {padus.crs}')
+        print(f'PAD-US features: {len(padus):,}', flush=True)
+        print(f'County features: {len(counties):,}', flush=True)
+        print(f'Workers: {N_WORKERS:,}', flush=True)
+        print(f'CRS: {padus.crs}', flush=True)
 
         pbar.set_description('Building PAD-US spatial index')
         padus_sindex = padus.sindex
@@ -327,7 +352,7 @@ def main():
 
                         if slow_county is not None:
                             slow_counties.append(slow_county)
-                            tqdm.write(
+                            log_line(
                                 f"Slow county GEOID={slow_county['GEOID']} "
                                 f"seconds={slow_county['seconds']:.2f} "
                                 f"candidates={slow_county['candidate_count']:,} "
@@ -338,7 +363,7 @@ def main():
         pbar.update()
 
         if slow_counties:
-            print('\nSlowest counties:')
+            print('\nSlowest counties:', flush=True)
             for county in sorted(
                 slow_counties,
                 key=lambda item: item['seconds'],
@@ -349,7 +374,8 @@ def main():
                     f"seconds={county['seconds']:.2f} "
                     f"candidates={county['candidate_count']:,} "
                     f"clipped={county['clipped_count']:,} "
-                    f"components={county['component_count']:,}"
+                    f"components={county['component_count']:,}",
+                    flush=True,
                 )
 
         pbar.set_description('Writing')
