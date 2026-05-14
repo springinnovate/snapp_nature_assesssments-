@@ -1,5 +1,6 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from os import cpu_count
+from threading import Lock
 import time
 
 import geopandas as gpd
@@ -9,13 +10,59 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from tqdm import tqdm
 
-PADUS_PATH = r'data\padus_no_holes.gpkg'
-COUNTY_PATH = r'data\tl_2024_us_county\tl_2024_us_county.shp'
+PADUS_PATH = r'data\padus_50_states_export.gpkg'
+COUNTY_PATH = r'data\tl_2024_us_county_50_states.gpkg'
 OUT_PATH = r'data\county_dissolved_public_lands.gpkg'
 OUT_LAYER = 'county_dissolved_public_lands'
 
 N_WORKERS = min(4, max(1, cpu_count() - 1))
 SLOW_COUNTY_SECONDS = 10
+HEARTBEAT_SECONDS = 15
+
+COUNTY_STATUS = {}
+COUNTY_STATUS_LOCK = Lock()
+
+
+def set_county_status(geoid, stage, **stats):
+    now = time.time()
+
+    with COUNTY_STATUS_LOCK:
+        started = COUNTY_STATUS.get(geoid, {}).get('started', now)
+        COUNTY_STATUS[geoid] = {
+            'stage': stage,
+            'started': started,
+            'updated': now,
+            **stats,
+        }
+
+
+def clear_county_status(geoid):
+    with COUNTY_STATUS_LOCK:
+        COUNTY_STATUS.pop(geoid, None)
+
+
+def print_county_status():
+    now = time.time()
+
+    with COUNTY_STATUS_LOCK:
+        statuses = list(COUNTY_STATUS.items())
+
+    for geoid, status in sorted(statuses):
+        elapsed = now - status['started']
+        idle = now - status['updated']
+        fields = ' '.join(
+            f'{key}={value:,}' if isinstance(value, int) else f'{key}={value}'
+            for key, value in status.items()
+            if key not in ('stage', 'started', 'updated')
+        )
+
+        tqdm.write(
+            f'RUNNING GEOID={geoid} '
+            f'elapsed={elapsed:.1f}s '
+            f'idle={idle:.1f}s '
+            f'stage={status["stage"]} '
+            f'{fields}'
+        )
 
 
 def merge_field(values):
@@ -56,15 +103,30 @@ def dissolve_county(args):
     geoid, county_geom, padus, padus_sindex, columns, geometry_name = args
     start_time = time.time()
 
+    set_county_status(geoid, 'querying PAD-US index')
+
     candidate_idx = padus_sindex.query(county_geom, predicate='intersects')
     county_padus = padus.iloc[candidate_idx].copy()
 
     if len(county_padus) == 0:
+        clear_county_status(geoid)
         return [], None
+
+    set_county_status(
+        geoid,
+        'clipping candidates',
+        candidates=len(candidate_idx),
+    )
 
     county_padus[geometry_name] = shapely.intersection(
         county_padus[geometry_name].values,
         county_geom,
+    )
+
+    set_county_status(
+        geoid,
+        'filtering polygonal results',
+        candidates=len(candidate_idx),
     )
 
     county_padus[geometry_name] = county_padus[geometry_name].map(polygonal_only)
@@ -73,7 +135,15 @@ def dissolve_county(args):
     county_padus = county_padus.reset_index(drop=True)
 
     if len(county_padus) == 0:
+        clear_county_status(geoid)
         return [], None
+
+    set_county_status(
+        geoid,
+        'finding intersecting clipped polygons',
+        candidates=len(candidate_idx),
+        clipped=len(county_padus),
+    )
 
     pairs = county_padus.sindex.query(
         county_padus[geometry_name],
@@ -87,6 +157,14 @@ def dissolve_county(args):
 
     n = len(county_padus)
 
+    set_county_status(
+        geoid,
+        'building connected components',
+        candidates=len(candidate_idx),
+        clipped=n,
+        pairs=len(i),
+    )
+
     if len(i) == 0:
         labels = np.arange(n)
     else:
@@ -99,15 +177,33 @@ def dissolve_county(args):
 
     county_padus['component'] = labels
 
+    groups = list(county_padus.groupby('component', sort=False).indices.items())
+
+    set_county_status(
+        geoid,
+        'dissolving components',
+        candidates=len(candidate_idx),
+        clipped=n,
+        pairs=len(i),
+        components=len(groups),
+    )
+
     rows = []
 
-    for component, idx in county_padus.groupby('component', sort=False).indices.items():
+    for group_number, (component, idx) in enumerate(groups, start=1):
+        set_county_status(
+            geoid,
+            'dissolving components',
+            candidates=len(candidate_idx),
+            clipped=n,
+            pairs=len(i),
+            components=len(groups),
+            component=group_number,
+        )
+
         group = county_padus.iloc[idx]
 
-        row = {
-            column: merge_field(group[column])
-            for column in columns
-        }
+        row = {column: merge_field(group[column]) for column in columns}
 
         row['GEOID'] = geoid
         row['component'] = component
@@ -139,9 +235,10 @@ def dissolve_county(args):
             'seconds': elapsed,
             'candidate_count': len(candidate_idx),
             'clipped_count': len(county_padus),
-            'component_count': len(set(labels)),
+            'component_count': len(groups),
         }
 
+    clear_county_status(geoid)
     return rows, slow_county
 
 
@@ -198,28 +295,45 @@ def main():
         slow_counties = []
 
         with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
-            futures = [
-                executor.submit(dissolve_county, job)
+            futures = {
+                executor.submit(dissolve_county, job): job[0]
                 for job in jobs
-            ]
+            }
 
-            for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc='Counties',
-            ):
-                county_rows, slow_county = future.result()
-                rows.extend(county_rows)
+            pending = set(futures)
+            last_heartbeat = time.time()
 
-                if slow_county is not None:
-                    slow_counties.append(slow_county)
-                    print(
-                        f"\nSlow county GEOID={slow_county['GEOID']} "
-                        f"seconds={slow_county['seconds']:.2f} "
-                        f"candidates={slow_county['candidate_count']:,} "
-                        f"clipped={slow_county['clipped_count']:,} "
-                        f"components={slow_county['component_count']:,}"
+            with tqdm(total=len(futures), desc='Counties') as county_pbar:
+                while pending:
+                    done, pending = wait(
+                        pending,
+                        timeout=1,
+                        return_when=FIRST_COMPLETED,
                     )
+
+                    now = time.time()
+
+                    if now - last_heartbeat >= HEARTBEAT_SECONDS:
+                        print_county_status()
+                        last_heartbeat = now
+
+                    for future in done:
+                        geoid = futures[future]
+                        clear_county_status(geoid)
+
+                        county_rows, slow_county = future.result()
+                        rows.extend(county_rows)
+                        county_pbar.update()
+
+                        if slow_county is not None:
+                            slow_counties.append(slow_county)
+                            tqdm.write(
+                                f"Slow county GEOID={slow_county['GEOID']} "
+                                f"seconds={slow_county['seconds']:.2f} "
+                                f"candidates={slow_county['candidate_count']:,} "
+                                f"clipped={slow_county['clipped_count']:,} "
+                                f"components={slow_county['component_count']:,}"
+                            )
 
         pbar.update()
 
