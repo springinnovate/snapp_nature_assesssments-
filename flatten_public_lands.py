@@ -8,36 +8,34 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from tqdm import tqdm
 
-PATH = r'data\PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001\PADUS4_1Geodatabase.gdb'
-LAYER_NAME = 'PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement'
-OUT_PATH = r'data\dissolved.gpkg'
-OUT_LAYER = 'dissolved'
-CHUNK_SIZE = 10_000
+PATH = r"data\PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001\PADUS4_1Geodatabase.gdb"
+LAYER_NAME = "PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement"
+OUT_PATH = r"data\dissolved.gpkg"
+OUT_LAYER = "dissolved"
+CHUNK_SIZE = 100
 N_WORKERS = max(1, cpu_count() - 1)
 
 
 def merge_field(values):
     nonblank = values[~values.isna()]
-    nonblank = nonblank[nonblank.astype(str).str.strip() != '']
+    nonblank = nonblank[nonblank.astype(str).str.strip() != ""]
     unique = nonblank.unique()
 
     if len(unique) == 1:
         return unique[0]
 
-    return ''
+    return ""
 
 
 def polygonal_only(geom):
     geom = shapely.make_valid(geom)
 
-    if geom.geom_type in ('Polygon', 'MultiPolygon'):
+    if geom.geom_type in ("Polygon", "MultiPolygon"):
         return geom
 
-    if geom.geom_type == 'GeometryCollection':
+    if geom.geom_type == "GeometryCollection":
         parts = [
-            part
-            for part in geom.geoms
-            if part.geom_type in ('Polygon', 'MultiPolygon')
+            part for part in geom.geoms if part.geom_type in ("Polygon", "MultiPolygon")
         ]
 
         if parts:
@@ -49,16 +47,15 @@ def polygonal_only(geom):
 def merge_component(component, idx, gdf, columns, geometry_name):
     group = gdf.iloc[idx]
 
-    row = {
-        column: merge_field(group[column])
-        for column in columns
-    }
+    row = {column: merge_field(group[column]) for column in columns}
 
-    row['component'] = component
+    row["component"] = component
 
     if len(group) == 1:
         geom = group[geometry_name].iloc[0]
-        row[geometry_name] = shapely.make_valid(geom) if not shapely.is_valid(geom) else geom
+        row[geometry_name] = (
+            shapely.make_valid(geom) if not shapely.is_valid(geom) else geom
+        )
         row[geometry_name] = polygonal_only(row[geometry_name])
         return row
 
@@ -69,7 +66,9 @@ def merge_component(component, idx, gdf, columns, geometry_name):
         row[geometry_name] = polygonal_only(row[geometry_name])
         return row
     except shapely.errors.GEOSException as exc:
-        print(f'Union failed for component {component} with {len(group):,} features; retrying make_valid. {exc}')
+        print(
+            f"Union failed for component {component} with {len(group):,} features; retrying make_valid. {exc}"
+        )
 
     geoms = shapely.make_valid(geoms)
 
@@ -78,7 +77,9 @@ def merge_component(component, idx, gdf, columns, geometry_name):
         row[geometry_name] = polygonal_only(row[geometry_name])
         return row
     except shapely.errors.GEOSException as exc:
-        print(f'make_valid union failed for component {component}; retrying buffer(0). {exc}')
+        print(
+            f"make_valid union failed for component {component}; retrying buffer(0). {exc}"
+        )
 
     row[geometry_name] = shapely.union_all(shapely.buffer(geoms, 0))
     row[geometry_name] = polygonal_only(row[geometry_name])
@@ -87,21 +88,21 @@ def merge_component(component, idx, gdf, columns, geometry_name):
 
 def main():
     with tqdm(total=9) as pbar:
-        pbar.set_description('Reading layer')
+        pbar.set_description("Reading layer")
         gdf = gpd.read_file(PATH, layer=LAYER_NAME)
         pbar.update()
 
-        print(f'CRS: {gdf.crs}')
-        print(f'Features: {len(gdf):,}')
-        print(f'Workers: {N_WORKERS:,}')
+        print(f"CRS: {gdf.crs}")
+        print(f"Features: {len(gdf):,}")
+        print(f"Workers: {N_WORKERS:,}")
 
-        pbar.set_description('Building spatial index')
+        pbar.set_description("Building spatial index")
         sindex = gdf.sindex
         pbar.update()
 
         def query_chunk(start):
             stop = min(start + CHUNK_SIZE, len(gdf))
-            pairs = sindex.query(gdf.geometry.iloc[start:stop], predicate='intersects')
+            pairs = sindex.query(gdf.geometry.iloc[start:stop], predicate="intersects")
 
             left = pairs[0] + start
             right = pairs[1]
@@ -109,7 +110,7 @@ def main():
             mask = left < right
             return left[mask], right[mask]
 
-        pbar.set_description('Querying intersections')
+        pbar.set_description("Querying intersections")
         starts = list(range(0, len(gdf), CHUNK_SIZE))
         left_parts = []
         right_parts = []
@@ -120,7 +121,7 @@ def main():
             for future in tqdm(
                 as_completed(futures),
                 total=len(futures),
-                desc='Intersection chunks',
+                desc="Intersection chunks",
             ):
                 left, right = future.result()
                 left_parts.append(left)
@@ -130,10 +131,10 @@ def main():
         j = np.concatenate(right_parts)
         pbar.update()
 
-        print(f'Intersecting pairs: {len(i):,}')
-        print(f'Average pairs per feature: {len(i) / len(gdf):.2f}')
+        print(f"Intersecting pairs: {len(i):,}")
+        print(f"Average pairs per feature: {len(i) / len(gdf):.2f}")
 
-        pbar.set_description('Building graph')
+        pbar.set_description("Building graph")
         n = len(gdf)
         graph = coo_matrix(
             (np.ones(len(i) * 2, dtype=bool), (np.r_[i, j], np.r_[j, i])),
@@ -141,47 +142,41 @@ def main():
         )
         pbar.update()
 
-        pbar.set_description('Finding components')
+        pbar.set_description("Finding components")
         _, labels = connected_components(graph, directed=False)
-        gdf['component'] = labels
+        gdf["component"] = labels
         pbar.update()
 
         print(f'Components: {gdf["component"].nunique():,}')
 
-        pbar.set_description('Preparing dissolve groups')
+        pbar.set_description("Preparing dissolve groups")
         geometry_name = gdf.geometry.name
         crs = gdf.crs
         columns = [
             column
             for column in gdf.columns
-            if column not in (geometry_name, 'component')
+            if column not in (geometry_name, "component")
         ]
 
-        groups = gdf.groupby('component', sort=False).indices
+        groups = gdf.groupby("component", sort=False).indices
         sizes = np.array([len(idx) for idx in groups.values()])
 
-        print(f'Singleton components: {(sizes == 1).sum():,}')
-        print(f'Multi-feature components: {(sizes > 1).sum():,}')
-        print(f'Largest component: {sizes.max():,}')
+        print(f"Singleton components: {(sizes == 1).sum():,}")
+        print(f"Multi-feature components: {(sizes > 1).sum():,}")
+        print(f"Largest component: {sizes.max():,}")
 
         singletons = [
-            (component, idx)
-            for component, idx in groups.items()
-            if len(idx) == 1
+            (component, idx) for component, idx in groups.items() if len(idx) == 1
         ]
 
-        multis = [
-            (component, idx)
-            for component, idx in groups.items()
-            if len(idx) > 1
-        ]
+        multis = [(component, idx) for component, idx in groups.items() if len(idx) > 1]
 
         pbar.update()
 
         rows = []
 
-        pbar.set_description('Copying singletons')
-        for component, idx in tqdm(singletons, desc='Singleton components'):
+        pbar.set_description("Copying singletons")
+        for component, idx in tqdm(singletons, desc="Singleton components"):
             rows.append(
                 merge_component(
                     component,
@@ -193,7 +188,7 @@ def main():
             )
         pbar.update()
 
-        pbar.set_description('Dissolving multi-feature components')
+        pbar.set_description("Dissolving multi-feature components")
         with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
             futures = [
                 executor.submit(
@@ -210,19 +205,19 @@ def main():
             for future in tqdm(
                 as_completed(futures),
                 total=len(futures),
-                desc='Dissolve multi-components',
+                desc="Dissolve multi-components",
             ):
                 rows.append(future.result())
 
         out = gpd.GeoDataFrame(rows, geometry=geometry_name, crs=crs)
         out = out[out.geometry.notna()].copy()
-        out = out.sort_values('component').reset_index(drop=True)
+        out = out.sort_values("component").reset_index(drop=True)
         pbar.update()
 
-        pbar.set_description('Writing')
-        out.to_file(OUT_PATH, layer=OUT_LAYER, driver='GPKG')
+        pbar.set_description("Writing")
+        out.to_file(OUT_PATH, layer=OUT_LAYER, driver="GPKG")
         pbar.update()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
