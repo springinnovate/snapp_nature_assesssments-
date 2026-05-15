@@ -10,13 +10,13 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from tqdm import tqdm
 
-PADUS_PATH = r'data\padus_50_states_export.gpkg'
-COUNTY_PATH = r'data\tl_2024_us_county_50_states.gpkg'
-OUT_PATH = r'data\county_dissolved_public_lands.gpkg'
-OUT_LAYER = 'county_dissolved_public_lands'
+PADUS_PATH = r"data\padus_50_states_export.gpkg"
+COUNTY_PATH = r"data\tl_2024_us_county_50_states.gpkg"
+OUT_PATH = r"data\county_dissolved_public_lands.gpkg"
+OUT_LAYER = "county_dissolved_public_lands"
 
 N_WORKERS = min(4, max(1, cpu_count() - 1))
-SLOW_COUNTY_SECONDS = 10
+SLOW_COUNTY_SECONDS = 60
 HEARTBEAT_SECONDS = 5
 
 COUNTY_STATUS = {}
@@ -24,8 +24,8 @@ COUNTY_STATUS_LOCK = Lock()
 
 
 def format_stats(stats):
-    return ' '.join(
-        f'{key}={value:,}' if isinstance(value, int) else f'{key}={value}'
+    return " ".join(
+        f"{key}={value:,}" if isinstance(value, int) else f"{key}={value}"
         for key, value in stats.items()
     )
 
@@ -39,24 +39,24 @@ def set_county_status(geoid, stage, **stats):
     now = time.time()
 
     with COUNTY_STATUS_LOCK:
-        started = COUNTY_STATUS.get(geoid, {}).get('started', now)
+        started = COUNTY_STATUS.get(geoid, {}).get("started", now)
         COUNTY_STATUS[geoid] = {
-            'stage': stage,
-            'started': started,
-            'updated': now,
+            "stage": stage,
+            "started": started,
+            "updated": now,
             **stats,
         }
 
         elapsed = now - started
         fields = format_stats(stats)
-
-        print(
-            f'STAGE GEOID={geoid} '
-            f'elapsed={elapsed:.1f}s '
-            f'stage={stage} '
-            f'{fields}',
-            flush=True,
-        )
+        if elapsed > SLOW_COUNTY_SECONDS:
+            print(
+                f"STAGE GEOID={geoid} "
+                f"elapsed={elapsed:.1f}s "
+                f"stage={stage} "
+                f"{fields}",
+                flush=True,
+            )
 
 
 def clear_county_status(geoid):
@@ -71,34 +71,34 @@ def print_county_status():
         statuses = list(COUNTY_STATUS.items())
 
     for geoid, status in sorted(statuses):
-        elapsed = now - status['started']
-        idle = now - status['updated']
+        elapsed = now - status["started"]
+        idle = now - status["updated"]
         fields = format_stats(
             {
                 key: value
                 for key, value in status.items()
-                if key not in ('stage', 'started', 'updated')
+                if key not in ("stage", "started", "updated")
             }
         )
 
         log_line(
-            f'RUNNING GEOID={geoid} '
-            f'elapsed={elapsed:.1f}s '
-            f'idle={idle:.1f}s '
+            f"RUNNING GEOID={geoid} "
+            f"elapsed={elapsed:.1f}s "
+            f"idle={idle:.1f}s "
             f'stage={status["stage"]} '
-            f'{fields}'
+            f"{fields}"
         )
 
 
 def merge_field(values):
     nonblank = values[~values.isna()]
-    nonblank = nonblank[nonblank.astype(str).str.strip() != '']
+    nonblank = nonblank[nonblank.astype(str).str.strip() != ""]
     unique = nonblank.unique()
 
     if len(unique) == 1:
         return unique[0]
 
-    return ''
+    return ""
 
 
 def polygonal_only(geom):
@@ -108,14 +108,14 @@ def polygonal_only(geom):
     if not geom.is_valid:
         geom = shapely.make_valid(geom)
 
-    if geom.geom_type in ('Polygon', 'MultiPolygon'):
+    if geom.geom_type in ("Polygon", "MultiPolygon"):
         return geom
 
-    if geom.geom_type == 'GeometryCollection':
+    if geom.geom_type == "GeometryCollection":
         parts = [
             part
             for part in geom.geoms
-            if part.geom_type in ('Polygon', 'MultiPolygon') and not part.is_empty
+            if part.geom_type in ("Polygon", "MultiPolygon") and not part.is_empty
         ]
 
         if parts:
@@ -128,10 +128,12 @@ def dissolve_county(args):
     geoid, county_geom, padus, padus_sindex, columns, geometry_name = args
     start_time = time.time()
 
-    set_county_status(geoid, 'querying PAD-US index')
+    set_county_status(geoid, "querying PAD-US index")
 
-    candidate_idx = padus_sindex.query(county_geom, predicate='intersects')
+    candidate_idx = padus_sindex.query(county_geom, predicate="intersects")
     county_padus = padus.iloc[candidate_idx].copy()
+
+    set_county_status(geoid, f"{len(candidate_idx)} features intersects {geoid} county")
 
     if len(county_padus) == 0:
         clear_county_status(geoid)
@@ -139,7 +141,7 @@ def dissolve_county(args):
 
     set_county_status(
         geoid,
-        'clipping candidates',
+        "clipping candidates",
         candidates=len(candidate_idx),
     )
 
@@ -150,7 +152,7 @@ def dissolve_county(args):
 
     set_county_status(
         geoid,
-        'filtering polygonal results',
+        "filtering polygonal results",
         candidates=len(candidate_idx),
     )
 
@@ -165,14 +167,14 @@ def dissolve_county(args):
 
     set_county_status(
         geoid,
-        'finding intersecting clipped polygons',
+        "finding intersecting clipped polygons",
         candidates=len(candidate_idx),
         clipped=len(county_padus),
     )
 
     pairs = county_padus.sindex.query(
         county_padus[geometry_name],
-        predicate='intersects',
+        predicate="intersects",
     )
 
     i, j = pairs
@@ -184,7 +186,7 @@ def dissolve_county(args):
 
     set_county_status(
         geoid,
-        'building connected components',
+        "building connected components",
         candidates=len(candidate_idx),
         clipped=n,
         pairs=len(i),
@@ -200,13 +202,13 @@ def dissolve_county(args):
 
         _, labels = connected_components(graph, directed=False)
 
-    county_padus['component'] = labels
+    county_padus["component"] = labels
 
-    groups = list(county_padus.groupby('component', sort=False).indices.items())
+    groups = list(county_padus.groupby("component", sort=False).indices.items())
 
     set_county_status(
         geoid,
-        'dissolving components',
+        "dissolving components",
         candidates=len(candidate_idx),
         clipped=n,
         pairs=len(i),
@@ -218,7 +220,7 @@ def dissolve_county(args):
     for group_number, (component, idx) in enumerate(groups, start=1):
         set_county_status(
             geoid,
-            'dissolving components',
+            "dissolving components",
             candidates=len(candidate_idx),
             clipped=n,
             pairs=len(i),
@@ -230,8 +232,8 @@ def dissolve_county(args):
 
         row = {column: merge_field(group[column]) for column in columns}
 
-        row['GEOID'] = geoid
-        row['component'] = component
+        row["GEOID"] = geoid
+        row["component"] = component
 
         if len(group) == 1:
             geom = group[geometry_name].iloc[0]
@@ -256,11 +258,11 @@ def dissolve_county(args):
 
     if elapsed >= SLOW_COUNTY_SECONDS:
         slow_county = {
-            'GEOID': geoid,
-            'seconds': elapsed,
-            'candidate_count': len(candidate_idx),
-            'clipped_count': len(county_padus),
-            'component_count': len(groups),
+            "GEOID": geoid,
+            "seconds": elapsed,
+            "candidate_count": len(candidate_idx),
+            "clipped_count": len(county_padus),
+            "component_count": len(groups),
         }
 
     clear_county_status(geoid)
@@ -269,16 +271,41 @@ def dissolve_county(args):
 
 def main():
     with tqdm(total=6) as pbar:
-        pbar.set_description('Reading PAD-US')
+        pbar.set_description("Reading PAD-US")
         padus = gpd.read_file(PADUS_PATH)
         pbar.update()
 
-        pbar.set_description('Reading counties')
+        pbar.set_description("Filtering PAD-US geometries")
+        geometry_name = padus.geometry.name
+        null_count = padus[geometry_name].isna().sum()
+        empty_count = padus[geometry_name].is_empty.sum()
+
+        print(f"Null geometries: {null_count:,}", flush=True)
+        print(f"Empty geometries: {empty_count:,}", flush=True)
+
+        padus = padus[padus[geometry_name].notna()].copy()
+        padus = padus[~padus[geometry_name].is_empty].copy()
+        padus = padus.reset_index(drop=True)
+
+        pbar.update()
+
+        tolerance = 15
+
+        pbar.set_description(f"Simplifying to {tolerance} meters")
+        print(f"invalid before simplify: {(~padus.geometry.is_valid).sum():,}")
+        simplified = padus.geometry.simplify(tolerance, preserve_topology=False)
+        print(f"invalid after simplify: {(~simplified.is_valid).sum():,}")
+        simplified = simplified.make_valid()
+        print(f"invalid after repair: {(~simplified.is_valid).sum():,}")
+        padus.geometry = simplified
+        pbar.update()
+
+        pbar.set_description("Reading counties")
         counties = gpd.read_file(COUNTY_PATH)
         pbar.update()
 
-        pbar.set_description('Preparing data')
-        counties = counties[['GEOID', 'geometry']].to_crs(padus.crs)
+        pbar.set_description("Preparing data")
+        counties = counties[["GEOID", "geometry"]].to_crs(padus.crs)
         geometry_name = padus.geometry.name
 
         padus = padus[padus[geometry_name].notna()].copy()
@@ -288,21 +315,21 @@ def main():
         columns = [
             column
             for column in padus.columns
-            if column not in (geometry_name, 'GEOID', 'component')
+            if column not in (geometry_name, "GEOID", "component")
         ]
 
         pbar.update()
 
-        print(f'PAD-US features: {len(padus):,}', flush=True)
-        print(f'County features: {len(counties):,}', flush=True)
-        print(f'Workers: {N_WORKERS:,}', flush=True)
-        print(f'CRS: {padus.crs}', flush=True)
+        print(f"PAD-US features: {len(padus):,}", flush=True)
+        print(f"County features: {len(counties):,}", flush=True)
+        print(f"Workers: {N_WORKERS:,}", flush=True)
+        print(f"CRS: {padus.crs}", flush=True)
 
-        pbar.set_description('Building PAD-US spatial index')
+        pbar.set_description("Building PAD-US spatial index")
         padus_sindex = padus.sindex
         pbar.update()
 
-        pbar.set_description('Dissolving by county')
+        pbar.set_description("Dissolving by county")
 
         jobs = [
             (
@@ -318,17 +345,13 @@ def main():
 
         rows = []
         slow_counties = []
-
         with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
-            futures = {
-                executor.submit(dissolve_county, job): job[0]
-                for job in jobs
-            }
+            futures = {executor.submit(dissolve_county, job): job[0] for job in jobs}
 
             pending = set(futures)
             last_heartbeat = time.time()
 
-            with tqdm(total=len(futures), desc='Counties') as county_pbar:
+            with tqdm(total=len(futures), desc="Counties") as county_pbar:
                 while pending:
                     done, pending = wait(
                         pending,
@@ -363,10 +386,10 @@ def main():
         pbar.update()
 
         if slow_counties:
-            print('\nSlowest counties:', flush=True)
+            print("\nSlowest counties:", flush=True)
             for county in sorted(
                 slow_counties,
-                key=lambda item: item['seconds'],
+                key=lambda item: item["seconds"],
                 reverse=True,
             )[:25]:
                 print(
@@ -378,14 +401,14 @@ def main():
                     flush=True,
                 )
 
-        pbar.set_description('Writing')
+        pbar.set_description("Writing")
         out = gpd.GeoDataFrame(rows, geometry=geometry_name, crs=padus.crs)
         out = out[out.geometry.notna()].copy()
         out = out[~out.geometry.is_empty].copy()
         out = out.reset_index(drop=True)
-        out.to_file(OUT_PATH, layer=OUT_LAYER, driver='GPKG')
+        out.to_file(OUT_PATH, layer=OUT_LAYER, driver="GPKG")
         pbar.update()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
