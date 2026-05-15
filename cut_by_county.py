@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from os import cpu_count
 from threading import Lock
 import time
@@ -6,18 +6,27 @@ import time
 import geopandas as gpd
 import numpy as np
 import shapely
-from scipy.sparse import coo_matrix
-from scipy.sparse.csgraph import connected_components
 from tqdm import tqdm
 
 PADUS_PATH = r"data\padus_50_states_export.gpkg"
 COUNTY_PATH = r"data\tl_2024_us_county_50_states.gpkg"
-OUT_PATH = r"data\county_dissolved_public_lands.gpkg"
-OUT_LAYER = "county_dissolved_public_lands"
+OUT_PATH = r"data\padus_50_states_cut_by_county.gpkg"
+OUT_LAYER = "padus_50_states_cut_by_county"
 
 N_WORKERS = min(4, max(1, cpu_count() - 1))
 SLOW_COUNTY_SECONDS = 60
 HEARTBEAT_SECONDS = 5
+
+MANG_TYPE_COLUMN = "Mang_Type"
+
+PRIORITY_MANG_TYPES = {
+    "Federal",
+    "State",
+    "Local Government",
+    "Regional Agency Special District",
+    "Joint",
+    "Territorial",
+}
 
 COUNTY_STATUS = {}
 COUNTY_STATUS_LOCK = Lock()
@@ -90,15 +99,11 @@ def print_county_status():
         )
 
 
-def merge_field(values):
-    nonblank = values[~values.isna()]
-    nonblank = nonblank[nonblank.astype(str).str.strip() != ""]
-    unique = nonblank.unique()
+def has_priority_mang_type(value):
+    if value is None or value is np.nan:
+        return False
 
-    if len(unique) == 1:
-        return unique[0]
-
-    return ""
+    return str(value).strip() in PRIORITY_MANG_TYPES
 
 
 def polygonal_only(geom):
@@ -124,8 +129,127 @@ def polygonal_only(geom):
     return None
 
 
-def dissolve_county(args):
-    geoid, county_geom, padus, padus_sindex, columns, geometry_name = args
+def has_polygonal_overlap(left, right):
+    if left is None or right is None or left.is_empty or right.is_empty:
+        return False
+
+    if not shapely.intersects(left, right):
+        return False
+
+    try:
+        overlap = shapely.intersection(left, right)
+    except shapely.errors.GEOSException:
+        overlap = shapely.intersection(
+            shapely.make_valid(left),
+            shapely.make_valid(right),
+        )
+
+    overlap = polygonal_only(overlap)
+
+    return overlap is not None and not overlap.is_empty and overlap.area > 0
+
+
+def resolve_county_overlaps(county_padus, geometry_name, geoid, candidate_count):
+    pass_number = 0
+
+    while len(county_padus) > 1:
+        pass_number += 1
+
+        set_county_status(
+            geoid,
+            "finding same-county overlaps",
+            candidates=candidate_count,
+            clipped=len(county_padus),
+            pass_number=pass_number,
+        )
+
+        pairs = county_padus.sindex.query(
+            county_padus[geometry_name],
+            predicate="intersects",
+        )
+
+        i, j = pairs
+        mask = i < j
+        i = i[mask]
+        j = j[mask]
+
+        if len(i) == 0:
+            break
+
+        set_county_status(
+            geoid,
+            "removing same-county overlaps",
+            candidates=candidate_count,
+            clipped=len(county_padus),
+            pairs=len(i),
+            pass_number=pass_number,
+        )
+
+        changed = False
+        geometry_idx = county_padus.columns.get_loc(geometry_name)
+        mang_type_idx = county_padus.columns.get_loc(MANG_TYPE_COLUMN)
+
+        for pair_number, (left, right) in enumerate(zip(i, j), start=1):
+            left_geom = county_padus.iat[left, geometry_idx]
+            right_geom = county_padus.iat[right, geometry_idx]
+
+            if not has_polygonal_overlap(left_geom, right_geom):
+                continue
+
+            left_priority = has_priority_mang_type(
+                county_padus.iat[left, mang_type_idx]
+            )
+            right_priority = has_priority_mang_type(
+                county_padus.iat[right, mang_type_idx]
+            )
+
+            if left_priority:
+                keep_idx = left
+                cut_idx = right
+            elif right_priority:
+                keep_idx = right
+                cut_idx = left
+            else:
+                keep_idx = right
+                cut_idx = left
+
+            keep_geom = county_padus.iat[keep_idx, geometry_idx]
+            cut_geom = county_padus.iat[cut_idx, geometry_idx]
+
+            try:
+                new_geom = shapely.difference(cut_geom, keep_geom)
+            except shapely.errors.GEOSException:
+                new_geom = shapely.difference(
+                    shapely.make_valid(cut_geom),
+                    shapely.make_valid(keep_geom),
+                )
+
+            county_padus.iat[cut_idx, geometry_idx] = polygonal_only(new_geom)
+            changed = True
+
+            if pair_number % 1_000 == 0:
+                set_county_status(
+                    geoid,
+                    "removing same-county overlaps",
+                    candidates=candidate_count,
+                    clipped=len(county_padus),
+                    pairs=len(i),
+                    pair=pair_number,
+                    pass_number=pass_number,
+                )
+
+        county_padus = county_padus[county_padus[geometry_name].notna()].copy()
+        county_padus = county_padus[~county_padus[geometry_name].is_empty].copy()
+        county_padus = county_padus.reset_index(drop=True)
+
+        if not changed:
+            break
+
+    return county_padus
+
+
+def process_county(args):
+    geoid, county_geom, padus, padus_sindex, geometry_name = args
     start_time = time.time()
 
     set_county_status(geoid, "querying PAD-US index")
@@ -141,7 +265,7 @@ def dissolve_county(args):
 
     set_county_status(
         geoid,
-        "clipping candidates",
+        "clipping candidates to county",
         candidates=len(candidate_idx),
     )
 
@@ -152,7 +276,7 @@ def dissolve_county(args):
 
     set_county_status(
         geoid,
-        "filtering polygonal results",
+        "filtering county-clipped polygonal results",
         candidates=len(candidate_idx),
     )
 
@@ -165,92 +289,37 @@ def dissolve_county(args):
         clear_county_status(geoid)
         return [], None
 
-    set_county_status(
+    clipped_count = len(county_padus)
+
+    county_padus = resolve_county_overlaps(
+        county_padus,
+        geometry_name,
         geoid,
-        "finding intersecting clipped polygons",
-        candidates=len(candidate_idx),
-        clipped=len(county_padus),
+        len(candidate_idx),
     )
 
-    pairs = county_padus.sindex.query(
-        county_padus[geometry_name],
-        predicate="intersects",
-    )
-
-    i, j = pairs
-    mask = i < j
-    i = i[mask]
-    j = j[mask]
-
-    n = len(county_padus)
+    if len(county_padus) == 0:
+        clear_county_status(geoid)
+        return [], None
 
     set_county_status(
         geoid,
-        "building connected components",
+        "building output rows",
         candidates=len(candidate_idx),
-        clipped=n,
-        pairs=len(i),
-    )
-
-    if len(i) == 0:
-        labels = np.arange(n)
-    else:
-        graph = coo_matrix(
-            (np.ones(len(i) * 2, dtype=bool), (np.r_[i, j], np.r_[j, i])),
-            shape=(n, n),
-        )
-
-        _, labels = connected_components(graph, directed=False)
-
-    county_padus["component"] = labels
-
-    groups = list(county_padus.groupby("component", sort=False).indices.items())
-
-    set_county_status(
-        geoid,
-        "dissolving components",
-        candidates=len(candidate_idx),
-        clipped=n,
-        pairs=len(i),
-        components=len(groups),
+        clipped=clipped_count,
+        remaining=len(county_padus),
     )
 
     rows = []
 
-    for group_number, (component, idx) in enumerate(groups, start=1):
-        set_county_status(
-            geoid,
-            "dissolving components",
-            candidates=len(candidate_idx),
-            clipped=n,
-            pairs=len(i),
-            components=len(groups),
-            component=group_number,
-        )
-
-        group = county_padus.iloc[idx]
-
-        row = {column: merge_field(group[column]) for column in columns}
-
+    for row_number, row in enumerate(county_padus.to_dict("records"), start=1):
         row["GEOID"] = geoid
-        row["component"] = component
+        row["component"] = row_number
 
-        if len(group) == 1:
-            geom = group[geometry_name].iloc[0]
-        else:
-            try:
-                geom = shapely.union_all(group[geometry_name].values)
-            except shapely.errors.GEOSException:
-                geoms = shapely.make_valid(group[geometry_name].values)
+        geom = polygonal_only(row[geometry_name])
 
-                try:
-                    geom = shapely.union_all(geoms)
-                except shapely.errors.GEOSException:
-                    geom = shapely.union_all(shapely.buffer(geoms, 0))
-
-        row[geometry_name] = polygonal_only(geom)
-
-        if row[geometry_name] is not None and not row[geometry_name].is_empty:
+        if geom is not None and not geom.is_empty:
+            row[geometry_name] = geom
             rows.append(row)
 
     elapsed = time.time() - start_time
@@ -261,8 +330,8 @@ def dissolve_county(args):
             "GEOID": geoid,
             "seconds": elapsed,
             "candidate_count": len(candidate_idx),
-            "clipped_count": len(county_padus),
-            "component_count": len(groups),
+            "clipped_count": clipped_count,
+            "feature_count": len(rows),
         }
 
     clear_county_status(geoid)
@@ -270,7 +339,7 @@ def dissolve_county(args):
 
 
 def main():
-    with tqdm(total=6) as pbar:
+    with tqdm(total=8) as pbar:
         pbar.set_description("Reading PAD-US")
         padus = gpd.read_file(PADUS_PATH)
         pbar.update()
@@ -292,11 +361,25 @@ def main():
         tolerance = 15
 
         pbar.set_description(f"Simplifying to {tolerance} meters")
-        print(f"invalid before simplify: {(~padus.geometry.is_valid).sum():,}")
+        print(
+            f"invalid before simplify: {(~padus.geometry.is_valid).sum():,}",
+            flush=True,
+        )
+
         simplified = padus.geometry.simplify(tolerance, preserve_topology=False)
-        print(f"invalid after simplify: {(~simplified.is_valid).sum():,}")
+
+        print(
+            f"invalid after simplify: {(~simplified.is_valid).sum():,}",
+            flush=True,
+        )
+
         simplified = simplified.make_valid()
-        print(f"invalid after repair: {(~simplified.is_valid).sum():,}")
+
+        print(
+            f"invalid after repair: {(~simplified.is_valid).sum():,}",
+            flush=True,
+        )
+
         padus.geometry = simplified
         pbar.update()
 
@@ -308,15 +391,10 @@ def main():
         counties = counties[["GEOID", "geometry"]].to_crs(padus.crs)
         geometry_name = padus.geometry.name
 
+        padus[geometry_name] = padus[geometry_name].map(polygonal_only)
         padus = padus[padus[geometry_name].notna()].copy()
         padus = padus[~padus[geometry_name].is_empty].copy()
         padus = padus.reset_index(drop=True)
-
-        columns = [
-            column
-            for column in padus.columns
-            if column not in (geometry_name, "GEOID", "component")
-        ]
 
         pbar.update()
 
@@ -329,7 +407,7 @@ def main():
         padus_sindex = padus.sindex
         pbar.update()
 
-        pbar.set_description("Dissolving by county")
+        pbar.set_description("Clipping by county")
 
         jobs = [
             (
@@ -337,7 +415,6 @@ def main():
                 county.geometry,
                 padus,
                 padus_sindex,
-                columns,
                 geometry_name,
             )
             for county in counties.itertuples(index=False)
@@ -345,8 +422,9 @@ def main():
 
         rows = []
         slow_counties = []
+
         with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
-            futures = {executor.submit(dissolve_county, job): job[0] for job in jobs}
+            futures = {executor.submit(process_county, job): job[0] for job in jobs}
 
             pending = set(futures)
             last_heartbeat = time.time()
@@ -380,7 +458,7 @@ def main():
                                 f"seconds={slow_county['seconds']:.2f} "
                                 f"candidates={slow_county['candidate_count']:,} "
                                 f"clipped={slow_county['clipped_count']:,} "
-                                f"components={slow_county['component_count']:,}"
+                                f"features={slow_county['feature_count']:,}"
                             )
 
         pbar.update()
@@ -397,7 +475,7 @@ def main():
                     f"seconds={county['seconds']:.2f} "
                     f"candidates={county['candidate_count']:,} "
                     f"clipped={county['clipped_count']:,} "
-                    f"components={county['component_count']:,}",
+                    f"features={county['feature_count']:,}",
                     flush=True,
                 )
 
