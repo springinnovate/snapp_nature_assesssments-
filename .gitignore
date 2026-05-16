@@ -1,0 +1,7 @@
+data/
+*.tif
+*.gpkg
+*.zip
+*.csv
+intermediate/
+__pycache__
