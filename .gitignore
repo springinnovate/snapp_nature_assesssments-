@@ -5,3 +5,4 @@ data/
 *.csv
 intermediate/
 __pycache__
+run_configs/
