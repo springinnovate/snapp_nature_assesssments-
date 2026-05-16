@@ -10,8 +10,8 @@ from tqdm import tqdm
 
 PATH = r"data\PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001\PADUS4_1Geodatabase.gdb"
 LAYER_NAME = "PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement"
-OUT_PATH = r"data\dissolved.gpkg"
-OUT_LAYER = "dissolved"
+OUT_PATH = # commenting out so it crashes we don't seem to use this file anymore r"data\dissolved.gpkg"
+OUT_LAYER = # commenting out so it crashes we don't seem to use this file anymore "dissolved"
 CHUNK_SIZE = 100
 N_WORKERS = max(1, cpu_count() - 1)
 

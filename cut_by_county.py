@@ -8,8 +8,26 @@ import numpy as np
 import shapely
 from tqdm import tqdm
 
-PADUS_PATH = r"data\padus_50_states_export.gpkg"
-COUNTY_PATH = r"data\tl_2024_us_county_50_states.gpkg"
+# This PADUS file was created from PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001
+# by clipping it to ./data/usa_vector.gpkg.
+#
+# ./data/usa_vector.gpkg was created by selecting only the United States from:
+# D:\easy_to_find_data_i_always_use\countries_iso3_md5_6fb2431e911401992e6e56ddf0a9bcda.gpkg
+#
+# I then manually removed small islands and geometries crossing the antimeridian,
+# leaving effectively Alaska, Hawaii, and CONUS. That vector was used to clip the
+# PADUS geodatabase, and the result was simplified to 15 m resolution using the
+# built-in QGIS simplification algorithm with default arguments.
+#
+# This processing was done manually rather than scripted, so the steps are
+# documented here for provenance.
+PADUS_PATH = "data/data_usa_vector_15m.gpkg"
+
+# I don't remember where the county vector came from, maybe Becky? I think
+# we culled it somehow too so it wasn't any territories.
+COUNTY_PATH = r"data/tl_2024_us_county_50_states.gpkg"
+
+
 OUT_PATH = r"data\padus_50_states_cut_by_county.gpkg"
 OUT_LAYER = "padus_50_states_cut_by_county"
 
