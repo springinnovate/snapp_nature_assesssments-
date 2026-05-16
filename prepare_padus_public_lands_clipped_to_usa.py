@@ -6,7 +6,7 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 import csv
-from os import cpu_count, environ
+from os import cpu_count
 from pathlib import Path
 
 from osgeo import gdal, ogr, osr
@@ -18,29 +18,21 @@ from tqdm import tqdm
 gdal.UseExceptions()
 ogr.UseExceptions()
 
-PADUS_ZIP_PATH = Path(
-    r"D:\repositories\snapp_nature_assesssments-\data"
-    r"\PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001.zip"
+PADUS_GDB_PATH = Path(
+    "./data/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb"
 )
-PADUS_GDB_NAME = "PADUS4_1Geodatabase.gdb"
 PADUS_LAYER_NAME = "PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement"
 USA_BOUNDARY_PATH = Path(
     r"D:\repositories\snapp_nature_assesssments-\data\usa_vector.gpkg"
 )
 
-OUT_DIR = Path("data")
+OUT_DIR = Path("output")
 OUT_LAYER_NAME = "padus_public_lands_clipped_to_usa"
 OUT_STEM = "padus_public_lands_clipped_to_usa"
 
 SIMPLIFY_TOLERANCE_METERS = 15.0
-VERTICES_PER_JOB = int(environ.get("PADUS_VERTICES_PER_JOB", "10000"))
-N_WORKERS = int(environ.get("PADUS_N_WORKERS", str(max(1, cpu_count() - 1))))
-MAX_SCAN_FEATURES = (
-    int(environ["PADUS_MAX_SCAN_FEATURES"])
-    if environ.get("PADUS_MAX_SCAN_FEATURES")
-    else None
-)
-
+VERTICES_PER_JOB = 10000
+N_WORKERS = cpu_count()
 KEEP_MANG_TYPES = {"FED", "STAT", "LOC", "DIST", "JNT", "TERR"}
 KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER = {"LOC", "DIST", "FED", "JNT", "STAT"}
 
@@ -58,32 +50,6 @@ def _set_axis_order(srs: osr.SpatialReference) -> osr.SpatialReference:
     """
     srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     return srs
-
-
-def _padus_gdb_path() -> str:
-    """Build the GDAL path to the zipped PAD-US file geodatabase.
-
-    Returns:
-        GDAL-readable path to the PAD-US geodatabase.
-    """
-    zip_path = str(PADUS_ZIP_PATH).replace("\\", "/")
-    return f"/vsizip/{zip_path}/{PADUS_GDB_NAME}"
-
-
-def _open_layer(vector_path: str | Path, layer_name: str | None = None):
-    """Open a vector dataset layer.
-
-    Args:
-        vector_path: Path to a vector dataset.
-        layer_name: Optional layer name. If omitted, the first layer is used.
-
-    Returns:
-        Open GDAL dataset and OGR layer.
-    """
-    ds = gdal.OpenEx(str(vector_path), gdal.OF_VECTOR)
-    if layer_name is None:
-        return ds, ds.GetLayer()
-    return ds, ds.GetLayerByName(layer_name)
 
 
 def _feature_should_be_kept(feature: ogr.Feature) -> bool:
@@ -187,22 +153,6 @@ def _repair_polygonal_geometry(geom):
     return None
 
 
-def _transform_ogr_geometry(geom: ogr.Geometry, transform) -> ogr.Geometry:
-    """Transform an OGR geometry when a coordinate transform is configured.
-
-    Args:
-        geom: Geometry to clone and optionally transform.
-        transform: Optional OGR coordinate transformation.
-
-    Returns:
-        Cloned geometry in the processing CRS.
-    """
-    geom = geom.Clone()
-    if transform is not None:
-        geom.Transform(transform)
-    return geom
-
-
 def _read_usa_boundary(process_srs: osr.SpatialReference):
     """Read, reproject, and merge the USA boundary.
 
@@ -212,22 +162,24 @@ def _read_usa_boundary(process_srs: osr.SpatialReference):
     Returns:
         Valid polygonal USA boundary geometry in the processing CRS.
     """
-    ds, layer = _open_layer(USA_BOUNDARY_PATH)
-    source_srs = _set_axis_order(layer.GetSpatialRef())
+    boundary_vector = gdal.OpenEx(str(USA_BOUNDARY_PATH), gdal.OF_VECTOR)
+    boundary_layer = boundary_vector.GetLayer()
+    source_srs = _set_axis_order(boundary_layer.GetSpatialRef())
     process_srs = _set_axis_order(process_srs.Clone())
     transform = None
     if not source_srs.IsSame(process_srs):
         transform = osr.CoordinateTransformation(source_srs, process_srs)
 
     geoms = []
-    for feature in layer:
+    for feature in boundary_layer:
         geom = feature.GetGeometryRef()
         if geom is None or geom.IsEmpty():
             continue
-        geom = _transform_ogr_geometry(geom, transform)
+        geom.Transform(transform)
         geoms.append(wkb.loads(bytes(geom.ExportToWkb())))
 
-    ds = None
+    boundary_vector = None
+    boundary_layer = None
     boundary = shapely.union_all(geoms)
     boundary = _repair_polygonal_geometry(boundary)
     if boundary is None:
@@ -259,9 +211,6 @@ def _build_jobs(layer: ogr.Layer, boundary) -> tuple[list[list[int]], Counter]:
             unit="feature",
         )
     ):
-        if MAX_SCAN_FEATURES is not None and feature_index >= MAX_SCAN_FEATURES:
-            break
-
         stats["scanned"] += 1
 
         if not _feature_should_be_kept(feature):
@@ -324,9 +273,10 @@ def _init_worker(
     if not source_srs.IsSame(process_srs):
         transform = osr.CoordinateTransformation(source_srs, process_srs)
 
-    ds, layer = _open_layer(padus_gdb_path, layer_name)
-    WORKER["ds"] = ds
-    WORKER["layer"] = layer
+    padus_vector = gdal.OpenEx(padus_gdb_path)
+    padus_layer = padus_vector.GetLayer()
+    WORKER["ds"] = padus_vector
+    WORKER["layer"] = padus_layer
     WORKER["transform"] = transform
     WORKER["boundary"] = wkb.loads(boundary_wkb)
 
@@ -362,7 +312,7 @@ def _process_job(
                 stats["empty_geometry"] += 1
                 continue
 
-            geom = _transform_ogr_geometry(geom, transform)
+            geom = geom.Transform(transform)
             shapely_geom = wkb.loads(bytes(geom.ExportToWkb()))
             if not shapely_geom.is_valid:
                 shapely_geom = _repair_polygonal_geometry(shapely_geom)
@@ -459,7 +409,9 @@ def _choose_process_srs(
 
 def main() -> None:
     """Run the PAD-US preprocessing workflow."""
-    # we
+    # the GDB has tons of broken polygons, this says ignore it when loading
+    # which will make the load faster then we're fixing it in this script
+    # anyway
     gdal.SetConfigOption("OGR_ORGANIZE_POLYGONS", "SKIP")
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     out_path = OUT_DIR / f"{OUT_STEM}_{timestamp}.gpkg"
@@ -469,9 +421,9 @@ def main() -> None:
     step_bar = tqdm(total=5, desc="PAD-US preprocessing", unit="step")
 
     step_bar.set_description("Open PAD-US")
-    padus_gdb_path = _padus_gdb_path()
-    ds, layer = _open_layer(padus_gdb_path, PADUS_LAYER_NAME)
-    source_srs = _set_axis_order(layer.GetSpatialRef())
+    padus_vector = gdal.OpenEx(PADUS_GDB_PATH)
+    padus_layer = padus_vector.GetLayer()
+    source_srs = _set_axis_order(padus_layer.GetSpatialRef())
     process_srs = _choose_process_srs(source_srs)
     step_bar.update()
 
@@ -487,8 +439,9 @@ def main() -> None:
         boundary_ogr.Transform(process_to_source)
         boundary_for_scan = wkb.loads(bytes(boundary_ogr.ExportToWkb()))
 
-    jobs, scan_stats = _build_jobs(layer, boundary_for_scan)
-    ds = None
+    jobs, scan_stats = _build_jobs(padus_layer, boundary_for_scan)
+    padus_layer = None
+    padus_vector = None
     step_bar.update()
 
     print(
@@ -515,20 +468,26 @@ def main() -> None:
     written = 0
 
     worker_args = (
-        padus_gdb_path,
+        PADUS_GDB_PATH,
         PADUS_LAYER_NAME,
         source_srs.ExportToWkt(),
         process_srs.ExportToWkt(),
         wkb.dumps(boundary),
     )
 
-    if N_WORKERS == 1:
-        _init_worker(*worker_args)
-        job_results = (
-            _process_job(job)
-            for job in tqdm(jobs, desc="Process PAD-US jobs", unit="job")
-        )
-        for out_wkbs, stats, job_failures in job_results:
+    with ProcessPoolExecutor(
+        max_workers=N_WORKERS,
+        initializer=_init_worker,
+        initargs=worker_args,
+    ) as executor:
+        futures = [executor.submit(_process_job, job) for job in jobs]
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Process PAD-US jobs",
+            unit="job",
+        ):
+            out_wkbs, stats, job_failures = future.result()
             all_stats.update(stats)
             failures.extend(job_failures)
 
@@ -538,29 +497,6 @@ def main() -> None:
                 out_layer.CreateFeature(feature)
                 feature = None
                 written += 1
-    else:
-        with ProcessPoolExecutor(
-            max_workers=N_WORKERS,
-            initializer=_init_worker,
-            initargs=worker_args,
-        ) as executor:
-            futures = [executor.submit(_process_job, job) for job in jobs]
-            for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc="Process PAD-US jobs",
-                unit="job",
-            ):
-                out_wkbs, stats, job_failures = future.result()
-                all_stats.update(stats)
-                failures.extend(job_failures)
-
-                for geom_wkb in out_wkbs:
-                    feature = ogr.Feature(out_defn)
-                    feature.SetGeometry(ogr.CreateGeometryFromWkb(geom_wkb))
-                    out_layer.CreateFeature(feature)
-                    feature = None
-                    written += 1
 
     out_ds.FlushCache()
     out_ds = None
