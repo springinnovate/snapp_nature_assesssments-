@@ -1,4 +1,4 @@
-"""Prepare a cleaned PAD-US public lands layer clipped to a USA boundary."""
+"""Prepare cleaned PAD-US land layers clipped to a USA boundary."""
 
 from __future__ import annotations
 
@@ -30,8 +30,11 @@ USA_BOUNDARY_PATH = Path(
 )
 
 OUT_DIR = Path("output")
-OUT_LAYER_NAME = "padus_public_lands_clipped_to_usa"
-OUT_STEM = "padus_public_lands_clipped_to_usa"
+PUBLIC_OUT_LAYER_NAME = "padus_public_lands_clipped_to_usa"
+PUBLIC_OUT_STEM = "padus_public_lands_clipped_to_usa"
+ALL_OUT_LAYER_NAME = "padus_all_lands_clipped_to_usa"
+ALL_OUT_STEM = "padus_all_lands_clipped_to_usa"
+FAILURE_STEM = "padus_lands_clipped_to_usa"
 
 SIMPLIFY_TOLERANCE_METERS = 15.0
 VERTICES_PER_JOB = 10000
@@ -55,14 +58,14 @@ def _set_axis_order(srs: osr.SpatialReference) -> osr.SpatialReference:
     return srs
 
 
-def _feature_should_be_kept(feature: ogr.Feature) -> bool:
-    """Return whether a PAD-US feature passes the owner/manager rules.
+def _feature_is_public(feature: ogr.Feature) -> bool:
+    """Return whether a PAD-US feature passes the public-land rules.
 
     Args:
         feature: PAD-US source feature.
 
     Returns:
-        True if the feature should be considered for geometry processing.
+        True if the feature should be included in the public-land output.
     """
     mang_type = feature.GetField("Mang_Type")
     if mang_type in KEEP_MANG_TYPES:
@@ -154,10 +157,6 @@ def _build_jobs(layer: ogr.Layer, boundary) -> tuple[list[list[int]], Counter]:
     ):
         stats["scanned"] += 1
 
-        if not _feature_should_be_kept(feature):
-            stats["attribute_skipped"] += 1
-            continue
-
         geom = feature.GetGeometryRef()
         if geom is None or geom.IsEmpty():
             stats["empty_geometry_skipped"] += 1
@@ -178,6 +177,8 @@ def _build_jobs(layer: ogr.Layer, boundary) -> tuple[list[list[int]], Counter]:
         current_vertices += feature_vertices
         stats["candidate_features"] += 1
         stats["candidate_vertices"] += feature_vertices
+        if _feature_is_public(feature):
+            stats["public_candidate_features"] += 1
 
         if current_vertices >= VERTICES_PER_JOB:
             jobs.append(current_job)
@@ -223,19 +224,21 @@ def _init_worker(
 
 def _process_job(
     fids: list[int],
-) -> tuple[list[bytes], Counter, list[dict[str, str]]]:
+) -> tuple[list[bytes], list[bytes], Counter, list[dict[str, str]]]:
     """Process a chunk of PAD-US FIDs.
 
     Args:
         fids: Source feature IDs to process.
 
     Returns:
-        Output geometry WKB values, processing counters, and repair-failure rows.
+        All-land output WKB values, public-land output WKB values, processing
+        counters, and repair-failure rows.
     """
     layer = WORKER["layer"]
     transform = WORKER["transform"]
     boundary = WORKER["boundary"]
-    out_wkbs = []
+    all_out_wkbs = []
+    public_out_wkbs = []
     failures = []
     stats = Counter()
 
@@ -277,23 +280,29 @@ def _process_job(
                 stats["boundary_skipped"] += 1
                 continue
 
-            out_wkbs.append(wkb.dumps(clipped))
-            stats["kept"] += 1
+            clipped_wkb = wkb.dumps(clipped)
+            all_out_wkbs.append(clipped_wkb)
+            stats["all_kept"] += 1
+            if _feature_is_public(feature):
+                public_out_wkbs.append(clipped_wkb)
+                stats["public_kept"] += 1
         except Exception as error:
             stats["exceptions"] += 1
             failures.append({"source_fid": fid, "reason": str(error)})
 
-    return out_wkbs, stats, failures
+    return all_out_wkbs, public_out_wkbs, stats, failures
 
 
 def _create_output_layer(
     out_path: Path,
+    layer_name: str,
     process_srs: osr.SpatialReference,
 ) -> tuple[ogr.DataSource, ogr.Layer]:
     """Create the output GeoPackage layer.
 
     Args:
         out_path: Output GeoPackage path.
+        layer_name: Output layer name.
         process_srs: Output spatial reference.
 
     Returns:
@@ -305,15 +314,37 @@ def _create_output_layer(
         raise RuntimeError(f"Could not create output GeoPackage: {out_path}")
 
     out_layer = out_ds.CreateLayer(
-        OUT_LAYER_NAME,
+        layer_name,
         process_srs,
         ogr.wkbMultiPolygon,
         options=["SPATIAL_INDEX=YES"],
     )
     if out_layer is None:
-        raise RuntimeError(f"Could not create output layer: {OUT_LAYER_NAME}")
+        raise RuntimeError(f"Could not create output layer: {layer_name}")
+    out_layer.CreateField(ogr.FieldDefn("land_type", ogr.OFTString))
 
     return out_ds, out_layer
+
+
+def _write_geometry_feature(
+    out_layer: ogr.Layer,
+    out_defn: ogr.FeatureDefn,
+    geom_wkb: bytes,
+    land_type: str,
+) -> None:
+    """Write one output geometry with its land type.
+
+    Args:
+        out_layer: Destination OGR layer.
+        out_defn: Destination layer definition.
+        geom_wkb: Output geometry WKB.
+        land_type: Output land-type label.
+    """
+    feature = ogr.Feature(out_defn)
+    feature.SetField("land_type", land_type)
+    feature.SetGeometry(ogr.CreateGeometryFromWkb(geom_wkb))
+    out_layer.CreateFeature(feature)
+    feature = None
 
 
 def _write_failures(failure_path: Path, failures: list[dict[str, str]]) -> None:
@@ -355,8 +386,9 @@ def main() -> None:
     # which will make the load faster then we're fixing it in this script
     # anyway
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    out_path = OUT_DIR / f"{OUT_STEM}_{timestamp}.gpkg"
-    failure_path = OUT_DIR / f"{OUT_STEM}_{timestamp}_skipped.csv"
+    public_out_path = OUT_DIR / f"{PUBLIC_OUT_STEM}_{timestamp}.gpkg"
+    all_out_path = OUT_DIR / f"{ALL_OUT_STEM}_{timestamp}.gpkg"
+    failure_path = OUT_DIR / f"{FAILURE_STEM}_{timestamp}_skipped.csv"
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     step_bar = tqdm(total=5, desc="PAD-US preprocessing", unit="step")
@@ -395,18 +427,30 @@ def main() -> None:
         f"jobs={len(jobs):,}",
         flush=True,
     )
-    print(f"Output: {out_path}", flush=True)
+    print(f"Public output: {public_out_path}", flush=True)
+    print(f"All-lands output: {all_out_path}", flush=True)
     print(f"Failure log: {failure_path}", flush=True)
 
-    step_bar.set_description("Create output")
-    out_ds, out_layer = _create_output_layer(out_path, process_srs)
-    out_defn = out_layer.GetLayerDefn()
+    step_bar.set_description("Create outputs")
+    public_out_ds, public_out_layer = _create_output_layer(
+        public_out_path,
+        PUBLIC_OUT_LAYER_NAME,
+        process_srs,
+    )
+    all_out_ds, all_out_layer = _create_output_layer(
+        all_out_path,
+        ALL_OUT_LAYER_NAME,
+        process_srs,
+    )
+    public_out_defn = public_out_layer.GetLayerDefn()
+    all_out_defn = all_out_layer.GetLayerDefn()
     step_bar.update()
 
     step_bar.set_description("Process jobs")
     all_stats = Counter()
     failures = []
-    written = 0
+    public_written = 0
+    all_written = 0
 
     worker_args = (
         PADUS_GDB_PATH,
@@ -428,19 +472,26 @@ def main() -> None:
             desc="Process PAD-US jobs",
             unit="job",
         ):
-            out_wkbs, stats, job_failures = future.result()
+            all_out_wkbs, public_out_wkbs, stats, job_failures = future.result()
             all_stats.update(stats)
             failures.extend(job_failures)
 
-            for geom_wkb in out_wkbs:
-                feature = ogr.Feature(out_defn)
-                feature.SetGeometry(ogr.CreateGeometryFromWkb(geom_wkb))
-                out_layer.CreateFeature(feature)
-                feature = None
-                written += 1
+            for geom_wkb in all_out_wkbs:
+                _write_geometry_feature(all_out_layer, all_out_defn, geom_wkb, "all")
+                all_written += 1
+            for geom_wkb in public_out_wkbs:
+                _write_geometry_feature(
+                    public_out_layer,
+                    public_out_defn,
+                    geom_wkb,
+                    "public",
+                )
+                public_written += 1
 
-    out_ds.FlushCache()
-    out_ds = None
+    all_out_ds.FlushCache()
+    public_out_ds.FlushCache()
+    all_out_ds = None
+    public_out_ds = None
 
     if failures:
         _write_failures(failure_path, failures)
@@ -453,7 +504,11 @@ def main() -> None:
         + " ".join(f"{key}={value:,}" for key, value in all_stats.items()),
         flush=True,
     )
-    print(f"Wrote {written:,} output feature(s): {out_path}", flush=True)
+    print(f"Wrote {all_written:,} all-land feature(s): {all_out_path}", flush=True)
+    print(
+        f"Wrote {public_written:,} public-land feature(s): {public_out_path}",
+        flush=True,
+    )
     if failures:
         print(f"Wrote {len(failures):,} skipped feature log row(s): {failure_path}")
     else:
