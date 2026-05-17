@@ -30,9 +30,7 @@ USA_BOUNDARY_PATH = Path(
 )
 
 OUT_DIR = Path("output")
-PUBLIC_OUT_LAYER_NAME = "padus_public_lands_clipped_to_usa"
 PUBLIC_OUT_STEM = "padus_public_lands_clipped_to_usa"
-ALL_OUT_LAYER_NAME = "padus_all_lands_clipped_to_usa"
 ALL_OUT_STEM = "padus_all_lands_clipped_to_usa"
 FAILURE_STEM = "padus_lands_clipped_to_usa"
 
@@ -434,12 +432,12 @@ def main() -> None:
     step_bar.set_description("Create outputs")
     public_out_ds, public_out_layer = _create_output_layer(
         public_out_path,
-        PUBLIC_OUT_LAYER_NAME,
+        PUBLIC_OUT_STEM,
         process_srs,
     )
     all_out_ds, all_out_layer = _create_output_layer(
         all_out_path,
-        ALL_OUT_LAYER_NAME,
+        ALL_OUT_STEM,
         process_srs,
     )
     public_out_defn = public_out_layer.GetLayerDefn()
