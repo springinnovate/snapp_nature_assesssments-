@@ -17,6 +17,8 @@ from tqdm import tqdm
 
 gdal.UseExceptions()
 ogr.UseExceptions()
+gdal.PushErrorHandler("CPLQuietErrorHandler")
+gdal.SetConfigOption("OGR_ORGANIZE_POLYGONS", "SKIP")
 
 PADUS_GDB_PATH = Path(
     "./data/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb"
@@ -268,7 +270,6 @@ def _init_worker(
         process_srs_wkt: Processing CRS WKT.
         boundary_wkb: USA boundary WKB in the processing CRS.
     """
-    gdal.SetConfigOption("OGR_ORGANIZE_POLYGONS", "SKIP")
     source_srs = _set_axis_order(osr.SpatialReference(wkt=source_srs_wkt))
     process_srs = _set_axis_order(osr.SpatialReference(wkt=process_srs_wkt))
     transform = None
@@ -416,7 +417,6 @@ def main() -> None:
     # the GDB has tons of broken polygons, this says ignore it when loading
     # which will make the load faster then we're fixing it in this script
     # anyway
-    gdal.SetConfigOption("OGR_ORGANIZE_POLYGONS", "SKIP")
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     out_path = OUT_DIR / f"{OUT_STEM}_{timestamp}.gpkg"
     failure_path = OUT_DIR / f"{OUT_STEM}_{timestamp}_skipped.csv"
