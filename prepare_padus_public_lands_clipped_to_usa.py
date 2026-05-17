@@ -175,7 +175,9 @@ def _read_usa_boundary(process_srs: osr.SpatialReference):
         geom = feature.GetGeometryRef()
         if geom is None or geom.IsEmpty():
             continue
-        geom.Transform(transform)
+        if transform is not None:
+            geom = geom.Clone()
+            geom.Transform(transform)
         geoms.append(wkb.loads(bytes(geom.ExportToWkb())))
 
     boundary_vector = None
@@ -251,7 +253,7 @@ def _build_jobs(layer: ogr.Layer, boundary) -> tuple[list[list[int]], Counter]:
 
 
 def _init_worker(
-    padus_gdb_path: str,
+    gdb_path: str,
     layer_name: str,
     source_srs_wkt: str,
     process_srs_wkt: str,
@@ -260,8 +262,8 @@ def _init_worker(
     """Initialize per-process PAD-US reader state.
 
     Args:
-        padus_gdb_path: GDAL path to the PAD-US geodatabase.
-        layer_name: PAD-US layer name.
+        gdb_path: path to a geodatabase.
+        layer_name: layer to process in the gdb
         source_srs_wkt: Source layer CRS WKT.
         process_srs_wkt: Processing CRS WKT.
         boundary_wkb: USA boundary WKB in the processing CRS.
@@ -273,8 +275,8 @@ def _init_worker(
     if not source_srs.IsSame(process_srs):
         transform = osr.CoordinateTransformation(source_srs, process_srs)
 
-    padus_vector = gdal.OpenEx(padus_gdb_path)
-    padus_layer = padus_vector.GetLayer()
+    padus_vector = gdal.OpenEx(gdb_path)
+    padus_layer = padus_vector.GetLayer(layer_name)
     WORKER["ds"] = padus_vector
     WORKER["layer"] = padus_layer
     WORKER["transform"] = transform
@@ -312,7 +314,9 @@ def _process_job(
                 stats["empty_geometry"] += 1
                 continue
 
-            geom = geom.Transform(transform)
+            if transform is not None:
+                geom = geom.Clone()
+                geom.Transform(transform)
             shapely_geom = wkb.loads(bytes(geom.ExportToWkb()))
             if not shapely_geom.is_valid:
                 shapely_geom = _repair_polygonal_geometry(shapely_geom)
@@ -422,7 +426,7 @@ def main() -> None:
 
     step_bar.set_description("Open PAD-US")
     padus_vector = gdal.OpenEx(PADUS_GDB_PATH)
-    padus_layer = padus_vector.GetLayer()
+    padus_layer = padus_vector.GetLayer(PADUS_LAYER_NAME)
     source_srs = _set_axis_order(padus_layer.GetSpatialRef())
     process_srs = _choose_process_srs(source_srs)
     step_bar.update()
