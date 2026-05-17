@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from os import cpu_count
 from pathlib import Path
@@ -70,37 +70,36 @@ def _require_matching_crs(
 def _process_county(
     county_number: int,
     county_fields: dict,
-    county_geom,
-    candidate_indexes,
-    public_land_geometries,
+    county_geom_wkb: bytes,
+    candidate_wkbs: list[bytes],
 ) -> tuple[int, dict | None, Counter]:
     """Clip and flatten all candidate public-land pieces for one county.
 
     Args:
         county_number: Original county row index, used to preserve output order.
         county_fields: Non-geometry county attributes to copy to the output.
-        county_geom: County Shapely geometry.
-        candidate_indexes: Indexes of public-land geometries whose envelopes
+        county_geom_wkb: County geometry WKB.
+        candidate_wkbs: Public-land geometry WKB values whose envelopes
             intersect the county.
-        public_land_geometries: Array of public-land Shapely geometries.
 
     Returns:
         County row index, output feature fields plus geometry when the county
         has positive-area public-land overlap, and processing counters.
     """
     stats = Counter()
+    county_geom = shapely.from_wkb(county_geom_wkb)
     county_geom = repair_polygonal_geometry(county_geom)
     if county_geom is None:
         stats["invalid_county_geometry"] += 1
         return county_number, None, stats
 
-    if len(candidate_indexes) == 0:
+    if not candidate_wkbs:
         stats["no_candidate_features"] += 1
         return county_number, None, stats
 
     pieces = []
-    for candidate_index in candidate_indexes:
-        public_land_geom = public_land_geometries[candidate_index]
+    for candidate_wkb in candidate_wkbs:
+        public_land_geom = shapely.from_wkb(candidate_wkb)
         intersection = shapely.intersection(public_land_geom, county_geom)
         intersection = polygonal_multipolygon(intersection)
         if intersection is None:
@@ -119,7 +118,7 @@ def _process_county(
         return county_number, None, stats
 
     output_fields = dict(county_fields)
-    output_fields["geometry"] = flattened
+    output_fields["geometry"] = shapely.to_wkb(flattened)
     stats["kept_counties"] += 1
     stats["intersected_pieces"] += len(pieces)
     return county_number, output_fields, stats
@@ -156,7 +155,7 @@ def main() -> None:
     county_field_names = [
         field_name for field_name in counties.columns if field_name != county_geometry_column
     ]
-    public_land_geometries = padus_public_lands.geometry.to_numpy()
+    public_land_wkbs = padus_public_lands.geometry.to_wkb()
     public_land_index = padus_public_lands.sindex
     jobs = []
     for county_number, county_row in tqdm(
@@ -167,13 +166,13 @@ def main() -> None:
     ):
         county_geom = county_row[county_geometry_column]
         candidate_indexes = public_land_index.query(county_geom, predicate="intersects")
+        candidate_wkbs = public_land_wkbs.iloc[candidate_indexes].tolist()
         jobs.append(
             (
                 county_number,
                 county_row[county_field_names].to_dict(),
-                county_geom,
-                candidate_indexes,
-                public_land_geometries,
+                shapely.to_wkb(county_geom),
+                candidate_wkbs,
             )
         )
     step_bar.update()
@@ -188,7 +187,7 @@ def main() -> None:
     step_bar.set_description("Process county jobs")
     all_stats = Counter()
     output_rows = []
-    with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
+    with ProcessPoolExecutor(max_workers=N_WORKERS) as executor:
         futures = [executor.submit(_process_county, *job) for job in jobs]
         for future in tqdm(
             as_completed(futures),
@@ -204,8 +203,14 @@ def main() -> None:
 
     step_bar.set_description("Write output")
     output_rows.sort(key=lambda row: row[0])
+    output_feature_rows = []
+    for _, output_row in output_rows:
+        output_row = dict(output_row)
+        output_row["geometry"] = shapely.from_wkb(output_row["geometry"])
+        output_feature_rows.append(output_row)
+
     output_gdf = gpd.GeoDataFrame(
-        [row for _, row in output_rows],
+        output_feature_rows,
         columns=[*county_field_names, "geometry"],
         geometry="geometry",
         crs=padus_public_lands.crs,
