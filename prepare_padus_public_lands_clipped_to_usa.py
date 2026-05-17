@@ -12,8 +12,9 @@ from pathlib import Path
 from osgeo import gdal, ogr, osr
 import shapely
 from shapely import wkb
-from shapely.geometry import MultiPolygon
 from tqdm import tqdm
+
+from geometry_utils import repair_polygonal_geometry
 
 gdal.UseExceptions()
 ogr.UseExceptions()
@@ -91,70 +92,6 @@ def _ogr_vertex_count(geom: ogr.Geometry) -> int:
     return count
 
 
-def _polygonal_multipolygon(geom):
-    """Extract polygonal content as a multipolygon.
-
-    Args:
-        geom: Shapely geometry to normalize.
-
-    Returns:
-        A MultiPolygon, or None if no polygonal geometry remains.
-    """
-    if geom is None or geom.is_empty:
-        return None
-
-    if geom.geom_type == "Polygon":
-        parts = [geom]
-    elif geom.geom_type == "MultiPolygon":
-        parts = list(geom.geoms)
-    elif geom.geom_type == "GeometryCollection":
-        parts = []
-        for part in geom.geoms:
-            normalized = _polygonal_multipolygon(part)
-            if normalized is not None:
-                parts.extend(normalized.geoms)
-    else:
-        return None
-
-    parts = [part for part in parts if not part.is_empty and part.area > 0]
-    if not parts:
-        return None
-
-    return MultiPolygon(parts)
-
-
-def _repair_polygonal_geometry(geom):
-    """Repair and normalize clipped polygon geometry.
-
-    Args:
-        geom: Shapely geometry produced by clipping.
-
-    Returns:
-        A valid MultiPolygon, or None if repair cannot produce polygonal output.
-    """
-    geom = _polygonal_multipolygon(geom)
-    if geom is None:
-        return None
-
-    if geom.is_valid:
-        return geom
-
-    repaired = _polygonal_multipolygon(shapely.make_valid(geom))
-    if repaired is not None and repaired.is_valid:
-        return repaired
-
-    if repaired is not None:
-        repaired = _polygonal_multipolygon(repaired.buffer(0))
-        if repaired is not None and repaired.is_valid:
-            return repaired
-
-    repaired = _polygonal_multipolygon(geom.buffer(0))
-    if repaired is not None and repaired.is_valid:
-        return repaired
-
-    return None
-
-
 def _read_usa_boundary(process_srs: osr.SpatialReference):
     """Read, reproject, and merge the USA boundary.
 
@@ -185,7 +122,7 @@ def _read_usa_boundary(process_srs: osr.SpatialReference):
     boundary_vector = None
     boundary_layer = None
     boundary = shapely.union_all(geoms)
-    boundary = _repair_polygonal_geometry(boundary)
+    boundary = repair_polygonal_geometry(boundary)
     if boundary is None:
         raise RuntimeError("USA boundary did not contain valid polygon geometry.")
     return boundary
@@ -320,7 +257,7 @@ def _process_job(
                 geom.Transform(transform)
             shapely_geom = wkb.loads(bytes(geom.ExportToWkb()))
             if not shapely_geom.is_valid:
-                shapely_geom = _repair_polygonal_geometry(shapely_geom)
+                shapely_geom = repair_polygonal_geometry(shapely_geom)
                 if shapely_geom is None:
                     stats["invalid_source_geometry"] += 1
                     failures.append(
@@ -334,7 +271,7 @@ def _process_job(
                 preserve_topology=True,
             )
             clipped = shapely.intersection(simplified, boundary)
-            clipped = _repair_polygonal_geometry(clipped)
+            clipped = repair_polygonal_geometry(clipped)
 
             if clipped is None or clipped.is_empty or clipped.area <= 0:
                 stats["boundary_skipped"] += 1
