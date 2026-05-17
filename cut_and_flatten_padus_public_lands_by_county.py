@@ -118,12 +118,14 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     out_path = OUT_DIR / f"{OUT_STEM}_{timestamp}.gpkg"
 
-    step_bar = tqdm(total=5, desc="Cut PAD-US by county", unit="step")
+    step_bar = tqdm(total=6, desc="Cut PAD-US by county", unit="step")
 
     step_bar.set_description("Read PAD-US public lands")
     padus_public_lands = gpd.read_file(args.padus_public_lands_path)
     if padus_public_lands.empty:
-        raise ValueError(f"PAD-US public lands input is empty: {args.padus_public_lands_path}")
+        raise ValueError(
+            f"PAD-US public lands input is empty: {args.padus_public_lands_path}"
+        )
     step_bar.update()
 
     step_bar.set_description("Read counties")
@@ -144,7 +146,12 @@ def main() -> None:
     public_land_geometries = padus_public_lands.geometry.to_numpy()
     public_land_index = padus_public_lands.sindex
     jobs = []
-    for county_number, county_row in counties.iterrows():
+    for county_number, county_row in tqdm(
+        counties.iterrows(),
+        total=len(counties),
+        desc="Build county jobs",
+        unit="county",
+    ):
         county_geom = county_row[county_geometry_column]
         candidate_indexes = public_land_index.query(county_geom, predicate="intersects")
         jobs.append(
@@ -165,7 +172,7 @@ def main() -> None:
     )
     print(f"Output: {out_path}", flush=True)
 
-    step_bar.set_description("Process counties")
+    step_bar.set_description("Process county jobs")
     all_stats = Counter()
     output_rows = []
     with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
@@ -180,7 +187,9 @@ def main() -> None:
             all_stats.update(stats)
             if output_row is not None:
                 output_rows.append((county_number, output_row))
+    step_bar.update()
 
+    step_bar.set_description("Write output")
     output_rows.sort(key=lambda row: row[0])
     output_gdf = gpd.GeoDataFrame(
         [row for _, row in output_rows],
