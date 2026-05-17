@@ -42,29 +42,29 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _require_matching_crs(
+def _prepare_counties_crs(
     padus_public_lands: gpd.GeoDataFrame,
     counties: gpd.GeoDataFrame,
-) -> None:
-    """Require the PAD-US and county layers to use the same CRS.
+) -> gpd.GeoDataFrame:
+    """Transform counties to the PAD-US CRS when needed.
 
     Args:
         padus_public_lands: Cleaned PAD-US public lands features.
         counties: County boundary features.
 
+    Returns:
+        County boundary features in the PAD-US CRS.
+
     Raises:
-        ValueError: If either layer lacks a CRS or the CRS values differ.
+        ValueError: If either layer lacks a CRS.
     """
     if padus_public_lands.crs is None:
         raise ValueError("PAD-US public lands input does not define a CRS.")
     if counties.crs is None:
         raise ValueError(f"County vector does not define a CRS: {COUNTY_VECTOR_PATH}")
     if padus_public_lands.crs != counties.crs:
-        raise ValueError(
-            "PAD-US public lands and county CRS values differ. "
-            "Reproject one input before running this script. "
-            f"PAD-US CRS={padus_public_lands.crs}; county CRS={counties.crs}"
-        )
+        return counties.to_crs(padus_public_lands.crs)
+    return counties
 
 
 def _process_county(
@@ -146,8 +146,8 @@ def main() -> None:
         raise ValueError(f"County vector is empty: {COUNTY_VECTOR_PATH}")
     step_bar.update()
 
-    step_bar.set_description("Validate CRS")
-    _require_matching_crs(padus_public_lands, counties)
+    step_bar.set_description("Prepare county CRS")
+    counties = _prepare_counties_crs(padus_public_lands, counties)
     step_bar.update()
 
     step_bar.set_description("Build county jobs")
