@@ -1,4 +1,4 @@
-"""Cut cleaned PAD-US public lands by county and flatten each county."""
+"""Cut polygon features by county and flatten each county."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from os import cpu_count
 from pathlib import Path
+import re
 
 import geopandas as gpd
 import shapely
@@ -17,9 +18,8 @@ from geometry_utils import polygonal_multipolygon, repair_polygonal_geometry
 
 COUNTY_VECTOR_PATH = Path("data/tl_2024_us_county_50_states.gpkg")
 OUT_DIR = Path("output")
-OUT_LAYER_NAME = "padus_public_lands_clipped_by_county"
-OUT_STEM = "padus_public_lands_clipped_by_county"
 N_WORKERS = cpu_count() or 1
+TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -30,61 +30,79 @@ def _parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description=(
-            "Cut a cleaned PAD-US public lands layer by county, union each "
-            "county's public lands into one feature, and copy county fields."
+            "Cut a polygon layer by county, union each county's pieces into "
+            "one feature, and copy county fields."
         )
     )
     parser.add_argument(
-        "padus_public_lands_path",
+        "input_vector_path",
         type=Path,
-        help="Cleaned PAD-US public lands vector to cut by county.",
+        help="Polygon vector to cut by county.",
     )
     return parser.parse_args()
 
 
 def _prepare_counties_crs(
-    padus_public_lands: gpd.GeoDataFrame,
+    input_features: gpd.GeoDataFrame,
     counties: gpd.GeoDataFrame,
 ) -> gpd.GeoDataFrame:
-    """Transform counties to the PAD-US CRS when needed.
+    """Transform counties to the input CRS when needed.
 
     Args:
-        padus_public_lands: Cleaned PAD-US public lands features.
+        input_features: Input polygon features.
         counties: County boundary features.
 
     Returns:
-        County boundary features in the PAD-US CRS.
+        County boundary features in the input CRS.
 
     Raises:
         ValueError: If either layer lacks a CRS.
     """
-    if padus_public_lands.crs is None:
-        raise ValueError("PAD-US public lands input does not define a CRS.")
+    if input_features.crs is None:
+        raise ValueError("Input vector does not define a CRS.")
     if counties.crs is None:
         raise ValueError(f"County vector does not define a CRS: {COUNTY_VECTOR_PATH}")
-    if padus_public_lands.crs != counties.crs:
-        return counties.to_crs(padus_public_lands.crs)
+    if input_features.crs != counties.crs:
+        return counties.to_crs(input_features.crs)
     return counties
+
+
+def _derive_output_names(input_path: Path) -> tuple[str, Path]:
+    """Derive the timestamp-free output layer name and output path.
+
+    Args:
+        input_path: Input vector path.
+
+    Returns:
+        Output layer name and timestamped output path.
+    """
+    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    input_stem = TIMESTAMP_SUFFIX.sub("", input_path.stem)
+    if "_clipped_to_usa" in input_stem:
+        out_stem = input_stem.replace("_clipped_to_usa", "_clipped_by_county")
+    else:
+        out_stem = f"{input_stem}_clipped_by_county"
+    return out_stem, OUT_DIR / f"{out_stem}_{timestamp}.gpkg"
 
 
 def _process_county(
     county_number: int,
     county_fields: dict,
     county_geom_wkb: bytes,
-    candidate_wkbs: list[bytes],
+    candidate_inputs: list[tuple[bytes, dict]],
 ) -> tuple[int, dict | None, Counter]:
-    """Clip and flatten all candidate public-land pieces for one county.
+    """Clip and flatten all candidate polygon pieces for one county.
 
     Args:
         county_number: Original county row index, used to preserve output order.
         county_fields: Non-geometry county attributes to copy to the output.
         county_geom_wkb: County geometry WKB.
-        candidate_wkbs: Public-land geometry WKB values whose envelopes
-            intersect the county.
+        candidate_inputs: Input geometry WKB values and non-geometry fields
+            whose envelopes intersect the county.
 
     Returns:
         County row index, output feature fields plus geometry when the county
-        has positive-area public-land overlap, and processing counters.
+        has positive-area input overlap, and processing counters.
     """
     stats = Counter()
     county_geom = shapely.from_wkb(county_geom_wkb)
@@ -93,18 +111,21 @@ def _process_county(
         stats["invalid_county_geometry"] += 1
         return county_number, None, stats
 
-    if not candidate_wkbs:
+    if not candidate_inputs:
         stats["no_candidate_features"] += 1
         return county_number, None, stats
 
     pieces = []
-    for candidate_wkb in candidate_wkbs:
-        public_land_geom = shapely.from_wkb(candidate_wkb)
-        intersection = shapely.intersection(public_land_geom, county_geom)
+    input_fields = None
+    for candidate_wkb, candidate_fields in candidate_inputs:
+        input_geom = shapely.from_wkb(candidate_wkb)
+        intersection = shapely.intersection(input_geom, county_geom)
         intersection = polygonal_multipolygon(intersection)
         if intersection is None:
             stats["zero_area_intersections"] += 1
             continue
+        if input_fields is None:
+            input_fields = dict(candidate_fields)
         pieces.extend(intersection.geoms)
 
     if not pieces:
@@ -118,6 +139,7 @@ def _process_county(
         return county_number, None, stats
 
     output_fields = dict(county_fields)
+    output_fields.update(input_fields)
     output_fields["geometry"] = shapely.to_wkb(flattened)
     stats["kept_counties"] += 1
     stats["intersected_pieces"] += len(pieces)
@@ -127,17 +149,14 @@ def _process_county(
 def main() -> None:
     """Run the county clipping and flattening workflow."""
     args = _parse_args()
-    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    out_path = OUT_DIR / f"{OUT_STEM}_{timestamp}.gpkg"
+    out_layer_name, out_path = _derive_output_names(args.input_vector_path)
 
-    step_bar = tqdm(total=6, desc="Cut PAD-US by county", unit="step")
+    step_bar = tqdm(total=6, desc="Cut input by county", unit="step")
 
-    step_bar.set_description("Read PAD-US public lands")
-    padus_public_lands = gpd.read_file(args.padus_public_lands_path)
-    if padus_public_lands.empty:
-        raise ValueError(
-            f"PAD-US public lands input is empty: {args.padus_public_lands_path}"
-        )
+    step_bar.set_description("Read input features")
+    input_features = gpd.read_file(args.input_vector_path)
+    if input_features.empty:
+        raise ValueError(f"Input vector is empty: {args.input_vector_path}")
     step_bar.update()
 
     step_bar.set_description("Read counties")
@@ -147,7 +166,7 @@ def main() -> None:
     step_bar.update()
 
     step_bar.set_description("Prepare county CRS")
-    counties = _prepare_counties_crs(padus_public_lands, counties)
+    counties = _prepare_counties_crs(input_features, counties)
     step_bar.update()
 
     step_bar.set_description("Build county jobs")
@@ -155,8 +174,15 @@ def main() -> None:
     county_field_names = [
         field_name for field_name in counties.columns if field_name != county_geometry_column
     ]
-    public_land_wkbs = padus_public_lands.geometry.to_wkb()
-    public_land_index = padus_public_lands.sindex
+    input_geometry_column = input_features.geometry.name
+    input_field_names = [
+        field_name
+        for field_name in input_features.columns
+        if field_name != input_geometry_column
+    ]
+    input_wkbs = input_features.geometry.to_wkb()
+    input_field_rows = input_features[input_field_names].to_dict(orient="records")
+    input_index = input_features.sindex
     jobs = []
     for county_number, county_row in tqdm(
         counties.iterrows(),
@@ -165,21 +191,24 @@ def main() -> None:
         unit="county",
     ):
         county_geom = county_row[county_geometry_column]
-        candidate_indexes = public_land_index.query(county_geom, predicate="intersects")
-        candidate_wkbs = public_land_wkbs.iloc[candidate_indexes].tolist()
+        candidate_indexes = input_index.query(county_geom, predicate="intersects")
+        candidate_inputs = [
+            (input_wkbs.iloc[candidate_index], input_field_rows[candidate_index])
+            for candidate_index in candidate_indexes
+        ]
         jobs.append(
             (
                 county_number,
                 county_row[county_field_names].to_dict(),
                 shapely.to_wkb(county_geom),
-                candidate_wkbs,
+                candidate_inputs,
             )
         )
     step_bar.update()
 
     print(
         f"Workers={N_WORKERS:,} counties={len(jobs):,} "
-        f"public_land_features={len(padus_public_lands):,}",
+        f"input_features={len(input_features):,}",
         flush=True,
     )
     print(f"Output: {out_path}", flush=True)
@@ -211,13 +240,13 @@ def main() -> None:
 
     output_gdf = gpd.GeoDataFrame(
         output_feature_rows,
-        columns=[*county_field_names, "geometry"],
+        columns=[*county_field_names, *input_field_names, "geometry"],
         geometry="geometry",
-        crs=padus_public_lands.crs,
+        crs=input_features.crs,
     )
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_gdf.to_file(out_path, layer=OUT_LAYER_NAME, driver="GPKG", index=False)
+    output_gdf.to_file(out_path, layer=out_layer_name, driver="GPKG", index=False)
     step_bar.update()
     step_bar.close()
 
