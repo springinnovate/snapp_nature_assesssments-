@@ -11,7 +11,6 @@ from pathlib import Path
 
 import geopandas as gpd
 import shapely
-from shapely.errors import GEOSException
 from tqdm import tqdm
 
 from geometry_utils import polygonal_multipolygon, repair_polygonal_geometry
@@ -68,32 +67,6 @@ def _require_matching_crs(
         )
 
 
-def _intersect_to_polygonal_area(public_land_geom, county_geom):
-    """Intersect one public-land geometry with one county geometry.
-
-    Args:
-        public_land_geom: Public-land Shapely geometry to clip.
-        county_geom: County Shapely geometry used as the clip boundary.
-
-    Returns:
-        Polygonal intersection as a MultiPolygon, or None if the intersection
-        is empty, non-polygonal, or has zero area.
-    """
-    try:
-        intersection = shapely.intersection(public_land_geom, county_geom)
-    except GEOSException:
-        public_land_geom = repair_polygonal_geometry(public_land_geom)
-        county_geom = repair_polygonal_geometry(county_geom)
-        if public_land_geom is None or county_geom is None:
-            return None
-        intersection = shapely.intersection(public_land_geom, county_geom)
-
-    intersection = polygonal_multipolygon(intersection)
-    if intersection is None or intersection.area <= 0:
-        return None
-    return intersection
-
-
 def _process_county(
     county_number: int,
     county_fields: dict,
@@ -128,7 +101,8 @@ def _process_county(
     pieces = []
     for candidate_index in candidate_indexes:
         public_land_geom = public_land_geometries[candidate_index]
-        intersection = _intersect_to_polygonal_area(public_land_geom, county_geom)
+        intersection = shapely.intersection(public_land_geom, county_geom)
+        intersection = polygonal_multipolygon(intersection)
         if intersection is None:
             stats["zero_area_intersections"] += 1
             continue
