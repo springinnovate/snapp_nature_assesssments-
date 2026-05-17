@@ -6,3 +6,4 @@ data/
 intermediate/
 __pycache__
 run_configs/
+output/
