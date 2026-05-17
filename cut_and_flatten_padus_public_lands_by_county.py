@@ -24,6 +24,11 @@ N_WORKERS = cpu_count() or 1
 
 
 def _parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns:
+        Parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Cut a cleaned PAD-US public lands layer by county, union each "
@@ -42,6 +47,15 @@ def _require_matching_crs(
     padus_public_lands: gpd.GeoDataFrame,
     counties: gpd.GeoDataFrame,
 ) -> None:
+    """Require the PAD-US and county layers to use the same CRS.
+
+    Args:
+        padus_public_lands: Cleaned PAD-US public lands features.
+        counties: County boundary features.
+
+    Raises:
+        ValueError: If either layer lacks a CRS or the CRS values differ.
+    """
     if padus_public_lands.crs is None:
         raise ValueError("PAD-US public lands input does not define a CRS.")
     if counties.crs is None:
@@ -55,6 +69,16 @@ def _require_matching_crs(
 
 
 def _intersect_to_polygonal_area(public_land_geom, county_geom):
+    """Intersect one public-land geometry with one county geometry.
+
+    Args:
+        public_land_geom: Public-land Shapely geometry to clip.
+        county_geom: County Shapely geometry used as the clip boundary.
+
+    Returns:
+        Polygonal intersection as a MultiPolygon, or None if the intersection
+        is empty, non-polygonal, or has zero area.
+    """
     try:
         intersection = shapely.intersection(public_land_geom, county_geom)
     except GEOSException:
@@ -77,6 +101,20 @@ def _process_county(
     candidate_indexes,
     public_land_geometries,
 ) -> tuple[int, dict | None, Counter]:
+    """Clip and flatten all candidate public-land pieces for one county.
+
+    Args:
+        county_number: Original county row index, used to preserve output order.
+        county_fields: Non-geometry county attributes to copy to the output.
+        county_geom: County Shapely geometry.
+        candidate_indexes: Indexes of public-land geometries whose envelopes
+            intersect the county.
+        public_land_geometries: Array of public-land Shapely geometries.
+
+    Returns:
+        County row index, output feature fields plus geometry when the county
+        has positive-area public-land overlap, and processing counters.
+    """
     stats = Counter()
     county_geom = repair_polygonal_geometry(county_geom)
     if county_geom is None:
@@ -114,6 +152,7 @@ def _process_county(
 
 
 def main() -> None:
+    """Run the county clipping and flattening workflow."""
     args = _parse_args()
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     out_path = OUT_DIR / f"{OUT_STEM}_{timestamp}.gpkg"
