@@ -1,9 +1,4 @@
-data/
-*.tif
-*.gpkg
-*.zip
-*.csv
-intermediate/
 __pycache__
+data/
 run_configs/
 output/
