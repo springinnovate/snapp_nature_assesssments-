@@ -67,33 +67,6 @@ def _prepare_counties_crs(
     return counties
 
 
-def _read_input_land_type(input_features: gpd.GeoDataFrame) -> str:
-    """Read the single land type carried by the input features.
-
-    Args:
-        input_features: Input polygon features.
-
-    Returns:
-        The land type value to write to county output features.
-
-    Raises:
-        ValueError: If `land_type` is missing, empty, or mixed.
-    """
-    if "land_type" not in input_features.columns:
-        raise ValueError("Input vector must contain a land_type field.")
-
-    land_types = {
-        land_type
-        for land_type in input_features["land_type"].dropna().unique().tolist()
-        if land_type != ""
-    }
-    if len(land_types) != 1:
-        raise ValueError(
-            "Input vector must contain exactly one non-empty land_type value."
-        )
-    return next(iter(land_types))
-
-
 def _derive_output_names(input_path: Path) -> tuple[str, Path]:
     """Derive the timestamp-free output layer name and output path.
 
@@ -115,19 +88,17 @@ def _derive_output_names(input_path: Path) -> tuple[str, Path]:
 def _process_county(
     county_number: int,
     county_fields: dict,
-    land_type: str,
     county_geom_wkb: bytes,
-    candidate_wkbs: list[bytes],
+    candidate_inputs: list[tuple[bytes, dict]],
 ) -> tuple[int, dict | None, Counter]:
     """Clip and flatten all candidate polygon pieces for one county.
 
     Args:
         county_number: Original county row index, used to preserve output order.
         county_fields: Non-geometry county attributes to copy to the output.
-        land_type: Input land type value to copy to the output.
         county_geom_wkb: County geometry WKB.
-        candidate_wkbs: Input geometry WKB values whose envelopes intersect
-            the county.
+        candidate_inputs: Input geometry WKB values and non-geometry fields
+            whose envelopes intersect the county.
 
     Returns:
         County row index, output feature fields plus geometry when the county
@@ -140,18 +111,21 @@ def _process_county(
         stats["invalid_county_geometry"] += 1
         return county_number, None, stats
 
-    if not candidate_wkbs:
+    if not candidate_inputs:
         stats["no_candidate_features"] += 1
         return county_number, None, stats
 
     pieces = []
-    for candidate_wkb in candidate_wkbs:
+    input_fields = None
+    for candidate_wkb, candidate_fields in candidate_inputs:
         input_geom = shapely.from_wkb(candidate_wkb)
         intersection = shapely.intersection(input_geom, county_geom)
         intersection = polygonal_multipolygon(intersection)
         if intersection is None:
             stats["zero_area_intersections"] += 1
             continue
+        if input_fields is None:
+            input_fields = dict(candidate_fields)
         pieces.extend(intersection.geoms)
 
     if not pieces:
@@ -165,7 +139,7 @@ def _process_county(
         return county_number, None, stats
 
     output_fields = dict(county_fields)
-    output_fields["land_type"] = land_type
+    output_fields.update(input_fields)
     output_fields["geometry"] = shapely.to_wkb(flattened)
     stats["kept_counties"] += 1
     stats["intersected_pieces"] += len(pieces)
@@ -183,7 +157,6 @@ def main() -> None:
     input_features = gpd.read_file(args.input_vector_path)
     if input_features.empty:
         raise ValueError(f"Input vector is empty: {args.input_vector_path}")
-    land_type = _read_input_land_type(input_features)
     step_bar.update()
 
     step_bar.set_description("Read counties")
@@ -201,7 +174,14 @@ def main() -> None:
     county_field_names = [
         field_name for field_name in counties.columns if field_name != county_geometry_column
     ]
+    input_geometry_column = input_features.geometry.name
+    input_field_names = [
+        field_name
+        for field_name in input_features.columns
+        if field_name != input_geometry_column
+    ]
     input_wkbs = input_features.geometry.to_wkb()
+    input_field_rows = input_features[input_field_names].to_dict(orient="records")
     input_index = input_features.sindex
     jobs = []
     for county_number, county_row in tqdm(
@@ -212,14 +192,16 @@ def main() -> None:
     ):
         county_geom = county_row[county_geometry_column]
         candidate_indexes = input_index.query(county_geom, predicate="intersects")
-        candidate_wkbs = input_wkbs.iloc[candidate_indexes].tolist()
+        candidate_inputs = [
+            (input_wkbs.iloc[candidate_index], input_field_rows[candidate_index])
+            for candidate_index in candidate_indexes
+        ]
         jobs.append(
             (
                 county_number,
                 county_row[county_field_names].to_dict(),
-                land_type,
                 shapely.to_wkb(county_geom),
-                candidate_wkbs,
+                candidate_inputs,
             )
         )
     step_bar.update()
@@ -258,7 +240,7 @@ def main() -> None:
 
     output_gdf = gpd.GeoDataFrame(
         output_feature_rows,
-        columns=[*county_field_names, "land_type", "geometry"],
+        columns=[*county_field_names, *input_field_names, "geometry"],
         geometry="geometry",
         crs=input_features.crs,
     )
