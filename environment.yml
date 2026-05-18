@@ -8,6 +8,7 @@ dependencies:
   - proj
   - pyproj
   - gdal
+  - rasterio
   - fiona
   - geopandas
   - shapely>=2
