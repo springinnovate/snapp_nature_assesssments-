@@ -1,4 +1,17 @@
-"""Prepare cleaned PAD-US land layers clipped to a USA boundary."""
+"""Prepare all-land and public-land PAD-US layers clipped to the USA boundary.
+
+This script creates two cleaned PAD-US products from the same source feature
+scan:
+
+- all lands: every PAD-US feature with positive-area overlap after clipping
+- public lands: the subset of clipped PAD-US features that passes the
+  `Mang_Type` / `Own_Type` public-land rule below
+
+The public-land rule is intentionally kept in this file as plain constants and
+branching logic. If the project definition of public land changes, start with
+`KEEP_MANG_TYPES`, `KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER`, and
+`_feature_is_public`.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +50,18 @@ FAILURE_STEM = "padus_lands_clipped_to_usa"
 SIMPLIFY_TOLERANCE_METERS = 15.0
 VERTICES_PER_JOB = 10000
 N_WORKERS = cpu_count()
+
+# PAD-US stores coded values in the geodatabase even when GIS software displays
+# longer descriptions. Edit these stored codes when the public-land rule changes.
+#
+# Manager rule:
+# - Keep Federal, State, Local Government, Regional Agency Special District,
+#   Joint, and Territorial managed lands in the public-land output.
 KEEP_MANG_TYPES = {"FED", "STAT", "LOC", "DIST", "JNT", "TERR"}
+
+# Owner fallback rule:
+# - If Manager Type is Unknown (`UNK`), keep features only when Owner Type is
+#   Local Government, Regional Agency Special District, Federal, Joint, or State.
 KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER = {"LOC", "DIST", "FED", "JNT", "STAT"}
 
 WORKER = {}
@@ -66,9 +90,14 @@ def _feature_is_public(feature: ogr.Feature) -> bool:
         True if the feature should be included in the public-land output.
     """
     mang_type = feature.GetField("Mang_Type")
+
+    # First preference: use manager type. These codes are the clearest signal
+    # that a feature belongs in the public-land output.
     if mang_type in KEEP_MANG_TYPES:
         return True
 
+    # Fallback: when the manager is unknown, use owner type as a secondary
+    # public-land signal. Unknown manager plus any other owner code is excluded.
     return (
         mang_type == "UNK"
         and feature.GetField("Own_Type") in KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER
