@@ -121,7 +121,9 @@ def _build_output_profile(source_profile: dict) -> dict:
         count=1,
         dtype="uint8",
         nodata=OUTPUT_NODATA,
-        compress="deflate",
+        compress="zstd",
+        predictor=1,
+        zstd_level=9,
         BIGTIFF="IF_SAFER",
     )
     return output_profile
