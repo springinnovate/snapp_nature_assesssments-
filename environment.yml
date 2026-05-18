@@ -10,6 +10,7 @@ dependencies:
   - gdal
   - rasterio
   - fiona
+  - pandas
   - geopandas
   - shapely>=2
   - rtree

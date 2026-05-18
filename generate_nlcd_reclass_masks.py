@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +13,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import pandas as pd
 import rasterio
 from tqdm import tqdm
 
@@ -74,39 +74,18 @@ def _read_reclass_table(table_path: Path) -> dict[int, int]:
         ValueError: If the table is empty, missing required columns, contains
             duplicate source IDs, or maps to values other than 0 and 1.
     """
-    with table_path.open(newline="", encoding="utf-8-sig") as table_file:
-        reader = csv.DictReader(table_file)
-        if reader.fieldnames is None:
-            raise ValueError(f"Reclass table is empty: {table_path}")
-        required_fields = {"id", "reclass"}
-        missing_fields = required_fields - set(reader.fieldnames)
-        if missing_fields:
-            missing = ", ".join(sorted(missing_fields))
-            raise ValueError(f"Reclass table {table_path} is missing: {missing}")
-
-        mapping = {}
-        for row_number, row in enumerate(reader, start=2):
-            try:
-                source_value = int(row["id"])
-                mask_value = int(row["reclass"])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"Table {table_path} has a non-integer value on row {row_number}."
-                ) from exc
-            if mask_value not in {0, 1}:
-                raise ValueError(
-                    f"Table {table_path} row {row_number} maps to {mask_value}; "
-                    "only 0 and 1 are valid mask values."
-                )
-            if source_value in mapping:
-                raise ValueError(
-                    f"Table {table_path} repeats NLCD class {source_value}."
-                )
-            mapping[source_value] = mask_value
-
-    if not mapping:
+    table = pd.read_csv(table_path, usecols=["id", "reclass"])
+    if table.empty:
         raise ValueError(f"Reclass table has no rows: {table_path}")
-    return mapping
+    if table["id"].duplicated().any():
+        duplicated_ids = table.loc[table["id"].duplicated(), "id"].tolist()
+        raise ValueError(f"Table {table_path} repeats NLCD classes: {duplicated_ids}")
+    invalid_values = set(table["reclass"]) - {0, 1}
+    if invalid_values:
+        raise ValueError(
+            f"Table {table_path} maps to invalid mask values: {sorted(invalid_values)}"
+        )
+    return dict(zip(table["id"].astype(int), table["reclass"].astype(int)))
 
 
 def _chunked(iterable, chunk_size: int):
