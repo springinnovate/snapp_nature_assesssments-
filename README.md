@@ -10,7 +10,7 @@ may display longer descriptions from coded-value domains. This matters for
 scripts that read the geodatabase directly: filtering should use the stored
 codes, not the displayed descriptions.
 
-The preprocessing script, `prepare_padus_lands_clipped_to_usa.py`, uses:
+The preprocessing script, `prepare_padus_all_and_public_lands.py`, uses:
 
 - Source geodatabase: `data/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb`
 - Source layer: `PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement`
