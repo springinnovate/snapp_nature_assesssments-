@@ -97,13 +97,7 @@ def _chunked(iterable, chunk_size: int):
 
     Yields:
         Lists containing up to ``chunk_size`` items.
-
-    Raises:
-        ValueError: If ``chunk_size`` is less than one.
     """
-    if chunk_size < 1:
-        raise ValueError("Chunk size must be at least 1.")
-
     iterator = iter(iterable)
     while True:
         chunk = list(islice(iterator, chunk_size))
