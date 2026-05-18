@@ -24,6 +24,9 @@ DEFAULT_RECLASS_TABLE_DIR = Path("data/workflow_assets/landcover_reclass")
 DEFAULT_OUTPUT_DIR = Path("data/analysis_inputs/masks")
 OUTPUT_NODATA = 255
 WINDOWS_PER_PROGRESS_UPDATE = 100
+# GDAL's default block cache can be a percentage of system RAM. Since this
+# script runs one process per mask, keep each worker's cache deliberately small.
+GDAL_CACHEMAX_MB_PER_WORKER = 256
 
 
 @dataclass(frozen=True)
@@ -129,6 +132,21 @@ def _build_output_profile(source_profile: dict) -> dict:
     return output_profile
 
 
+def _block_window_count(source: rasterio.DatasetReader) -> int:
+    """Calculate the number of block windows in a raster band.
+
+    Args:
+        source: Open single-band source raster.
+
+    Returns:
+        Number of block windows for the first raster band.
+    """
+    block_height, block_width = source.block_shapes[0]
+    return int(
+        np.ceil(source.height / block_height) * np.ceil(source.width / block_width)
+    )
+
+
 def _reclassify_array(source_array: np.ma.MaskedArray, mapping: dict[int, int]) -> np.ndarray:
     """Convert a source NLCD block to a 0/1/nodata byte mask block.
 
@@ -176,31 +194,32 @@ def _generate_mask(job: MaskJob) -> Path:
     if job.output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing output: {job.output_path}")
 
-    with rasterio.open(DEFAULT_NLCD_RASTER_PATH) as source:
-        if source.count != 1:
-            raise ValueError(
-                f"Expected a single-band NLCD raster: {DEFAULT_NLCD_RASTER_PATH}"
-            )
+    with rasterio.Env(GDAL_CACHEMAX=GDAL_CACHEMAX_MB_PER_WORKER):
+        with rasterio.open(DEFAULT_NLCD_RASTER_PATH) as source:
+            if source.count != 1:
+                raise ValueError(
+                    f"Expected a single-band NLCD raster: {DEFAULT_NLCD_RASTER_PATH}"
+                )
 
-        output_profile = _build_output_profile(source.profile)
-        block_windows = list(source.block_windows(1))
-        with rasterio.open(job.output_path, "w", **output_profile) as destination:
-            with tqdm(
-                total=len(block_windows),
-                desc=job.table_path.stem,
-                unit="block",
-                position=job.progress_position,
-                leave=True,
-                dynamic_ncols=True,
-            ) as progress_bar:
-                for window_batch in _chunked(
-                    block_windows, WINDOWS_PER_PROGRESS_UPDATE
-                ):
-                    for _, window in window_batch:
-                        source_array = source.read(1, window=window, masked=True)
-                        output_array = _reclassify_array(source_array, mapping)
-                        destination.write(output_array, 1, window=window)
-                    progress_bar.update(len(window_batch))
+            output_profile = _build_output_profile(source.profile)
+            block_window_count = _block_window_count(source)
+            with rasterio.open(job.output_path, "w", **output_profile) as destination:
+                with tqdm(
+                    total=block_window_count,
+                    desc=job.table_path.stem,
+                    unit="block",
+                    position=job.progress_position,
+                    leave=True,
+                    dynamic_ncols=True,
+                ) as progress_bar:
+                    for window_batch in _chunked(
+                        source.block_windows(1), WINDOWS_PER_PROGRESS_UPDATE
+                    ):
+                        for _, window in window_batch:
+                            source_array = source.read(1, window=window, masked=True)
+                            output_array = _reclassify_array(source_array, mapping)
+                            destination.write(output_array, 1, window=window)
+                        progress_bar.update(len(window_batch))
 
     return job.output_path
 
@@ -275,6 +294,7 @@ def generate_nlcd_reclass_masks(
     tqdm.write(f"Reclass tables: {DEFAULT_RECLASS_TABLE_DIR}")
     tqdm.write(f"Output root: {DEFAULT_OUTPUT_DIR}")
     tqdm.write(f"Workers: {worker_count:,}")
+    tqdm.write(f"GDAL cache max per worker: {GDAL_CACHEMAX_MB_PER_WORKER:,} MB")
 
     lock = RLock()
     outputs = []
