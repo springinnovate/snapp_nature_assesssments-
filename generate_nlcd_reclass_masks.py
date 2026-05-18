@@ -271,10 +271,10 @@ def generate_nlcd_reclass_masks(
     jobs = _discover_jobs(timestamp)
     worker_count = min(workers, len(jobs))
 
-    print(f"NLCD raster: {DEFAULT_NLCD_RASTER_PATH}", flush=True)
-    print(f"Reclass tables: {DEFAULT_RECLASS_TABLE_DIR}", flush=True)
-    print(f"Output root: {DEFAULT_OUTPUT_DIR}", flush=True)
-    print(f"Workers: {worker_count:,}", flush=True)
+    tqdm.write(f"NLCD raster: {DEFAULT_NLCD_RASTER_PATH}")
+    tqdm.write(f"Reclass tables: {DEFAULT_RECLASS_TABLE_DIR}")
+    tqdm.write(f"Output root: {DEFAULT_OUTPUT_DIR}")
+    tqdm.write(f"Workers: {worker_count:,}")
 
     lock = RLock()
     outputs = []
@@ -310,9 +310,9 @@ def main() -> None:
     outputs = generate_nlcd_reclass_masks(
         workers=args.workers,
     )
-    print("Generated masks:", flush=True)
+    tqdm.write("Generated masks:")
     for output in outputs:
-        print(f"  {output}", flush=True)
+        tqdm.write(f"  {output}")
 
 
 if __name__ == "__main__":
