@@ -53,18 +53,6 @@ def _parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
-        "--reclass-table-dir",
-        type=Path,
-        default=DEFAULT_RECLASS_TABLE_DIR,
-        help=f"Directory containing id,reclass CSV tables. Default: {DEFAULT_RECLASS_TABLE_DIR}",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"Directory where mask subdirectories will be written. Default: {DEFAULT_OUTPUT_DIR}",
-    )
-    parser.add_argument(
         "--workers",
         type=int,
         default=cpu_count() or 1,
@@ -255,15 +243,11 @@ def _generate_mask(
 
 
 def _discover_jobs(
-    reclass_table_dir: Path,
-    output_dir: Path,
     timestamp: str,
 ) -> list[MaskJob]:
     """Build mask generation jobs from all CSV tables in a directory.
 
     Args:
-        reclass_table_dir: Directory containing reclass CSV tables.
-        output_dir: Root output directory for generated masks.
         timestamp: Timestamp string to add to each output raster stem.
 
     Returns:
@@ -273,18 +257,20 @@ def _discover_jobs(
         FileNotFoundError: If the table directory does not exist.
         ValueError: If no CSV tables are found.
     """
-    if not reclass_table_dir.exists():
-        raise FileNotFoundError(f"Reclass table directory not found: {reclass_table_dir}")
+    if not DEFAULT_RECLASS_TABLE_DIR.exists():
+        raise FileNotFoundError(
+            f"Reclass table directory not found: {DEFAULT_RECLASS_TABLE_DIR}"
+        )
 
-    table_paths = sorted(reclass_table_dir.glob("*.csv"))
+    table_paths = sorted(DEFAULT_RECLASS_TABLE_DIR.glob("*.csv"))
     if not table_paths:
-        raise ValueError(f"No CSV reclass tables found in: {reclass_table_dir}")
+        raise ValueError(f"No CSV reclass tables found in: {DEFAULT_RECLASS_TABLE_DIR}")
 
     jobs = []
     for position, table_path in enumerate(table_paths, start=1):
         table_stem = table_path.stem
         output_path = (
-            output_dir
+            DEFAULT_OUTPUT_DIR
             / table_stem
             / f"reclassified_NLCD2023_{table_stem}_{timestamp}.tif"
         )
@@ -299,16 +285,12 @@ def _discover_jobs(
 
 
 def generate_nlcd_reclass_masks(
-    reclass_table_dir: Path,
-    output_dir: Path,
     workers: int,
     windows_per_progress_update: int,
 ) -> list[Path]:
     """Generate all NLCD reclass masks in parallel.
 
     Args:
-        reclass_table_dir: Directory containing ``id,reclass`` CSV tables.
-        output_dir: Root output directory for generated masks.
         workers: Maximum number of parallel worker processes.
         windows_per_progress_update: Number of block windows processed between
             each per-mask tqdm update.
@@ -328,12 +310,12 @@ def generate_nlcd_reclass_masks(
         raise ValueError("Windows per progress update must be at least 1.")
 
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    jobs = _discover_jobs(reclass_table_dir, output_dir, timestamp)
+    jobs = _discover_jobs(timestamp)
     worker_count = min(workers, len(jobs))
 
     print(f"NLCD raster: {DEFAULT_NLCD_RASTER_PATH}", flush=True)
-    print(f"Reclass tables: {reclass_table_dir}", flush=True)
-    print(f"Output root: {output_dir}", flush=True)
+    print(f"Reclass tables: {DEFAULT_RECLASS_TABLE_DIR}", flush=True)
+    print(f"Output root: {DEFAULT_OUTPUT_DIR}", flush=True)
     print(f"Workers: {worker_count:,}", flush=True)
 
     lock = RLock()
@@ -369,8 +351,6 @@ def main() -> None:
     """Run the NLCD mask generation workflow."""
     args = _parse_args()
     outputs = generate_nlcd_reclass_masks(
-        reclass_table_dir=args.reclass_table_dir,
-        output_dir=args.output_dir,
         workers=args.workers,
         windows_per_progress_update=args.windows_per_progress_update,
     )
