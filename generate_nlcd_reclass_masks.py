@@ -53,12 +53,6 @@ def _parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
-        "--nlcd-raster",
-        type=Path,
-        default=DEFAULT_NLCD_RASTER_PATH,
-        help=f"NLCD land-cover raster path. Default: {DEFAULT_NLCD_RASTER_PATH}",
-    )
-    parser.add_argument(
         "--reclass-table-dir",
         type=Path,
         default=DEFAULT_RECLASS_TABLE_DIR,
@@ -209,14 +203,12 @@ def _worker_initializer(lock: RLock) -> None:
 
 
 def _generate_mask(
-    nlcd_raster_path: Path,
     job: MaskJob,
     windows_per_progress_update: int,
 ) -> Path:
     """Generate one mask raster from one reclass table.
 
     Args:
-        nlcd_raster_path: Source NLCD land-cover raster path.
         job: Mask generation job metadata.
         windows_per_progress_update: Number of windows to process between
             progress-bar updates.
@@ -233,9 +225,11 @@ def _generate_mask(
     if job.output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing output: {job.output_path}")
 
-    with rasterio.open(nlcd_raster_path) as source:
+    with rasterio.open(DEFAULT_NLCD_RASTER_PATH) as source:
         if source.count != 1:
-            raise ValueError(f"Expected a single-band NLCD raster: {nlcd_raster_path}")
+            raise ValueError(
+                f"Expected a single-band NLCD raster: {DEFAULT_NLCD_RASTER_PATH}"
+            )
 
         output_profile = _build_output_profile(source.profile)
         block_windows = list(source.block_windows(1))
@@ -305,7 +299,6 @@ def _discover_jobs(
 
 
 def generate_nlcd_reclass_masks(
-    nlcd_raster_path: Path,
     reclass_table_dir: Path,
     output_dir: Path,
     workers: int,
@@ -314,7 +307,6 @@ def generate_nlcd_reclass_masks(
     """Generate all NLCD reclass masks in parallel.
 
     Args:
-        nlcd_raster_path: Source NLCD land-cover raster path.
         reclass_table_dir: Directory containing ``id,reclass`` CSV tables.
         output_dir: Root output directory for generated masks.
         workers: Maximum number of parallel worker processes.
@@ -328,8 +320,8 @@ def generate_nlcd_reclass_masks(
         FileNotFoundError: If the source raster does not exist.
         ValueError: If worker count or window batching settings are invalid.
     """
-    if not nlcd_raster_path.exists():
-        raise FileNotFoundError(f"NLCD raster not found: {nlcd_raster_path}")
+    if not DEFAULT_NLCD_RASTER_PATH.exists():
+        raise FileNotFoundError(f"NLCD raster not found: {DEFAULT_NLCD_RASTER_PATH}")
     if workers < 1:
         raise ValueError("Workers must be at least 1.")
     if windows_per_progress_update < 1:
@@ -339,7 +331,7 @@ def generate_nlcd_reclass_masks(
     jobs = _discover_jobs(reclass_table_dir, output_dir, timestamp)
     worker_count = min(workers, len(jobs))
 
-    print(f"NLCD raster: {nlcd_raster_path}", flush=True)
+    print(f"NLCD raster: {DEFAULT_NLCD_RASTER_PATH}", flush=True)
     print(f"Reclass tables: {reclass_table_dir}", flush=True)
     print(f"Output root: {output_dir}", flush=True)
     print(f"Workers: {worker_count:,}", flush=True)
@@ -361,7 +353,6 @@ def generate_nlcd_reclass_masks(
             futures = [
                 executor.submit(
                     _generate_mask,
-                    nlcd_raster_path,
                     job,
                     windows_per_progress_update,
                 )
@@ -378,7 +369,6 @@ def main() -> None:
     """Run the NLCD mask generation workflow."""
     args = _parse_args()
     outputs = generate_nlcd_reclass_masks(
-        nlcd_raster_path=args.nlcd_raster,
         reclass_table_dir=args.reclass_table_dir,
         output_dir=args.output_dir,
         workers=args.workers,
