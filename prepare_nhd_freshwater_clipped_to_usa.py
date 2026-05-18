@@ -58,19 +58,6 @@ FRESHWATER_FTYPE_LABELS = {
 WORKER = {}
 
 
-def _set_axis_order(srs: osr.SpatialReference) -> osr.SpatialReference:
-    """Use GIS-style x/y axis order for coordinate transformations.
-
-    Args:
-        srs: Spatial reference to configure.
-
-    Returns:
-        The same spatial reference object.
-    """
-    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-    return srs
-
-
 def _ogr_vertex_count(geom: ogr.Geometry) -> int:
     """Count vertices in an OGR geometry.
 
@@ -100,13 +87,15 @@ def _choose_process_srs(
     Returns:
         Processing spatial reference.
     """
-    source_srs = _set_axis_order(source_srs.Clone())
+    source_srs = source_srs.Clone()
+    source_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     if source_srs.IsProjected() and abs(source_srs.GetLinearUnits() - 1.0) < 1e-9:
         return source_srs
 
     process_srs = osr.SpatialReference()
     process_srs.ImportFromEPSG(5070)
-    return _set_axis_order(process_srs)
+    process_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    return process_srs
 
 
 def _read_usa_boundary(process_srs: osr.SpatialReference):
@@ -123,8 +112,10 @@ def _read_usa_boundary(process_srs: osr.SpatialReference):
         raise RuntimeError(f"Could not open USA boundary: {USA_BOUNDARY_PATH}")
 
     boundary_layer = boundary_vector.GetLayer()
-    source_srs = _set_axis_order(boundary_layer.GetSpatialRef())
-    process_srs = _set_axis_order(process_srs.Clone())
+    source_srs = boundary_layer.GetSpatialRef()
+    source_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    process_srs = process_srs.Clone()
+    process_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     transform = None
     if not source_srs.IsSame(process_srs):
         transform = osr.CoordinateTransformation(source_srs, process_srs)
@@ -254,8 +245,10 @@ def _init_worker(
         process_srs_wkt: Processing CRS WKT.
         boundary_wkb: USA boundary WKB in the processing CRS.
     """
-    source_srs = _set_axis_order(osr.SpatialReference(wkt=source_srs_wkt))
-    process_srs = _set_axis_order(osr.SpatialReference(wkt=process_srs_wkt))
+    source_srs = osr.SpatialReference(wkt=source_srs_wkt)
+    source_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    process_srs = osr.SpatialReference(wkt=process_srs_wkt)
+    process_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     transform = None
     if not source_srs.IsSame(process_srs):
         transform = osr.CoordinateTransformation(source_srs, process_srs)
@@ -458,7 +451,8 @@ def main() -> None:
         raise RuntimeError(f"Could not open NHD geodatabase: {NHD_GDB_PATH}")
 
     source_layer = nhd_vector.GetLayerByName(next(iter(FRESHWATER_FTYPES_BY_LAYER)))
-    source_srs = _set_axis_order(source_layer.GetSpatialRef())
+    source_srs = source_layer.GetSpatialRef()
+    source_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     process_srs = _choose_process_srs(source_srs)
     step_bar.update()
 
