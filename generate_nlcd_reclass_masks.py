@@ -58,15 +58,6 @@ def _parse_args() -> argparse.Namespace:
         default=cpu_count() or 1,
         help="Number of mask rasters to generate in parallel. Default: CPU count.",
     )
-    parser.add_argument(
-        "--windows-per-progress-update",
-        type=int,
-        default=WINDOWS_PER_PROGRESS_UPDATE,
-        help=(
-            "Number of raster block windows to process before updating each "
-            f"progress bar. Default: {WINDOWS_PER_PROGRESS_UPDATE}."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -190,16 +181,11 @@ def _worker_initializer(lock: RLock) -> None:
     tqdm.set_lock(lock)
 
 
-def _generate_mask(
-    job: MaskJob,
-    windows_per_progress_update: int,
-) -> Path:
+def _generate_mask(job: MaskJob) -> Path:
     """Generate one mask raster from one reclass table.
 
     Args:
         job: Mask generation job metadata.
-        windows_per_progress_update: Number of windows to process between
-            progress-bar updates.
 
     Returns:
         Output raster path.
@@ -231,7 +217,7 @@ def _generate_mask(
                 dynamic_ncols=True,
             ) as progress_bar:
                 for window_batch in _chunked(
-                    block_windows, windows_per_progress_update
+                    block_windows, WINDOWS_PER_PROGRESS_UPDATE
                 ):
                     for _, window in window_batch:
                         source_array = source.read(1, window=window, masked=True)
@@ -286,28 +272,23 @@ def _discover_jobs(
 
 def generate_nlcd_reclass_masks(
     workers: int,
-    windows_per_progress_update: int,
 ) -> list[Path]:
     """Generate all NLCD reclass masks in parallel.
 
     Args:
         workers: Maximum number of parallel worker processes.
-        windows_per_progress_update: Number of block windows processed between
-            each per-mask tqdm update.
 
     Returns:
         Generated output raster paths.
 
     Raises:
         FileNotFoundError: If the source raster does not exist.
-        ValueError: If worker count or window batching settings are invalid.
+        ValueError: If worker count is invalid.
     """
     if not DEFAULT_NLCD_RASTER_PATH.exists():
         raise FileNotFoundError(f"NLCD raster not found: {DEFAULT_NLCD_RASTER_PATH}")
     if workers < 1:
         raise ValueError("Workers must be at least 1.")
-    if windows_per_progress_update < 1:
-        raise ValueError("Windows per progress update must be at least 1.")
 
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     jobs = _discover_jobs(timestamp)
@@ -336,7 +317,6 @@ def generate_nlcd_reclass_masks(
                 executor.submit(
                     _generate_mask,
                     job,
-                    windows_per_progress_update,
                 )
                 for job in jobs
             ]
@@ -352,7 +332,6 @@ def main() -> None:
     args = _parse_args()
     outputs = generate_nlcd_reclass_masks(
         workers=args.workers,
-        windows_per_progress_update=args.windows_per_progress_update,
     )
     print("Generated masks:", flush=True)
     for output in outputs:
