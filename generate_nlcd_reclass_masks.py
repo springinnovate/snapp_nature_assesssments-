@@ -153,6 +153,8 @@ def _worker_initializer(lock: RLock) -> None:
     Args:
         lock: Multiprocessing lock shared by tqdm progress bars.
     """
+    # A shared lock plus fixed ``position`` values lets tqdm render one live bar
+    # per worker process without concurrent terminal writes scrambling output.
     tqdm.set_lock(lock)
 
 
