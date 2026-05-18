@@ -7,7 +7,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import islice
-import math
 from multiprocessing import RLock
 from os import cpu_count
 from pathlib import Path
@@ -143,8 +142,8 @@ def _block_window_count(source: rasterio.DatasetReader) -> int:
         Number of block windows for the first raster band.
     """
     block_height, block_width = source.block_shapes[0]
-    return math.ceil(source.height / block_height) * math.ceil(
-        source.width / block_width
+    return int(
+        np.ceil(source.height / block_height) * np.ceil(source.width / block_width)
     )
 
 
