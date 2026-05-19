@@ -28,7 +28,7 @@ import geopandas as gpd
 import pandas as pd
 from tqdm import tqdm
 
-DEFAULT_RESULTS_DIR = Path("data/analysis_results/zonal_stats")
+DEFAULT_RESULTS_DIR = Path("data/analysis_results/zonal_statistics")
 DEFAULT_OUTPUT_DIR = Path("data/analysis_results/combined")
 JOIN_FIELD = "GEOID"
 INPUT_TIMESTAMP_FORMATS = ("%Y%m%d_%H%M%S", "%Y_%m_%d_%H_%M_%S")

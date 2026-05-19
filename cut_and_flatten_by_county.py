@@ -16,8 +16,16 @@ from tqdm import tqdm
 
 from geometry_utils import polygonal_multipolygon, repair_polygonal_geometry
 
-COUNTY_VECTOR_PATH = Path("data/tl_2024_us_county_50_states.gpkg")
-OUT_DIR = Path("output")
+COUNTY_VECTOR_PATH = Path(
+    "data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg"
+)
+DEFAULT_OUT_DIR = Path("data/processing_outputs/cut_by_county")
+PADUS_ALL_LANDS_OUT_DIR = Path(
+    "data/analysis_inputs/zonal_units/padus_all_lands_by_county"
+)
+PADUS_PUBLIC_LANDS_OUT_DIR = Path(
+    "data/analysis_inputs/zonal_units/padus_public_lands_by_county"
+)
 N_WORKERS = cpu_count() or 1
 TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$")
 
@@ -82,7 +90,14 @@ def _derive_output_names(input_path: Path) -> tuple[str, Path]:
         out_stem = input_stem.replace("_clipped_to_usa", "_clipped_by_county")
     else:
         out_stem = f"{input_stem}_clipped_by_county"
-    return out_stem, OUT_DIR / f"{out_stem}_{timestamp}.gpkg"
+
+    if out_stem.startswith("padus_all_lands_"):
+        out_dir = PADUS_ALL_LANDS_OUT_DIR
+    elif out_stem.startswith("padus_public_lands_"):
+        out_dir = PADUS_PUBLIC_LANDS_OUT_DIR
+    else:
+        out_dir = DEFAULT_OUT_DIR
+    return out_stem, out_dir / f"{out_stem}_{timestamp}.gpkg"
 
 
 def _process_county(
@@ -245,7 +260,7 @@ def main() -> None:
         crs=input_features.crs,
     )
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     output_gdf.to_file(out_path, layer=out_layer_name, driver="GPKG", index=False)
     step_bar.update()
     step_bar.close()
