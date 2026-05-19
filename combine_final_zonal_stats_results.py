@@ -26,6 +26,7 @@ from tempfile import TemporaryDirectory
 
 import geopandas as gpd
 import pandas as pd
+from tqdm import tqdm
 
 DEFAULT_RESULTS_DIR = Path("data/analysis_results/zonal_stats")
 DEFAULT_OUTPUT_DIR = Path("data/analysis_results/combined")
@@ -140,6 +141,14 @@ def _parse_args() -> argparse.Namespace:
         "--smoke-test",
         action="store_true",
         help="Run a tiny CSV combine and conflict-detection smoke test.",
+    )
+    parser.add_argument(
+        "--check-gpkg-geometry",
+        action="store_true",
+        help=(
+            "Compare repeated GPKG geometries before joining. This is slow "
+            "for large layers and is disabled by default."
+        ),
     )
     return parser.parse_args()
 
@@ -406,20 +415,27 @@ def _join_metric_frame(
     return combined.join(incoming[new_columns])
 
 
-def _combine_csvs(paths: list[Path]) -> pd.DataFrame:
+def _combine_csvs(paths: list[Path], progress_label: str) -> pd.DataFrame:
     """Combine one result family's CSV outputs.
 
     Args:
         paths: Source CSV paths in expected join order.
+        progress_label: Label to show in progress output.
 
     Returns:
         Combined CSV dataframe.
     """
+    tqdm.write(f"Reading CSV base for {progress_label}: {paths[0].name}")
     combined = pd.read_csv(paths[0], dtype={JOIN_FIELD: str})
     _validate_join_field(combined, paths[0])
     combined = combined.set_index(JOIN_FIELD, drop=False)
 
-    for path in paths[1:]:
+    for path in tqdm(
+        paths[1:],
+        desc=f"Join CSV {progress_label}",
+        unit="file",
+        leave=False,
+    ):
         incoming = pd.read_csv(path, dtype={JOIN_FIELD: str})
         _validate_join_field(incoming, path)
         incoming = incoming.set_index(JOIN_FIELD, drop=False)
@@ -451,37 +467,54 @@ def _geometry_conflicts(
     return conflicts.astype(str).tolist()[:10]
 
 
-def _combine_gpkgs(paths: list[Path]) -> gpd.GeoDataFrame:
+def _combine_gpkgs(
+    paths: list[Path],
+    progress_label: str,
+    check_geometry: bool = False,
+) -> gpd.GeoDataFrame:
     """Combine one result family's GeoPackage outputs.
 
     Args:
         paths: Source GeoPackage paths in expected join order.
+        progress_label: Label to show in progress output.
+        check_geometry: Whether to run expensive geometry equality checks
+            against each incoming GeoPackage.
 
     Returns:
         Combined GeoDataFrame.
     """
+    tqdm.write(f"Reading GPKG base for {progress_label}: {paths[0].name}")
     combined = gpd.read_file(paths[0])
     _validate_join_field(combined, paths[0])
     combined[JOIN_FIELD] = combined[JOIN_FIELD].astype(str)
     combined = combined.set_index(JOIN_FIELD, drop=False)
 
-    for path in paths[1:]:
-        incoming = gpd.read_file(path)
+    for path in tqdm(
+        paths[1:],
+        desc=f"Join GPKG {progress_label}",
+        unit="file",
+        leave=False,
+    ):
+        if check_geometry:
+            incoming = gpd.read_file(path)
+        else:
+            incoming = gpd.read_file(path, ignore_geometry=True)
         _validate_join_field(incoming, path)
         incoming[JOIN_FIELD] = incoming[JOIN_FIELD].astype(str)
         incoming = incoming.set_index(JOIN_FIELD, drop=False)
 
-        conflicts = _geometry_conflicts(combined, incoming, path)
-        if conflicts:
-            raise ValueError(
-                f"{path} has geometry conflicts for {JOIN_FIELD}: "
-                + ", ".join(conflicts)
-            )
+        if check_geometry:
+            conflicts = _geometry_conflicts(combined, incoming, path)
+            if conflicts:
+                raise ValueError(
+                    f"{path} has geometry conflicts for {JOIN_FIELD}: "
+                    + ", ".join(conflicts)
+                )
+            incoming = incoming.drop(columns=incoming.geometry.name)
 
-        incoming_without_geometry = pd.DataFrame(incoming.drop(columns=incoming.geometry.name))
         combined = _join_metric_frame(
             combined,
-            incoming_without_geometry,
+            pd.DataFrame(incoming),
             path,
             ignore_fields={combined.geometry.name},
         )
@@ -492,12 +525,15 @@ def _combine_gpkgs(paths: list[Path]) -> gpd.GeoDataFrame:
 def combine_outputs(
     results_dir: Path = DEFAULT_RESULTS_DIR,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
+    check_gpkg_geometry: bool = False,
 ) -> list[Path]:
     """Combine latest zonal-stat outputs into final CSV and GPKG datasets.
 
     Args:
         results_dir: Directory containing individual zonal-stat outputs.
         output_dir: Directory where final combined outputs should be written.
+        check_gpkg_geometry: Whether to run expensive geometry equality checks
+            against repeated GPKG geometry columns.
 
     Returns:
         Written output paths.
@@ -515,20 +551,30 @@ def combine_outputs(
             for project_name, project in RESULT_PROJECTS.items()
             if (results_dir / project_name).is_dir()
         ]
-        for project_name, project in project_items:
+        for project_name, project in tqdm(
+            project_items,
+            desc="Combine result projects",
+            unit="project",
+        ):
             project_dir = results_dir / project_name
 
             csv_paths = _latest_project_outputs(project_dir, project, ".csv")
             if csv_paths is not None:
                 output_path = output_dir / f"{project.output_stem}_{timestamp}.csv"
-                combined_csv = _combine_csvs(csv_paths)
+                combined_csv = _combine_csvs(csv_paths, project.output_stem)
+                tqdm.write(f"Writing CSV {output_path}")
                 combined_csv.to_csv(output_path, index=False)
                 written_paths.append(output_path)
 
             gpkg_paths = _latest_project_outputs(project_dir, project, ".gpkg")
             if gpkg_paths is not None:
                 output_path = output_dir / f"{project.output_stem}_{timestamp}.gpkg"
-                combined_gpkg = _combine_gpkgs(gpkg_paths)
+                combined_gpkg = _combine_gpkgs(
+                    gpkg_paths,
+                    project.output_stem,
+                    check_geometry=check_gpkg_geometry,
+                )
+                tqdm.write(f"Writing GPKG {output_path}")
                 combined_gpkg.to_file(
                     output_path,
                     layer=project.output_stem,
@@ -537,20 +583,30 @@ def combine_outputs(
                 )
                 written_paths.append(output_path)
     else:
-        for group_name, group in RESULT_GROUPS.items():
+        for group_name, group in tqdm(
+            RESULT_GROUPS.items(),
+            desc="Combine result groups",
+            unit="group",
+        ):
             group_results_dir = _group_results_dir(results_dir, group_name)
 
             csv_paths = _latest_group_outputs(group_results_dir, group, ".csv")
             if csv_paths is not None:
                 output_path = output_dir / f"{group.output_stem}_{timestamp}.csv"
-                combined_csv = _combine_csvs(csv_paths)
+                combined_csv = _combine_csvs(csv_paths, group.output_stem)
+                tqdm.write(f"Writing CSV {output_path}")
                 combined_csv.to_csv(output_path, index=False)
                 written_paths.append(output_path)
 
             gpkg_paths = _latest_group_outputs(group_results_dir, group, ".gpkg")
             if gpkg_paths is not None:
                 output_path = output_dir / f"{group.output_stem}_{timestamp}.gpkg"
-                combined_gpkg = _combine_gpkgs(gpkg_paths)
+                combined_gpkg = _combine_gpkgs(
+                    gpkg_paths,
+                    group.output_stem,
+                    check_geometry=check_gpkg_geometry,
+                )
+                tqdm.write(f"Writing GPKG {output_path}")
                 combined_gpkg.to_file(
                     output_path,
                     layer=group.output_stem,
@@ -626,7 +682,11 @@ def main() -> None:
         print("Smoke test passed.")
         return
 
-    written_paths = combine_outputs(args.results_dir, args.output_dir)
+    written_paths = combine_outputs(
+        args.results_dir,
+        args.output_dir,
+        check_gpkg_geometry=args.check_gpkg_geometry,
+    )
     for path in written_paths:
         print(f"Wrote {path}")
 
