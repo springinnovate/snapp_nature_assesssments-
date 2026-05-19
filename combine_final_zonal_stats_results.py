@@ -1,8 +1,9 @@
 """Combine individual zonal-stat outputs into final assessment datasets.
 
 The zonal statistics workflow writes one CSV and/or GeoPackage per metric
-family. This final step joins those metric-family outputs into three deliverable
-datasets:
+family. Those outputs may be grouped into subdirectories, with each subdirectory
+treated as its own final-output project. This final step joins those
+metric-family outputs into three deliverable datasets:
 
 - counties
 - PAD-US all lands cut by county
@@ -20,6 +21,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 
 import geopandas as gpd
@@ -30,6 +32,9 @@ DEFAULT_OUTPUT_DIR = Path("data/analysis_results/combined")
 JOIN_FIELD = "GEOID"
 INPUT_TIMESTAMP_FORMATS = ("%Y%m%d_%H%M%S", "%Y_%m_%d_%H_%M_%S")
 OUTPUT_TIMESTAMP_FORMAT = "%Y_%m_%d_%H_%M_%S"
+TIMESTAMP_SUFFIX = re.compile(
+    r"_(?:\d{8}_\d{6}|\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})$"
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,19 @@ class ResultGroup:
 
     output_stem: str
     job_stems: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResultProject:
+    """Directory-based final-output project.
+
+    Attributes:
+        output_stem: Stem used for final CSV/GPKG outputs and GPKG layer names.
+        job_prefixes: Filename prefixes that belong to the project directory.
+    """
+
+    output_stem: str
+    job_prefixes: tuple[str, ...]
 
 
 RESULT_GROUPS = {
@@ -75,6 +93,21 @@ RESULT_GROUPS = {
             "public_freshwater_area",
             "public_coastline_length",
         ),
+    ),
+}
+
+RESULT_PROJECTS = {
+    "counties": ResultProject(
+        output_stem="counties_combined",
+        job_prefixes=("counties_",),
+    ),
+    "padus_all_lands": ResultProject(
+        output_stem="padus_all_lands_combined",
+        job_prefixes=("pad_",),
+    ),
+    "padus_public_lands": ResultProject(
+        output_stem="padus_public_lands_combined",
+        job_prefixes=("public_",),
     ),
 }
 
@@ -142,7 +175,7 @@ def _latest_job_output(
     """Find the latest timestamped output for one job and file type.
 
     Args:
-        results_dir: Directory containing zonal-stat outputs.
+        results_dir: Project directory containing zonal-stat outputs.
         job_stem: Expected job output stem.
         suffix: File suffix such as `.csv` or `.gpkg`.
 
@@ -192,6 +225,79 @@ def _latest_group_outputs(
             + ", ".join(missing)
         )
     return [paths_by_job[job_stem] for job_stem in group.job_stems]
+
+
+def _job_stem_from_output(path: Path) -> str:
+    """Remove a runner timestamp suffix from an output filename stem.
+
+    Args:
+        path: Zonal-stat output path.
+
+    Returns:
+        Job stem without a trailing timestamp.
+    """
+    return TIMESTAMP_SUFFIX.sub("", path.stem)
+
+
+def _latest_project_outputs(
+    project_dir: Path,
+    project: ResultProject,
+    suffix: str,
+) -> list[Path] | None:
+    """Find the latest output for every job present in one project directory.
+
+    Args:
+        project_dir: Directory containing one project's zonal-stat outputs.
+        project: Project naming rule.
+        suffix: File suffix such as `.csv` or `.gpkg`.
+
+    Returns:
+        Latest paths sorted by job stem, or None when the project has no files
+        for this suffix.
+    """
+    paths_by_job_stem = {}
+    for path in project_dir.glob(f"*{suffix}"):
+        if not path.stem.startswith(project.job_prefixes):
+            continue
+        job_stem = _job_stem_from_output(path)
+        paths_by_job_stem.setdefault(job_stem, []).append(path)
+
+    if not paths_by_job_stem:
+        return None
+
+    latest_paths = []
+    for job_stem, paths in sorted(paths_by_job_stem.items()):
+        latest_paths.append(max(paths, key=lambda path: _input_timestamp(path, job_stem)))
+    return latest_paths
+
+
+def _group_results_dir(results_dir: Path, group_name: str) -> Path:
+    """Return the directory that contains one result group's job outputs.
+
+    Args:
+        results_dir: Root zonal-stat output directory.
+        group_name: Result group key such as `counties`.
+
+    Returns:
+        Child project directory when present, otherwise the root results
+        directory for backwards compatibility with flat output layouts.
+    """
+    project_dir = results_dir / group_name
+    if project_dir.is_dir():
+        return project_dir
+    return results_dir
+
+
+def _has_project_directories(results_dir: Path) -> bool:
+    """Return whether the result root contains known project directories.
+
+    Args:
+        results_dir: Root zonal-stat output directory.
+
+    Returns:
+        True when at least one known project directory exists.
+    """
+    return any((results_dir / project_name).is_dir() for project_name in RESULT_PROJECTS)
 
 
 def _validate_join_field(frame: pd.DataFrame, path: Path) -> None:
@@ -403,25 +509,55 @@ def combine_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     written_paths = []
 
-    for group in RESULT_GROUPS.values():
-        csv_paths = _latest_group_outputs(results_dir, group, ".csv")
-        if csv_paths is not None:
-            output_path = output_dir / f"{group.output_stem}_{timestamp}.csv"
-            combined_csv = _combine_csvs(csv_paths)
-            combined_csv.to_csv(output_path, index=False)
-            written_paths.append(output_path)
+    if _has_project_directories(results_dir):
+        project_items = [
+            (project_name, project)
+            for project_name, project in RESULT_PROJECTS.items()
+            if (results_dir / project_name).is_dir()
+        ]
+        for project_name, project in project_items:
+            project_dir = results_dir / project_name
 
-        gpkg_paths = _latest_group_outputs(results_dir, group, ".gpkg")
-        if gpkg_paths is not None:
-            output_path = output_dir / f"{group.output_stem}_{timestamp}.gpkg"
-            combined_gpkg = _combine_gpkgs(gpkg_paths)
-            combined_gpkg.to_file(
-                output_path,
-                layer=group.output_stem,
-                driver="GPKG",
-                index=False,
-            )
-            written_paths.append(output_path)
+            csv_paths = _latest_project_outputs(project_dir, project, ".csv")
+            if csv_paths is not None:
+                output_path = output_dir / f"{project.output_stem}_{timestamp}.csv"
+                combined_csv = _combine_csvs(csv_paths)
+                combined_csv.to_csv(output_path, index=False)
+                written_paths.append(output_path)
+
+            gpkg_paths = _latest_project_outputs(project_dir, project, ".gpkg")
+            if gpkg_paths is not None:
+                output_path = output_dir / f"{project.output_stem}_{timestamp}.gpkg"
+                combined_gpkg = _combine_gpkgs(gpkg_paths)
+                combined_gpkg.to_file(
+                    output_path,
+                    layer=project.output_stem,
+                    driver="GPKG",
+                    index=False,
+                )
+                written_paths.append(output_path)
+    else:
+        for group_name, group in RESULT_GROUPS.items():
+            group_results_dir = _group_results_dir(results_dir, group_name)
+
+            csv_paths = _latest_group_outputs(group_results_dir, group, ".csv")
+            if csv_paths is not None:
+                output_path = output_dir / f"{group.output_stem}_{timestamp}.csv"
+                combined_csv = _combine_csvs(csv_paths)
+                combined_csv.to_csv(output_path, index=False)
+                written_paths.append(output_path)
+
+            gpkg_paths = _latest_group_outputs(group_results_dir, group, ".gpkg")
+            if gpkg_paths is not None:
+                output_path = output_dir / f"{group.output_stem}_{timestamp}.gpkg"
+                combined_gpkg = _combine_gpkgs(gpkg_paths)
+                combined_gpkg.to_file(
+                    output_path,
+                    layer=group.output_stem,
+                    driver="GPKG",
+                    index=False,
+                )
+                written_paths.append(output_path)
 
     if not written_paths:
         raise RuntimeError(f"No complete zonal-stat result groups found in {results_dir}.")
@@ -434,7 +570,9 @@ def _write_smoke_test_inputs(results_dir: Path) -> None:
     Args:
         results_dir: Temporary result directory.
     """
-    for group in RESULT_GROUPS.values():
+    for group_name, group in RESULT_GROUPS.items():
+        project_dir = results_dir / group_name
+        project_dir.mkdir()
         for job_number, job_stem in enumerate(group.job_stems):
             frame = pd.DataFrame(
                 {
@@ -443,7 +581,7 @@ def _write_smoke_test_inputs(results_dir: Path) -> None:
                     f"metric_{job_number}": [job_number, job_number + 1],
                 }
             )
-            frame.to_csv(results_dir / f"{job_stem}_20260101_000000.csv", index=False)
+            frame.to_csv(project_dir / f"{job_stem}_20260101_000000.csv", index=False)
 
 
 def _run_smoke_test() -> None:
@@ -460,7 +598,9 @@ def _run_smoke_test() -> None:
         if len(csv_outputs) != len(RESULT_GROUPS):
             raise AssertionError("Smoke test did not write one CSV per result group.")
 
-        conflict_path = results_dir / "counties_masks_20260102_000000.csv"
+        conflict_path = (
+            results_dir / "counties" / "counties_masks_20260102_000000.csv"
+        )
         pd.DataFrame(
             {
                 JOIN_FIELD: ["001", "002"],
