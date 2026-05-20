@@ -35,14 +35,16 @@ gdal.PushErrorHandler("CPLQuietErrorHandler")
 gdal.SetConfigOption("OGR_ORGANIZE_POLYGONS", "SKIP")
 
 PADUS_GDB_PATH = Path(
-    "./data/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb"
+    "data/analysis_inputs/padus/"
+    "PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/"
+    "PADUS4_1Geodatabase.gdb"
 )
 PADUS_LAYER_NAME = "PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement"
-USA_BOUNDARY_PATH = Path(
-    r"D:\repositories\snapp_nature_assesssments-\data\usa_vector.gpkg"
-)
+USA_BOUNDARY_PATH = Path("data/analysis_inputs/boundaries/usa_boundary/usa_vector.gpkg")
 
-OUT_DIR = Path("output")
+OUT_DIR = Path("data/processing_outputs/padus_clipped_to_usa")
+ALL_OUT_DIR = OUT_DIR / "all_lands"
+PUBLIC_OUT_DIR = OUT_DIR / "public_lands"
 PUBLIC_OUT_STEM = "padus_public_lands_clipped_to_usa"
 ALL_OUT_STEM = "padus_all_lands_clipped_to_usa"
 FAILURE_STEM = "padus_lands_clipped_to_usa"
@@ -413,9 +415,11 @@ def main() -> None:
     # which will make the load faster then we're fixing it in this script
     # anyway
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    public_out_path = OUT_DIR / f"{PUBLIC_OUT_STEM}_{timestamp}.gpkg"
-    all_out_path = OUT_DIR / f"{ALL_OUT_STEM}_{timestamp}.gpkg"
+    public_out_path = PUBLIC_OUT_DIR / f"{PUBLIC_OUT_STEM}_{timestamp}.gpkg"
+    all_out_path = ALL_OUT_DIR / f"{ALL_OUT_STEM}_{timestamp}.gpkg"
     failure_path = OUT_DIR / f"{FAILURE_STEM}_{timestamp}_skipped.csv"
+    PUBLIC_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    ALL_OUT_DIR.mkdir(parents=True, exist_ok=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     step_bar = tqdm(total=5, desc="PAD-US preprocessing", unit="step")

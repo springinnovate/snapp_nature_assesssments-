@@ -1,4 +1,4 @@
-# Zonal statistics runner configuration for the SNAPP public lands assessment.
+# Zonal statistics runner configuration for the SNAPP nature assessment.
 #
 # The zonal_stats_toolkit runner reads INI-style sections from this `.yaml`
 # file. Paths are relative to this config file.
@@ -25,8 +25,8 @@ agg_layer = tl_2024_us_county_60_states
 agg_field = GEOID
 operations = sum, mean, stdev, valid_count, total_count, area_ha_valid, area_ha_total
 base_raster_pattern = ../../analysis_inputs/ecosystem_services/*.tif
-output_csv = ../../analysis_results/zonal_stats/counties_ecosystem_services.csv
-output_gpkg = ../../analysis_results/zonal_stats/counties_ecosystem_services.gpkg
+output_csv = ../../analysis_results/zonal_statistics/counties/counties_ecosystem_services.csv
+output_gpkg = ../../analysis_results/zonal_statistics/counties/counties_ecosystem_services.gpkg
 
 [job:counties_masks]
 agg_vector = ../../analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg
@@ -34,8 +34,8 @@ agg_layer = tl_2024_us_county_60_states
 agg_field = GEOID
 operations = sum
 base_raster_pattern = ../../analysis_inputs/masks/*/*.tif
-output_csv = ../../analysis_results/zonal_stats/counties_masks.csv
-output_gpkg = ../../analysis_results/zonal_stats/counties_masks.gpkg
+output_csv = ../../analysis_results/zonal_statistics/counties/counties_masks.csv
+output_gpkg = ../../analysis_results/zonal_statistics/counties/counties_masks.gpkg
 
 [job:counties_area]
 agg_vector = ../../analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg
@@ -45,8 +45,8 @@ operations = intersect_area_ha
 base_measure_vector = ../../analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg
 base_measure_layer = tl_2024_us_county_60_states
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/counties_area.csv
-output_gpkg = ../../analysis_results/zonal_stats/counties_area.gpkg
+output_csv = ../../analysis_results/zonal_statistics/counties/counties_area.csv
+output_gpkg = ../../analysis_results/zonal_statistics/counties/counties_area.gpkg
 
 [job:counties_freshwater_area]
 agg_vector = ../../analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg
@@ -56,8 +56,8 @@ operations = intersect_area_ha
 base_measure_vector = ../../analysis_inputs/hydrography/nhdfreshwater/nhd_freshwater_clipped_to_usa_2026_05_18_01_44_14.gpkg
 base_measure_layer = nhd_freshwater_clipped_to_usa
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/counties_freshwater_area.csv
-output_gpkg = ../../analysis_results/zonal_stats/counties_freshwater_area.gpkg
+output_csv = ../../analysis_results/zonal_statistics/counties/counties_freshwater_area.csv
+output_gpkg = ../../analysis_results/zonal_statistics/counties/counties_freshwater_area.gpkg
 
 [job:counties_coastline_length]
 agg_vector = ../../analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg
@@ -67,8 +67,8 @@ operations = intersect_length_km
 base_measure_vector = ../../analysis_inputs/linear_features/coastline/tl_2019_us_coastline_50_states.gpkg
 base_measure_layer = tl_2019_us_coastline
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/counties_coastline_length.csv
-output_gpkg = ../../analysis_results/zonal_stats/counties_coastline_length.gpkg
+output_csv = ../../analysis_results/zonal_statistics/counties/counties_coastline_length.csv
+output_gpkg = ../../analysis_results/zonal_statistics/counties/counties_coastline_length.gpkg
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +81,8 @@ agg_layer = padus_all_lands_clipped_by_county
 agg_field = GEOID
 operations = sum, mean, stdev, valid_count, total_count, area_ha_valid, area_ha_total
 base_raster_pattern = ../../analysis_inputs/ecosystem_services/*.tif
-output_csv = ../../analysis_results/zonal_stats/pad_ecosystem_services.csv
-output_gpkg = ../../analysis_results/zonal_stats/pad_ecosystem_services.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_all_lands/pad_ecosystem_services.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_all_lands/pad_ecosystem_services.gpkg
 
 [job:pad_masks]
 agg_vector = ../../analysis_inputs/zonal_units/padus_all_lands_by_county/padus_all_lands_clipped_by_county_2026_05_17_12_48_37.gpkg
@@ -90,8 +90,8 @@ agg_layer = padus_all_lands_clipped_by_county
 agg_field = GEOID
 operations = sum
 base_raster_pattern = ../../analysis_inputs/masks/*/*.tif
-output_csv = ../../analysis_results/zonal_stats/pad_masks.csv
-output_gpkg = ../../analysis_results/zonal_stats/pad_masks.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_all_lands/pad_masks.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_all_lands/pad_masks.gpkg
 
 [job:pad_area]
 agg_vector = ../../analysis_inputs/zonal_units/padus_all_lands_by_county/padus_all_lands_clipped_by_county_2026_05_17_12_48_37.gpkg
@@ -101,8 +101,8 @@ operations = intersect_area_ha
 base_measure_vector = ../../analysis_inputs/zonal_units/padus_all_lands_by_county/padus_all_lands_clipped_by_county_2026_05_17_12_48_37.gpkg
 base_measure_layer = padus_all_lands_clipped_by_county
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/pad_area.csv
-output_gpkg = ../../analysis_results/zonal_stats/pad_area.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_all_lands/pad_area.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_all_lands/pad_area.gpkg
 
 [job:pad_freshwater_area]
 agg_vector = ../../analysis_inputs/zonal_units/padus_all_lands_by_county/padus_all_lands_clipped_by_county_2026_05_17_12_48_37.gpkg
@@ -112,8 +112,8 @@ operations = intersect_area_ha
 base_measure_vector = ../../analysis_inputs/hydrography/nhdfreshwater/nhd_freshwater_clipped_to_usa_2026_05_18_01_44_14.gpkg
 base_measure_layer = nhd_freshwater_clipped_to_usa
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/pad_freshwater_area.csv
-output_gpkg = ../../analysis_results/zonal_stats/pad_freshwater_area.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_all_lands/pad_freshwater_area.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_all_lands/pad_freshwater_area.gpkg
 
 [job:pad_coastline_length]
 agg_vector = ../../analysis_inputs/zonal_units/padus_all_lands_by_county/padus_all_lands_clipped_by_county_2026_05_17_12_48_37.gpkg
@@ -123,8 +123,8 @@ operations = intersect_length_km
 base_measure_vector = ../../analysis_inputs/linear_features/coastline/tl_2019_us_coastline_50_states.gpkg
 base_measure_layer = tl_2019_us_coastline
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/pad_coastline_length.csv
-output_gpkg = ../../analysis_results/zonal_stats/pad_coastline_length.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_all_lands/pad_coastline_length.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_all_lands/pad_coastline_length.gpkg
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +137,8 @@ agg_layer = padus_public_lands_clipped_by_county
 agg_field = GEOID
 operations = sum, mean, stdev, valid_count, total_count, area_ha_valid, area_ha_total
 base_raster_pattern = ../../analysis_inputs/ecosystem_services/*.tif
-output_csv = ../../analysis_results/zonal_stats/public_ecosystem_services.csv
-output_gpkg = ../../analysis_results/zonal_stats/public_ecosystem_services.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_public_lands/public_ecosystem_services.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_public_lands/public_ecosystem_services.gpkg
 
 [job:public_masks]
 agg_vector = ../../analysis_inputs/zonal_units/padus_public_lands_by_county/padus_public_lands_clipped_by_county_2026_05_17_12_50_19.gpkg
@@ -146,8 +146,8 @@ agg_layer = padus_public_lands_clipped_by_county
 agg_field = GEOID
 operations = sum
 base_raster_pattern = ../../analysis_inputs/masks/*/*.tif
-output_csv = ../../analysis_results/zonal_stats/public_masks.csv
-output_gpkg = ../../analysis_results/zonal_stats/public_masks.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_public_lands/public_masks.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_public_lands/public_masks.gpkg
 
 [job:public_area]
 agg_vector = ../../analysis_inputs/zonal_units/padus_public_lands_by_county/padus_public_lands_clipped_by_county_2026_05_17_12_50_19.gpkg
@@ -157,8 +157,8 @@ operations = intersect_area_ha
 base_measure_vector = ../../analysis_inputs/zonal_units/padus_public_lands_by_county/padus_public_lands_clipped_by_county_2026_05_17_12_50_19.gpkg
 base_measure_layer = padus_public_lands_clipped_by_county
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/public_area.csv
-output_gpkg = ../../analysis_results/zonal_stats/public_area.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_public_lands/public_area.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_public_lands/public_area.gpkg
 
 [job:public_freshwater_area]
 agg_vector = ../../analysis_inputs/zonal_units/padus_public_lands_by_county/padus_public_lands_clipped_by_county_2026_05_17_12_50_19.gpkg
@@ -168,8 +168,8 @@ operations = intersect_area_ha
 base_measure_vector = ../../analysis_inputs/hydrography/nhdfreshwater/nhd_freshwater_clipped_to_usa_2026_05_18_01_44_14.gpkg
 base_measure_layer = nhd_freshwater_clipped_to_usa
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/public_freshwater_area.csv
-output_gpkg = ../../analysis_results/zonal_stats/public_freshwater_area.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_public_lands/public_freshwater_area.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_public_lands/public_freshwater_area.gpkg
 
 [job:public_coastline_length]
 agg_vector = ../../analysis_inputs/zonal_units/padus_public_lands_by_county/padus_public_lands_clipped_by_county_2026_05_17_12_50_19.gpkg
@@ -179,5 +179,5 @@ operations = intersect_length_km
 base_measure_vector = ../../analysis_inputs/linear_features/coastline/tl_2019_us_coastline_50_states.gpkg
 base_measure_layer = tl_2019_us_coastline
 measure_crs = auto
-output_csv = ../../analysis_results/zonal_stats/public_coastline_length.csv
-output_gpkg = ../../analysis_results/zonal_stats/public_coastline_length.gpkg
+output_csv = ../../analysis_results/zonal_statistics/padus_public_lands/public_coastline_length.csv
+output_gpkg = ../../analysis_results/zonal_statistics/padus_public_lands/public_coastline_length.gpkg
