@@ -16,9 +16,16 @@ configuration files and reclassification tables are tracked.
 
 ## Environment
 
-The preparation scripts use the geospatial Python packages listed in
-`environment.yml`. Create that environment, or use an equivalent environment
-that includes GDAL, GeoPandas, Rasterio, Shapely 2, NumPy, Pandas, and tqdm.
+The preparation scripts use the conda-compatible environment defined in
+`environment.yml`. Create it from the repository root with:
+
+```powershell
+conda env create -f environment.yml
+conda activate geo
+```
+
+The environment file includes the major geospatial packages used here, including
+GDAL, GeoPandas, Rasterio, Shapely 2, NumPy, Pandas, and tqdm.
 
 The zonal statistics step is run with `zonal_stats_toolkit`. See the toolkit
 repository for its current installation instructions and supported execution
@@ -60,8 +67,9 @@ Run commands from the repository root unless otherwise noted.
 
 `prepare_padus_all_and_public_lands.py` converts the PAD-US layer
 `PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` into two
-USA-clipped GeoPackages. Geometries are simplified with a 15 m tolerance, clipped
-to the USA boundary, and repaired where possible.
+USA-clipped GeoPackages: one all-land product and one public-land subset.
+Geometries are simplified with a 15 m tolerance, clipped to the USA boundary,
+and repaired where possible.
 
 - `padus_all_lands_clipped_to_usa_<timestamp>.gpkg` in
   `data/processing_outputs/padus_clipped_to_usa/all_lands`
@@ -168,7 +176,7 @@ From this repository root, run the toolkit runner. Replace
 [`zonal_stats_toolkit`](https://github.com/springinnovate/zonal_stats_toolkit):
 
 ```powershell
-python <zonal_stats_toolkit_repo>\runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
+python <zonal_stats_toolkit_repo>\pipeline_runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
 ```
 
 The configured metrics are:
@@ -210,11 +218,10 @@ By default, these files are written to `data/analysis_results/combined`.
 
 ## Runtime Notes
 
-The PAD-US, NHD, and NLCD preparation steps are the expensive parts of the
-workflow. They use process-based parallelism and report progress with `tqdm`.
-Runtime depends on disk speed, geometry complexity, and the number of CPU cores.
+The PAD-US, NHD, NLCD preparation, and zonal statistics steps are the expensive
+parts of the workflow. On the local NVMe workstation used for this work, with 32
+logical processors and 128 GB RAM, the full preparation and zonal statistics
+workflow should be expected to take a few hours.
 
-The zonal statistics runner is also expected to be long-running because it
-summarizes multiple rasters and vector measures over three zonal datasets. The
-final combination step is comparatively light; on the local prepared outputs it
-has completed in roughly 10 to 15 seconds when geometry comparison is disabled.
+The final combination step is comparatively light and should take about 10 to 15
+seconds.
