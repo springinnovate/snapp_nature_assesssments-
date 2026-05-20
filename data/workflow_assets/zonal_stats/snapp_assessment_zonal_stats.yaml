@@ -1,4 +1,4 @@
-# Zonal statistics runner configuration for the SNAPP public lands assessment.
+# Zonal statistics runner configuration for the SNAPP nature assessment.
 #
 # The zonal_stats_toolkit runner reads INI-style sections from this `.yaml`
 # file. Paths are relative to this config file.

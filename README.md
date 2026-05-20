@@ -1,34 +1,43 @@
 # SNAPP Nature Assessments
 
-This repository supports a SNAPP assessment of ecosystem services over land
-tenure and administrative units in the United States. The workflow prepares
-geospatial inputs, runs zonal statistics with `zonal_stats_toolkit`, and joins
-the metric-specific outputs into final county, PAD-US all-land, and PAD-US
-public-land datasets.
+This repository supports a SNAPP assessment of ecosystem services over counties,
+all PAD-US lands, and public PAD-US lands in the United States. The workflow
+prepares geospatial inputs, runs zonal statistics with
+[`zonal_stats_toolkit`](https://github.com/springinnovate/zonal_stats_toolkit),
+and combines the metric-specific outputs into final CSV and GeoPackage
+deliverables.
 
-The preparation scripts assume commands are run from the repository root on
-Windows:
+The input data stack is stored in this Google Drive folder:
+<https://drive.google.com/drive/folders/141tOj6sf8Go0UttVogSc_T3Jet1wXzlu>
 
-```powershell
-cd D:\repositories\snapp_nature_assesssments-
-conda env create -f environment.yml
-conda activate geo
-```
+For a local run, copy that data stack into the repository root as `data/`.
+Large data files are ignored by git; only small workflow assets such as
+configuration files and reclassification tables are tracked.
+
+## Environment
+
+The preparation scripts use the geospatial Python packages listed in
+`environment.yml`. Create that environment, or use an equivalent environment
+that includes GDAL, GeoPandas, Rasterio, Shapely 2, NumPy, Pandas, and tqdm.
+
+The zonal statistics step is run with `zonal_stats_toolkit`. See the toolkit
+repository for its current installation instructions and supported execution
+environment:
+<https://github.com/springinnovate/zonal_stats_toolkit>
 
 ## Data Layout
 
-Project data are intentionally organized by workflow role rather than by source
-download. Large data files are ignored by git.
+The `data/` directory is organized by workflow role.
 
-| Directory | Role |
+| Directory | Contents |
 | --- | --- |
 | `data/analysis_inputs` | Inputs used directly by preprocessing or analysis jobs. This includes source rasters, source vectors, prepared masks, freshwater polygons, and county-level zonal units. |
-| `data/processing_outputs` | Intermediate products that document how analysis inputs were derived but are not final assessment deliverables. |
+| `data/processing_outputs` | Intermediate products that document how analysis inputs were derived. |
 | `data/workflow_assets` | Small tracked configuration files, reclassification tables, and runner configuration. |
 | `data/analysis_results/zonal_statistics` | Individual `zonal_stats_toolkit` outputs, grouped into one subdirectory per final zonal dataset. |
 | `data/analysis_results/combined` | Final joined CSV and GeoPackage deliverables. |
 
-The main analysis inputs are:
+The main input paths are:
 
 | Input | Path |
 | --- | --- |
@@ -41,17 +50,23 @@ The main analysis inputs are:
 | NHDPlus HR geodatabase | `data/analysis_inputs/hydrography/nhdplus/NHDPlus_H_National_Release_2_GDB/NHDPlus_H_National_Release_2_GDB.gdb` |
 | Coastline | `data/analysis_inputs/linear_features/coastline/tl_2019_us_coastline_50_states.gpkg` |
 
-## PAD-US Preparation
+## Execution Workflow
 
-`prepare_padus_all_and_public_lands.py` reads the PAD-US layer
-`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement`, clips it to the
-USA boundary, simplifies geometry with a 15 m tolerance, repairs invalid
-polygonal geometry where possible, and writes two stripped GeoPackage products:
+Run commands from the repository root unless otherwise noted.
 
-| Product | Output directory |
-| --- | --- |
-| All PAD-US lands intersecting the USA boundary | `data/processing_outputs/padus_clipped_to_usa/all_lands` |
-| Public PAD-US lands intersecting the USA boundary | `data/processing_outputs/padus_clipped_to_usa/public_lands` |
+### Preparation
+
+#### 1. Prepare PAD-US Lands
+
+`prepare_padus_all_and_public_lands.py` converts the PAD-US layer
+`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` into two
+USA-clipped GeoPackages. Geometries are simplified with a 15 m tolerance, clipped
+to the USA boundary, and repaired where possible.
+
+- `padus_all_lands_clipped_to_usa_<timestamp>.gpkg` in
+  `data/processing_outputs/padus_clipped_to_usa/all_lands`
+- `padus_public_lands_clipped_to_usa_<timestamp>.gpkg` in
+  `data/processing_outputs/padus_clipped_to_usa/public_lands`
 
 Run:
 
@@ -59,67 +74,46 @@ Run:
 python prepare_padus_all_and_public_lands.py
 ```
 
-The public-land rule is written in the script as explicit constants and in the
-`_feature_is_public` decision function. PAD-US stores coded values in the
-geodatabase even when GIS software displays longer descriptions, so filtering
-uses stored codes.
+The all-land product includes every PAD-US feature that has positive-area
+overlap with the USA boundary after processing.
 
-Features are retained in the public-land output when `Mang_Type` is one of:
+The public-land product is a subset of the all-land product. PAD-US stores
+coded values in the geodatabase even when GIS software displays longer
+descriptions, so the rule uses stored codes:
 
-| Display description | Stored value |
-| --- | --- |
-| Federal | `FED` |
-| State | `STAT` |
-| Local Government | `LOC` |
-| Regional Agency Special District | `DIST` |
-| Joint | `JNT` |
-| Territorial | `TERR` |
+- Keep features where `Mang_Type` is `FED`, `STAT`, `LOC`, `DIST`, `JNT`, or
+  `TERR`. These correspond to Federal, State, Local Government, Regional Agency
+  Special District, Joint, and Territorial managers.
+- If `Mang_Type` is `UNK`, keep the feature only when `Own_Type` is `LOC`,
+  `DIST`, `FED`, `JNT`, or `STAT`. These correspond to Local Government,
+  Regional Agency Special District, Federal, Joint, and State owners.
+- Exclude all other features from the public-land product.
 
-When `Mang_Type` is `UNK` (`Unknown`), the feature is retained only when
-`Own_Type` is one of:
+Both PAD-US products keep only `land_type` and geometry.
 
-| Display description | Stored value |
-| --- | --- |
-| Local Government | `LOC` |
-| Regional Agency Special District | `DIST` |
-| Federal | `FED` |
-| Joint | `JNT` |
-| State | `STAT` |
+#### 2. Cut PAD-US Lands By County
 
-The all-land output uses the same geometry processing, but does not apply the
-public-land attribute rule. Both products keep only `land_type` and geometry.
+`cut_and_flatten_by_county.py` converts a clipped PAD-US product into one
+feature per county. It intersects the input with county boundaries, combines the
+pieces within each county into a single non-overlapping polygon or multipolygon,
+and copies the county attributes plus `land_type`.
 
-## County Zonal Units
-
-`cut_and_flatten_by_county.py` cuts a polygon input by county. For each county,
-it finds input features with positive-area intersection, intersects them with
-the county boundary, unions the pieces into one non-overlapping polygon or
-multipolygon, repairs invalid geometry where possible, and copies the county
-attributes plus the input `land_type` value.
-
-Run the script once for each PAD-US clipped-to-USA product:
+Run the script once for all lands and once for public lands:
 
 ```powershell
-python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\all_lands\padus_all_lands_clipped_to_usa_YYYY_MM_DD_HH_MM_SS.gpkg
-python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\public_lands\padus_public_lands_clipped_to_usa_YYYY_MM_DD_HH_MM_SS.gpkg
+python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\all_lands\padus_all_lands_clipped_to_usa_<timestamp>.gpkg
+python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\public_lands\padus_public_lands_clipped_to_usa_<timestamp>.gpkg
 ```
 
-Outputs are written to:
+The resulting by-county PAD-US products are written under
+`data/analysis_inputs/zonal_units` and become zonal units for later analysis.
 
-| Product | Output directory |
-| --- | --- |
-| PAD-US all lands by county | `data/analysis_inputs/zonal_units/padus_all_lands_by_county` |
-| PAD-US public lands by county | `data/analysis_inputs/zonal_units/padus_public_lands_by_county` |
+#### 3. Prepare Land-Cover Masks
 
-These by-county products become analysis inputs for the final zonal statistics.
-
-## Land-Cover Masks
-
-`generate_nlcd_reclass_masks.py` creates byte rasters from the NLCD 2023 land
-cover raster and the CSV tables in `data/workflow_assets/landcover_reclass`.
-Each output raster uses `1` for selected classes, `0` for unselected classes,
-and `255` for nodata. Outputs are grouped by reclassification table stem under
-`data/analysis_inputs/masks`.
+`generate_nlcd_reclass_masks.py` creates 0/1/nodata byte rasters from the NLCD
+2023 land cover raster and the CSV tables in
+`data/workflow_assets/landcover_reclass`. Outputs are grouped by
+reclassification table under `data/analysis_inputs/masks`.
 
 Run:
 
@@ -127,17 +121,12 @@ Run:
 python generate_nlcd_reclass_masks.py
 ```
 
-The script runs one process per reclassification table, reads the NLCD raster in
-blocks, writes one output raster per table, and shows a progress bar for each
-mask.
-
-## Freshwater Preparation
+#### 4. Prepare Freshwater Polygons
 
 `prepare_nhd_freshwater_clipped_to_usa.py` prepares a simplified NHD freshwater
-polygon layer. It reads `NHDWaterbody` and `NHDArea`, keeps freshwater feature
-types, clips them to the USA boundary, simplifies with a 15 m tolerance, repairs
-invalid polygonal geometry where possible, and writes a timestamped GeoPackage
-to `data/analysis_inputs/hydrography/nhdfreshwater`.
+polygon layer from `NHDWaterbody` and `NHDArea`, clips it to the USA boundary,
+and writes a timestamped GeoPackage under
+`data/analysis_inputs/hydrography/nhdfreshwater`.
 
 Run:
 
@@ -145,22 +134,17 @@ Run:
 python prepare_nhd_freshwater_clipped_to_usa.py
 ```
 
-Freshwater is defined conservatively from NHD `FType` values. The included types
-are based on the USGS NHD feature domains and feature-class descriptions:
+Freshwater is defined conservatively from NHD `FType` values using the USGS NHD
+feature domains:
 <https://www.usgs.gov/ngp-standards-and-specifications/national-hydrography-dataset-nhd-data-dictionary-feature-domains>
 
-| Source layer | FType | Description |
-| --- | --- | --- |
-| `NHDWaterbody` | `390` | LakePond |
-| `NHDWaterbody` | `436` | Reservoir |
-| `NHDWaterbody` | `466` | SwampMarsh |
-| `NHDArea` | `460` | StreamRiver |
-| `NHDArea` | `537` | AreaOfComplexChannels |
+- `NHDWaterbody`: `390` LakePond, `436` Reservoir, and `466` SwampMarsh.
+- `NHDArea`: `460` StreamRiver and `537` AreaOfComplexChannels.
 
-The preparation excludes saltwater, estuarine, canal, ditch, playa, and ice-mass
-classes unless the rule is changed explicitly in the script.
+Saltwater, estuarine, canal, ditch, playa, and ice-mass classes are not included
+unless the rule is changed explicitly in the script.
 
-## Zonal Statistics
+### Zonal Statistics
 
 The zonal statistics configuration is:
 
@@ -168,27 +152,23 @@ The zonal statistics configuration is:
 data/workflow_assets/zonal_stats/snapp_assessment_zonal_stats.yaml
 ```
 
-The runner configuration is INI-style despite the `.yaml` extension. It runs the
-same analysis families for three zonal datasets:
+Before running, update the concrete timestamped vector paths in that file if new
+PAD-US by-county or NHD freshwater products have been generated. The toolkit
+supports glob patterns for raster inputs, but vector inputs are listed as
+explicit GeoPackage paths.
 
-| Zonal dataset | Aggregation vector |
-| --- | --- |
-| Counties | `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` |
-| PAD-US all lands by county | `data/analysis_inputs/zonal_units/padus_all_lands_by_county/padus_all_lands_clipped_by_county_YYYY_MM_DD_HH_MM_SS.gpkg` |
-| PAD-US public lands by county | `data/analysis_inputs/zonal_units/padus_public_lands_by_county/padus_public_lands_clipped_by_county_YYYY_MM_DD_HH_MM_SS.gpkg` |
+The configuration runs the same analysis families for three zonal datasets:
 
-The aggregation key for all jobs is `GEOID`.
+- Counties, keyed by `GEOID`.
+- PAD-US all lands by county, keyed by `GEOID`.
+- PAD-US public lands by county, keyed by `GEOID`.
 
-Before running, update the concrete timestamped paths in the configuration if
-new PAD-US by-county or NHD freshwater products have been generated. The toolkit
-supports glob patterns for rasters, but vector inputs must be concrete paths.
-
-Run from this repository root with the `zonal_stats_toolkit` environment, or an
-equivalent environment that can import the toolkit dependencies, active:
+From this repository root, run the toolkit runner. Replace
+`<zonal_stats_toolkit_repo>` with the path to a local clone of
+[`zonal_stats_toolkit`](https://github.com/springinnovate/zonal_stats_toolkit):
 
 ```powershell
-conda activate zonal-stats-toolkit
-python D:\repositories\zonal_stats_toolkit\runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
+python <zonal_stats_toolkit_repo>\runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
 ```
 
 The configured metrics are:
@@ -201,16 +181,15 @@ The configured metrics are:
 | NHD freshwater polygons | `intersect_area_ha` |
 | Coastline | `intersect_length_km` |
 
-Outputs are written under `data/analysis_results/zonal_statistics` in three
-subdirectories: `counties`, `padus_all_lands`, and `padus_public_lands`.
+The runner writes individual timestamped outputs under
+`data/analysis_results/zonal_statistics`.
 
-## Final Combination
+### Final Combination
 
 `combine_final_zonal_stats_results.py` joins the latest timestamped CSV and
-GeoPackage outputs within each zonal-statistics subdirectory. CSV files are
-joined to CSV outputs, and GeoPackage files are joined to GeoPackage outputs.
-The script keeps shared columns once and raises an error if repeated fields have
-conflicting values for the same `GEOID`.
+GeoPackage outputs within each zonal-statistics subdirectory. Shared columns are
+kept once, and repeated fields with conflicting values for the same `GEOID`
+raise an error.
 
 Run:
 
@@ -218,17 +197,16 @@ Run:
 python combine_final_zonal_stats_results.py
 ```
 
-The final deliverables are written to `data/analysis_results/combined`:
+The final deliverables are:
 
-| Deliverable group | CSV and GeoPackage stem |
-| --- | --- |
-| Counties | `counties_combined_YYYY_MM_DD_HH_MM_SS` |
-| PAD-US all lands by county | `padus_all_lands_combined_YYYY_MM_DD_HH_MM_SS` |
-| PAD-US public lands by county | `padus_public_lands_combined_YYYY_MM_DD_HH_MM_SS` |
+- `counties_combined_<timestamp>.csv` and
+  `counties_combined_<timestamp>.gpkg`.
+- `padus_all_lands_combined_<timestamp>.csv` and
+  `padus_all_lands_combined_<timestamp>.gpkg`.
+- `padus_public_lands_combined_<timestamp>.csv` and
+  `padus_public_lands_combined_<timestamp>.gpkg`.
 
-Use `--check-gpkg-geometry` only when geometry consistency needs to be verified
-during the final join. It is slower and is disabled by default because the
-GeoPackage geometries should already match within each result group.
+By default, these files are written to `data/analysis_results/combined`.
 
 ## Runtime Notes
 
