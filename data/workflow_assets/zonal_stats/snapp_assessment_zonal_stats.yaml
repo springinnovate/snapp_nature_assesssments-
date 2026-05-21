@@ -13,6 +13,12 @@ log_level = INFO
 #
 # The zonal_stats_toolkit runner supports globs for raster inputs, but
 # `agg_vector` and `base_measure_vector` must be concrete paths.
+#
+# Raster metric policy:
+# - Ecosystem service rasters keep additive totals, means, valid area, and the
+#   proportion of valid pixels with nonzero values.
+# - Land-cover masks use valid area and proportion of valid nonzero pixels.
+#   Raw mask sums are avoided because they are selected-pixel counts.
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +29,7 @@ log_level = INFO
 agg_vector = ../../analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg
 agg_layer = tl_2024_us_county_60_states
 agg_field = GEOID
-operations = sum, mean, stdev, valid_count, total_count, area_ha_valid, area_ha_total
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
 base_raster_pattern = ../../analysis_inputs/ecosystem_services/*.tif
 output_csv = ../../analysis_results/zonal_stats/counties_ecosystem_services.csv
 output_gpkg = ../../analysis_results/zonal_stats/counties_ecosystem_services.gpkg
@@ -32,7 +38,7 @@ output_gpkg = ../../analysis_results/zonal_stats/counties_ecosystem_services.gpk
 agg_vector = ../../analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg
 agg_layer = tl_2024_us_county_60_states
 agg_field = GEOID
-operations = sum
+operations = area_ha_valid, proportion_valid_nonzero
 base_raster_pattern = ../../analysis_inputs/masks/*/*.tif
 output_csv = ../../analysis_results/zonal_stats/counties_masks.csv
 output_gpkg = ../../analysis_results/zonal_stats/counties_masks.gpkg
@@ -79,7 +85,7 @@ output_gpkg = ../../analysis_results/zonal_stats/counties_coastline_length.gpkg
 agg_vector = ../../analysis_inputs/zonal_units/padus_all_lands_by_county/padus_all_lands_clipped_by_county_2026_05_17_12_48_37.gpkg
 agg_layer = padus_all_lands_clipped_by_county
 agg_field = GEOID
-operations = sum, mean, stdev, valid_count, total_count, area_ha_valid, area_ha_total
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
 base_raster_pattern = ../../analysis_inputs/ecosystem_services/*.tif
 output_csv = ../../analysis_results/zonal_stats/pad_ecosystem_services.csv
 output_gpkg = ../../analysis_results/zonal_stats/pad_ecosystem_services.gpkg
@@ -88,7 +94,7 @@ output_gpkg = ../../analysis_results/zonal_stats/pad_ecosystem_services.gpkg
 agg_vector = ../../analysis_inputs/zonal_units/padus_all_lands_by_county/padus_all_lands_clipped_by_county_2026_05_17_12_48_37.gpkg
 agg_layer = padus_all_lands_clipped_by_county
 agg_field = GEOID
-operations = sum
+operations = area_ha_valid, proportion_valid_nonzero
 base_raster_pattern = ../../analysis_inputs/masks/*/*.tif
 output_csv = ../../analysis_results/zonal_stats/pad_masks.csv
 output_gpkg = ../../analysis_results/zonal_stats/pad_masks.gpkg
@@ -135,7 +141,7 @@ output_gpkg = ../../analysis_results/zonal_stats/pad_coastline_length.gpkg
 agg_vector = ../../analysis_inputs/zonal_units/padus_public_lands_by_county/padus_public_lands_clipped_by_county_2026_05_17_12_50_19.gpkg
 agg_layer = padus_public_lands_clipped_by_county
 agg_field = GEOID
-operations = sum, mean, stdev, valid_count, total_count, area_ha_valid, area_ha_total
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
 base_raster_pattern = ../../analysis_inputs/ecosystem_services/*.tif
 output_csv = ../../analysis_results/zonal_stats/public_ecosystem_services.csv
 output_gpkg = ../../analysis_results/zonal_stats/public_ecosystem_services.gpkg
@@ -144,7 +150,7 @@ output_gpkg = ../../analysis_results/zonal_stats/public_ecosystem_services.gpkg
 agg_vector = ../../analysis_inputs/zonal_units/padus_public_lands_by_county/padus_public_lands_clipped_by_county_2026_05_17_12_50_19.gpkg
 agg_layer = padus_public_lands_clipped_by_county
 agg_field = GEOID
-operations = sum
+operations = area_ha_valid, proportion_valid_nonzero
 base_raster_pattern = ../../analysis_inputs/masks/*/*.tif
 output_csv = ../../analysis_results/zonal_stats/public_masks.csv
 output_gpkg = ../../analysis_results/zonal_stats/public_masks.gpkg
