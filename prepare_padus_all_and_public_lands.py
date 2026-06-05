@@ -124,6 +124,24 @@ def _ogr_vertex_count(geom: ogr.Geometry) -> int:
     return count
 
 
+def _ogr_geometry_to_shapely(geom: ogr.Geometry):
+    """Convert an OGR geometry to a Shapely geometry.
+
+    PAD-US FileGDB features can be exposed as OGR `MULTISURFACE` geometries.
+    Shapely cannot read those nonlinear wrapper types from WKB, even when the
+    contents are polygonal. Linearizing with OGR first converts them to simple
+    polygonal geometry types such as `MULTIPOLYGON`.
+
+    Args:
+        geom: OGR geometry to convert.
+
+    Returns:
+        Equivalent Shapely geometry with linear OGR geometry types.
+    """
+    linear_geom = geom.GetLinearGeometry()
+    return wkb.loads(bytes(linear_geom.ExportToWkb()))
+
+
 def _read_usa_boundary(process_srs: osr.SpatialReference):
     """Read, reproject, and merge the USA boundary.
 
@@ -149,7 +167,7 @@ def _read_usa_boundary(process_srs: osr.SpatialReference):
         if transform is not None:
             geom = geom.Clone()
             geom.Transform(transform)
-        geoms.append(wkb.loads(bytes(geom.ExportToWkb())))
+        geoms.append(_ogr_geometry_to_shapely(geom))
 
     boundary_vector = None
     boundary_layer = None
@@ -287,7 +305,7 @@ def _process_job(
             if transform is not None:
                 geom = geom.Clone()
                 geom.Transform(transform)
-            shapely_geom = wkb.loads(bytes(geom.ExportToWkb()))
+            shapely_geom = _ogr_geometry_to_shapely(geom)
             if not shapely_geom.is_valid:
                 shapely_geom = repair_polygonal_geometry(shapely_geom)
                 if shapely_geom is None:
