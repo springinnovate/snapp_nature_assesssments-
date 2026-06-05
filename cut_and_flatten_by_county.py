@@ -28,6 +28,7 @@ PADUS_PUBLIC_LANDS_OUT_DIR = Path(
 )
 N_WORKERS = cpu_count() or 1
 TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$")
+INPUT_FIELDS_TO_COPY = ["land_type"]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -191,9 +192,7 @@ def main() -> None:
     ]
     input_geometry_column = input_features.geometry.name
     input_field_names = [
-        field_name
-        for field_name in input_features.columns
-        if field_name != input_geometry_column
+        field_name for field_name in INPUT_FIELDS_TO_COPY if field_name in input_features
     ]
     input_wkbs = input_features.geometry.to_wkb()
     input_field_rows = input_features[input_field_names].to_dict(orient="records")
