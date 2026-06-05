@@ -51,6 +51,7 @@ The main input paths are:
 | USA boundary | `data/analysis_inputs/boundaries/usa_boundary/usa_vector.gpkg` |
 | Counties | `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` |
 | PAD-US geodatabase | `data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb` |
+| Recreation value polygons | `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` |
 | Ecosystem service rasters | `data/analysis_inputs/ecosystem_services/*.tif` |
 | NLCD 2023 land cover raster | `data/analysis_inputs/nlcd/Annual_NLCD_LndCov_2023_CU_C1V0.tif` |
 | Land-cover reclassification tables | `data/workflow_assets/landcover_reclass/*.csv` |
@@ -119,6 +120,36 @@ python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_u
 
 The resulting by-county PAD-US products are written under
 `data/analysis_inputs/zonal_units` and become zonal units for later analysis.
+
+#### 2a. Prepare Recreation Value By County
+
+`prepare_recreation_value_by_county.py` allocates the `val_2024` values from
+`data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` to
+counties. The script reprojects recreation features and counties to EPSG:5070
+for equal-area intersection math, skips recreation features where `val_2024` is
+zero or null, and uses a spatial index over the remaining recreation features to
+find possible county overlaps.
+
+For each positive-area county intersection, the script assigns the county the
+same fraction of the recreation feature value as the county receives of that
+feature's area:
+
+```text
+county_value += val_2024 * (intersection_area / recreation_feature_area)
+```
+
+All counties are kept in the output. Counties without positive-area recreation
+overlap receive `0`. The output fields are `GEOID` and
+`proportional_recreation_val_2024`, with county geometry written in EPSG:5070.
+
+Run:
+
+```powershell
+python prepare_recreation_value_by_county.py
+```
+
+The output is written to
+`data/analysis_inputs/zonal_units/recreation_by_county/recreation_value_by_county_<timestamp>.gpkg`.
 
 #### 3. Prepare Land-Cover Masks
 
