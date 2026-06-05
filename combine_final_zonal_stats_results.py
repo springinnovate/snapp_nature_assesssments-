@@ -13,6 +13,10 @@ Each combined dataset is keyed by `GEOID`. Shared fields such as county names or
 state codes are kept once. If the same field appears in multiple inputs with
 different values for the same `GEOID`, the script raises an error instead of
 silently choosing one.
+
+The prepared recreation value by county is joined after the zonal-stat outputs.
+It is a county-level metric, so PAD-US final outputs receive the value for the
+matching county `GEOID`.
 """
 
 from __future__ import annotations
@@ -30,7 +34,10 @@ from tqdm import tqdm
 
 DEFAULT_RESULTS_DIR = Path("data/analysis_results/zonal_statistics")
 DEFAULT_OUTPUT_DIR = Path("data/analysis_results/combined")
+DEFAULT_RECREATION_DIR = Path("data/analysis_inputs/zonal_units/recreation_by_county")
 JOIN_FIELD = "GEOID"
+RECREATION_VALUE_STEM = "recreation_value_by_county"
+RECREATION_VALUE_FIELD = "proportional_recreation_val_2024"
 INPUT_TIMESTAMP_FORMATS = ("%Y%m%d_%H%M%S", "%Y_%m_%d_%H_%M_%S")
 OUTPUT_TIMESTAMP_FORMAT = "%Y_%m_%d_%H_%M_%S"
 TIMESTAMP_SUFFIX = re.compile(
@@ -138,6 +145,15 @@ def _parse_args() -> argparse.Namespace:
         help="Directory where final combined outputs should be written.",
     )
     parser.add_argument(
+        "--recreation-dir",
+        type=Path,
+        default=DEFAULT_RECREATION_DIR,
+        help=(
+            "Directory containing prepared recreation value by county "
+            "GeoPackages."
+        ),
+    )
+    parser.add_argument(
         "--smoke-test",
         action="store_true",
         help="Run a tiny CSV combine and conflict-detection smoke test.",
@@ -199,6 +215,45 @@ def _latest_job_output(
     if not candidates:
         return None
     return max(candidates, key=lambda path: _input_timestamp(path, job_stem))
+
+
+def _latest_recreation_value_path(recreation_dir: Path) -> Path:
+    """Find the latest prepared recreation value by county GeoPackage.
+
+    Args:
+        recreation_dir: Directory containing recreation value outputs.
+
+    Returns:
+        Latest matching recreation value GeoPackage.
+
+    Raises:
+        FileNotFoundError: If no matching recreation value output exists.
+    """
+    path = _latest_job_output(recreation_dir, RECREATION_VALUE_STEM, ".gpkg")
+    if path is None:
+        raise FileNotFoundError(
+            f"No {RECREATION_VALUE_STEM} GeoPackage found in {recreation_dir}."
+        )
+    return path
+
+
+def _read_recreation_value(path: Path) -> pd.DataFrame:
+    """Read the prepared recreation value fields used by final outputs.
+
+    Args:
+        path: Prepared recreation value GeoPackage.
+
+    Returns:
+        DataFrame containing `GEOID` and the recreation value field.
+    """
+    recreation = gpd.read_file(path, ignore_geometry=True)
+    _validate_join_field(recreation, path)
+    if RECREATION_VALUE_FIELD not in recreation.columns:
+        raise ValueError(f"{path} does not contain required field {RECREATION_VALUE_FIELD}.")
+
+    recreation = recreation[[JOIN_FIELD, RECREATION_VALUE_FIELD]].copy()
+    recreation[JOIN_FIELD] = recreation[JOIN_FIELD].astype(str)
+    return recreation
 
 
 def _latest_group_outputs(
@@ -415,6 +470,83 @@ def _join_metric_frame(
     return combined.join(incoming[new_columns])
 
 
+def _join_recreation_value(
+    combined: pd.DataFrame,
+    recreation: pd.DataFrame,
+    recreation_path: Path,
+    require_all_keys: bool,
+) -> pd.DataFrame:
+    """Join prepared county recreation value onto a combined output frame.
+
+    Args:
+        combined: Existing combined frame indexed by `GEOID`.
+        recreation: Prepared recreation value frame indexed by `GEOID`.
+        recreation_path: Recreation source path, used in error messages.
+        require_all_keys: Whether every combined `GEOID` must be present in the
+            recreation value frame.
+
+    Returns:
+        Combined frame with `proportional_recreation_val_2024` appended.
+
+    Raises:
+        ValueError: If the recreation metric is missing required keys, or if an
+            existing recreation value field has conflicting values.
+    """
+    missing_keys = combined.index.difference(recreation.index)
+    if require_all_keys and not missing_keys.empty:
+        examples = ", ".join(missing_keys.astype(str).tolist()[:10])
+        raise ValueError(
+            f"{recreation_path} is missing {JOIN_FIELD} needed for recreation "
+            f"value join: {examples}"
+        )
+
+    joined_values = (
+        recreation[RECREATION_VALUE_FIELD].reindex(combined.index).fillna(0)
+    )
+    if RECREATION_VALUE_FIELD in combined.columns:
+        if not _aligned_series_equal(
+            combined[RECREATION_VALUE_FIELD], joined_values
+        ).all():
+            raise ValueError(
+                f"{recreation_path} has conflicting duplicate field: "
+                f"{RECREATION_VALUE_FIELD}"
+            )
+        return combined
+
+    combined = combined.copy()
+    combined[RECREATION_VALUE_FIELD] = joined_values
+    return combined
+
+
+def _add_recreation_value_to_output(
+    combined: pd.DataFrame,
+    project_name: str,
+    recreation: pd.DataFrame,
+    recreation_path: Path,
+) -> pd.DataFrame:
+    """Add prepared recreation value to one final output table.
+
+    Args:
+        combined: Combined CSV or GeoPackage frame.
+        project_name: Final output project name.
+        recreation: Prepared recreation value frame indexed by `GEOID`.
+        recreation_path: Recreation source path, used in error messages.
+
+    Returns:
+        Combined frame with recreation value joined.
+    """
+    combined = combined.copy()
+    combined[JOIN_FIELD] = combined[JOIN_FIELD].astype(str)
+    combined = combined.set_index(JOIN_FIELD, drop=False)
+    combined = _join_recreation_value(
+        combined,
+        recreation,
+        recreation_path,
+        require_all_keys=project_name == "counties",
+    )
+    return combined.reset_index(drop=True)
+
+
 def _combine_csvs(paths: list[Path], progress_label: str) -> pd.DataFrame:
     """Combine one result family's CSV outputs.
 
@@ -525,6 +657,7 @@ def _combine_gpkgs(
 def combine_outputs(
     results_dir: Path = DEFAULT_RESULTS_DIR,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
+    recreation_dir: Path = DEFAULT_RECREATION_DIR,
     check_gpkg_geometry: bool = False,
 ) -> list[Path]:
     """Combine latest zonal-stat outputs into final CSV and GPKG datasets.
@@ -532,6 +665,7 @@ def combine_outputs(
     Args:
         results_dir: Directory containing individual zonal-stat outputs.
         output_dir: Directory where final combined outputs should be written.
+        recreation_dir: Directory containing prepared recreation value output.
         check_gpkg_geometry: Whether to run expensive geometry equality checks
             against repeated GPKG geometry columns.
 
@@ -544,6 +678,10 @@ def combine_outputs(
     timestamp = datetime.now().strftime(OUTPUT_TIMESTAMP_FORMAT)
     output_dir.mkdir(parents=True, exist_ok=True)
     written_paths = []
+    recreation_path = _latest_recreation_value_path(recreation_dir)
+    recreation_value = _read_recreation_value(recreation_path)
+    recreation_value = recreation_value.set_index(JOIN_FIELD, drop=False)
+    tqdm.write(f"Using recreation value: {recreation_path}")
 
     if _has_project_directories(results_dir):
         project_items = [
@@ -562,6 +700,12 @@ def combine_outputs(
             if csv_paths is not None:
                 output_path = output_dir / f"{project.output_stem}_{timestamp}.csv"
                 combined_csv = _combine_csvs(csv_paths, project.output_stem)
+                combined_csv = _add_recreation_value_to_output(
+                    combined_csv,
+                    project_name,
+                    recreation_value,
+                    recreation_path,
+                )
                 tqdm.write(f"Writing CSV {output_path}")
                 combined_csv.to_csv(output_path, index=False)
                 written_paths.append(output_path)
@@ -573,6 +717,12 @@ def combine_outputs(
                     gpkg_paths,
                     project.output_stem,
                     check_geometry=check_gpkg_geometry,
+                )
+                combined_gpkg = _add_recreation_value_to_output(
+                    combined_gpkg,
+                    project_name,
+                    recreation_value,
+                    recreation_path,
                 )
                 tqdm.write(f"Writing GPKG {output_path}")
                 combined_gpkg.to_file(
@@ -594,6 +744,12 @@ def combine_outputs(
             if csv_paths is not None:
                 output_path = output_dir / f"{group.output_stem}_{timestamp}.csv"
                 combined_csv = _combine_csvs(csv_paths, group.output_stem)
+                combined_csv = _add_recreation_value_to_output(
+                    combined_csv,
+                    group_name,
+                    recreation_value,
+                    recreation_path,
+                )
                 tqdm.write(f"Writing CSV {output_path}")
                 combined_csv.to_csv(output_path, index=False)
                 written_paths.append(output_path)
@@ -605,6 +761,12 @@ def combine_outputs(
                     gpkg_paths,
                     group.output_stem,
                     check_geometry=check_gpkg_geometry,
+                )
+                combined_gpkg = _add_recreation_value_to_output(
+                    combined_gpkg,
+                    group_name,
+                    recreation_value,
+                    recreation_path,
                 )
                 tqdm.write(f"Writing GPKG {output_path}")
                 combined_gpkg.to_file(
@@ -626,18 +788,75 @@ def _write_smoke_test_inputs(results_dir: Path) -> None:
     Args:
         results_dir: Temporary result directory.
     """
+    geoids_by_group = {
+        "counties": ["001", "002"],
+        "padus_all_lands": ["001"],
+        "padus_public_lands": ["002"],
+    }
     for group_name, group in RESULT_GROUPS.items():
         project_dir = results_dir / group_name
         project_dir.mkdir()
+        geoids = geoids_by_group[group_name]
         for job_number, job_stem in enumerate(group.job_stems):
             frame = pd.DataFrame(
                 {
-                    JOIN_FIELD: ["001", "002"],
-                    "county_name": ["A", "B"],
-                    f"metric_{job_number}": [job_number, job_number + 1],
+                    JOIN_FIELD: geoids,
+                    "county_name": [f"county_{geoid}" for geoid in geoids],
+                    f"metric_{job_number}": [
+                        job_number + row_number
+                        for row_number in range(len(geoids))
+                    ],
                 }
             )
             frame.to_csv(project_dir / f"{job_stem}_20260101_000000.csv", index=False)
+
+
+def _write_smoke_test_recreation_input(recreation_dir: Path) -> None:
+    """Write a tiny prepared recreation value GeoPackage for `--smoke-test`.
+
+    Args:
+        recreation_dir: Temporary recreation value directory.
+    """
+    recreation_dir.mkdir()
+    recreation = gpd.GeoDataFrame(
+        {
+            JOIN_FIELD: ["001", "002", "003"],
+            RECREATION_VALUE_FIELD: [10.0, 20.0, 30.0],
+        },
+        geometry=gpd.points_from_xy([0, 1, 2], [0, 1, 2]),
+        crs="EPSG:5070",
+    )
+    recreation.to_file(
+        recreation_dir / f"{RECREATION_VALUE_STEM}_2026_01_01_00_00_00.gpkg",
+        layer=RECREATION_VALUE_STEM,
+        driver="GPKG",
+        index=False,
+    )
+
+
+def _validate_smoke_test_recreation_values(csv_outputs: list[Path]) -> None:
+    """Validate recreation values written by the smoke test.
+
+    Args:
+        csv_outputs: Smoke-test CSV output paths.
+
+    Raises:
+        AssertionError: If an expected recreation value is missing or wrong.
+    """
+    expected_values = {
+        "counties_combined": {"001": 10.0, "002": 20.0},
+        "padus_all_lands_combined": {"001": 10.0},
+        "padus_public_lands_combined": {"002": 20.0},
+    }
+    for csv_path in csv_outputs:
+        output_stem = TIMESTAMP_SUFFIX.sub("", csv_path.stem)
+        expected = expected_values[output_stem]
+        frame = pd.read_csv(csv_path, dtype={JOIN_FIELD: str})
+        actual = frame.set_index(JOIN_FIELD)[RECREATION_VALUE_FIELD].to_dict()
+        if actual != expected:
+            raise AssertionError(
+                f"Unexpected recreation values for {output_stem}: {actual}"
+            )
 
 
 def _run_smoke_test() -> None:
@@ -646,13 +865,16 @@ def _run_smoke_test() -> None:
         tmpdir_path = Path(tmpdir)
         results_dir = tmpdir_path / "results"
         output_dir = tmpdir_path / "combined"
+        recreation_dir = tmpdir_path / "recreation"
         results_dir.mkdir()
         _write_smoke_test_inputs(results_dir)
+        _write_smoke_test_recreation_input(recreation_dir)
 
-        written = combine_outputs(results_dir, output_dir)
+        written = combine_outputs(results_dir, output_dir, recreation_dir=recreation_dir)
         csv_outputs = [path for path in written if path.suffix == ".csv"]
         if len(csv_outputs) != len(RESULT_GROUPS):
             raise AssertionError("Smoke test did not write one CSV per result group.")
+        _validate_smoke_test_recreation_values(csv_outputs)
 
         conflict_path = (
             results_dir / "counties" / "counties_masks_20260102_000000.csv"
@@ -666,7 +888,7 @@ def _run_smoke_test() -> None:
         ).to_csv(conflict_path, index=False)
 
         try:
-            combine_outputs(results_dir, output_dir)
+            combine_outputs(results_dir, output_dir, recreation_dir=recreation_dir)
         except ValueError as error:
             if "conflicting duplicate field" not in str(error):
                 raise
@@ -685,6 +907,7 @@ def main() -> None:
     written_paths = combine_outputs(
         args.results_dir,
         args.output_dir,
+        recreation_dir=args.recreation_dir,
         check_gpkg_geometry=args.check_gpkg_geometry,
     )
     for path in written_paths:
