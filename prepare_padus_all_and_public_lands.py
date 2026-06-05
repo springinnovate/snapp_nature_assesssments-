@@ -48,6 +48,7 @@ PUBLIC_OUT_DIR = OUT_DIR / "public_lands"
 PUBLIC_OUT_STEM = "padus_public_lands_clipped_to_usa"
 ALL_OUT_STEM = "padus_all_lands_clipped_to_usa"
 FAILURE_STEM = "padus_lands_clipped_to_usa"
+SOURCE_OBJECTID_FIELD = "OBJECTID"
 
 SIMPLIFY_TOLERANCE_METERS = 15.0
 VERTICES_PER_JOB = 10000
@@ -67,6 +68,8 @@ KEEP_MANG_TYPES = {"FED", "STAT", "LOC", "DIST", "JNT", "TERR"}
 KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER = {"LOC", "DIST", "FED", "JNT", "STAT"}
 
 WORKER = {}
+FieldSpec = tuple[str, int, int, int, int]
+OutputRecord = tuple[bytes, dict[str, object]]
 
 
 def _set_axis_order(srs: osr.SpatialReference) -> osr.SpatialReference:
@@ -140,6 +143,47 @@ def _ogr_geometry_to_shapely(geom: ogr.Geometry):
     """
     linear_geom = geom.GetLinearGeometry()
     return wkb.loads(bytes(linear_geom.ExportToWkb()))
+
+
+def _source_field_specs(layer_defn: ogr.FeatureDefn) -> list[FieldSpec]:
+    """Return serializable field definitions from the PAD-US source layer.
+
+    Args:
+        layer_defn: PAD-US source layer definition.
+
+    Returns:
+        Field name, type, subtype, width, and precision for each source field.
+    """
+    field_specs = []
+    for field_index in range(layer_defn.GetFieldCount()):
+        field_defn = layer_defn.GetFieldDefn(field_index)
+        field_specs.append(
+            (
+                field_defn.GetName(),
+                field_defn.GetType(),
+                field_defn.GetSubType(),
+                field_defn.GetWidth(),
+                field_defn.GetPrecision(),
+            )
+        )
+    return field_specs
+
+
+def _feature_source_fields(feature: ogr.Feature, field_names: list[str]) -> dict:
+    """Read source PAD-US attributes for an output feature.
+
+    Args:
+        feature: PAD-US source feature.
+        field_names: Normal source fields to copy.
+
+    Returns:
+        Field values keyed by output field name, including the source FID as
+        `OBJECTID`.
+    """
+    fields = {SOURCE_OBJECTID_FIELD: feature.GetFID()}
+    for field_name in field_names:
+        fields[field_name] = feature.GetField(field_name)
+    return fields
 
 
 def _read_usa_boundary(process_srs: osr.SpatialReference):
@@ -242,6 +286,7 @@ def _build_jobs(layer: ogr.Layer, boundary) -> tuple[list[list[int]], Counter]:
 def _init_worker(
     gdb_path: str,
     layer_name: str,
+    source_field_names: list[str],
     source_srs_wkt: str,
     process_srs_wkt: str,
     boundary_wkb: bytes,
@@ -251,6 +296,7 @@ def _init_worker(
     Args:
         gdb_path: path to a geodatabase.
         layer_name: layer to process in the gdb
+        source_field_names: Source fields to copy into each output row.
         source_srs_wkt: Source layer CRS WKT.
         process_srs_wkt: Processing CRS WKT.
         boundary_wkb: USA boundary WKB in the processing CRS.
@@ -265,13 +311,14 @@ def _init_worker(
     padus_layer = padus_vector.GetLayer(layer_name)
     WORKER["ds"] = padus_vector
     WORKER["layer"] = padus_layer
+    WORKER["source_field_names"] = source_field_names
     WORKER["transform"] = transform
     WORKER["boundary"] = wkb.loads(boundary_wkb)
 
 
 def _process_job(
     fids: list[int],
-) -> tuple[list[bytes], list[bytes], Counter, list[dict[str, str]]]:
+) -> tuple[list[OutputRecord], list[OutputRecord], Counter, list[dict[str, str]]]:
     """Process a chunk of PAD-US FIDs.
 
     Args:
@@ -282,10 +329,11 @@ def _process_job(
         counters, and repair-failure rows.
     """
     layer = WORKER["layer"]
+    source_field_names = WORKER["source_field_names"]
     transform = WORKER["transform"]
     boundary = WORKER["boundary"]
-    all_out_wkbs = []
-    public_out_wkbs = []
+    all_out_records = []
+    public_out_records = []
     failures = []
     stats = Counter()
 
@@ -328,22 +376,24 @@ def _process_job(
                 continue
 
             clipped_wkb = wkb.dumps(clipped)
-            all_out_wkbs.append(clipped_wkb)
+            source_fields = _feature_source_fields(feature, source_field_names)
+            all_out_records.append((clipped_wkb, source_fields))
             stats["all_kept"] += 1
             if _feature_is_public(feature):
-                public_out_wkbs.append(clipped_wkb)
+                public_out_records.append((clipped_wkb, source_fields))
                 stats["public_kept"] += 1
         except Exception as error:
             stats["exceptions"] += 1
             failures.append({"source_fid": fid, "reason": str(error)})
 
-    return all_out_wkbs, public_out_wkbs, stats, failures
+    return all_out_records, public_out_records, stats, failures
 
 
 def _create_output_layer(
     out_path: Path,
     layer_name: str,
     process_srs: osr.SpatialReference,
+    source_field_specs: list[FieldSpec],
 ) -> tuple[ogr.DataSource, ogr.Layer]:
     """Create the output GeoPackage layer.
 
@@ -351,6 +401,7 @@ def _create_output_layer(
         out_path: Output GeoPackage path.
         layer_name: Output layer name.
         process_srs: Output spatial reference.
+        source_field_specs: PAD-US source field definitions to copy.
 
     Returns:
         Output GDAL datasource and layer.
@@ -369,6 +420,15 @@ def _create_output_layer(
     if out_layer is None:
         raise RuntimeError(f"Could not create output layer: {layer_name}")
     out_layer.CreateField(ogr.FieldDefn("land_type", ogr.OFTString))
+    out_layer.CreateField(ogr.FieldDefn(SOURCE_OBJECTID_FIELD, ogr.OFTInteger64))
+    for field_name, field_type, field_subtype, field_width, field_precision in (
+        source_field_specs
+    ):
+        field_defn = ogr.FieldDefn(field_name, field_type)
+        field_defn.SetSubType(field_subtype)
+        field_defn.SetWidth(field_width)
+        field_defn.SetPrecision(field_precision)
+        out_layer.CreateField(field_defn)
 
     return out_ds, out_layer
 
@@ -378,6 +438,7 @@ def _write_geometry_feature(
     out_defn: ogr.FeatureDefn,
     geom_wkb: bytes,
     land_type: str,
+    source_fields: dict[str, object],
 ) -> None:
     """Write one output geometry with its land type.
 
@@ -386,9 +447,13 @@ def _write_geometry_feature(
         out_defn: Destination layer definition.
         geom_wkb: Output geometry WKB.
         land_type: Output land-type label.
+        source_fields: PAD-US source attributes to copy.
     """
     feature = ogr.Feature(out_defn)
     feature.SetField("land_type", land_type)
+    for field_name, value in source_fields.items():
+        if value is not None:
+            feature.SetField(field_name, value)
     feature.SetGeometry(ogr.CreateGeometryFromWkb(geom_wkb))
     out_layer.CreateFeature(feature)
     feature = None
@@ -445,6 +510,8 @@ def main() -> None:
     step_bar.set_description("Open PAD-US")
     padus_vector = gdal.OpenEx(PADUS_GDB_PATH)
     padus_layer = padus_vector.GetLayer(PADUS_LAYER_NAME)
+    source_field_specs = _source_field_specs(padus_layer.GetLayerDefn())
+    source_field_names = [field_spec[0] for field_spec in source_field_specs]
     source_srs = _set_axis_order(padus_layer.GetSpatialRef())
     process_srs = _choose_process_srs(source_srs)
     step_bar.update()
@@ -485,11 +552,13 @@ def main() -> None:
         public_out_path,
         PUBLIC_OUT_STEM,
         process_srs,
+        source_field_specs,
     )
     all_out_ds, all_out_layer = _create_output_layer(
         all_out_path,
         ALL_OUT_STEM,
         process_srs,
+        source_field_specs,
     )
     public_out_defn = public_out_layer.GetLayerDefn()
     all_out_defn = all_out_layer.GetLayerDefn()
@@ -504,6 +573,7 @@ def main() -> None:
     worker_args = (
         PADUS_GDB_PATH,
         PADUS_LAYER_NAME,
+        source_field_names,
         source_srs.ExportToWkt(),
         process_srs.ExportToWkt(),
         wkb.dumps(boundary),
@@ -521,19 +591,26 @@ def main() -> None:
             desc="Process PAD-US jobs",
             unit="job",
         ):
-            all_out_wkbs, public_out_wkbs, stats, job_failures = future.result()
+            all_out_records, public_out_records, stats, job_failures = future.result()
             all_stats.update(stats)
             failures.extend(job_failures)
 
-            for geom_wkb in all_out_wkbs:
-                _write_geometry_feature(all_out_layer, all_out_defn, geom_wkb, "all")
+            for geom_wkb, source_fields in all_out_records:
+                _write_geometry_feature(
+                    all_out_layer,
+                    all_out_defn,
+                    geom_wkb,
+                    "all",
+                    source_fields,
+                )
                 all_written += 1
-            for geom_wkb in public_out_wkbs:
+            for geom_wkb, source_fields in public_out_records:
                 _write_geometry_feature(
                     public_out_layer,
                     public_out_defn,
                     geom_wkb,
                     "public",
+                    source_fields,
                 )
                 public_written += 1
 
