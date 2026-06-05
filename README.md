@@ -89,6 +89,10 @@ The public-land product is a subset of the all-land product. PAD-US stores
 coded values in the geodatabase even when GIS software displays longer
 descriptions, so the rule uses stored codes:
 
+- Before applying the inclusion rules, exclude features where `Pub_Access` is
+  `XA` (closed access), `Own_Type` is `PVT` (private owner), `Mang_Name` or
+  `Own_Name` is `DOD` or `DOE`, or `Des_Tp` is `MIL`. The `Pub_Access` value
+  `UK` (unknown access) is not excluded by itself.
 - Keep features where `Mang_Type` is `FED`, `STAT`, `LOC`, `DIST`, `JNT`, or
   `TERR`. These correspond to Federal, State, Local Government, Regional Agency
   Special District, Joint, and Territorial managers.

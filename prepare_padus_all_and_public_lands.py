@@ -9,7 +9,7 @@ scan:
 
 The public-land rule is intentionally kept in this file as plain constants and
 branching logic. If the project definition of public land changes, start with
-`KEEP_MANG_TYPES`, `KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER`, and
+`EXCLUDE_*`, `KEEP_MANG_TYPES`, `KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER`, and
 `_feature_is_public`.
 """
 
@@ -56,6 +56,16 @@ N_WORKERS = cpu_count()
 # PAD-US stores coded values in the geodatabase even when GIS software displays
 # longer descriptions. Edit these stored codes when the public-land rule changes.
 #
+# Exclusion rule:
+# - Remove closed-access, private-owned, military/defense, and Department of
+#   Energy records before applying the manager and owner inclusion rules.
+EXCLUDE_PUB_ACCESS = {"XA"}
+EXCLUDE_OWN_TYPES = {"PVT"}
+EXCLUDE_MANG_NAMES = {"DOD", "DOE"}
+EXCLUDE_OWN_NAMES = {"DOD", "DOE"}
+EXCLUDE_DES_TYPES = {"MIL"}
+
+#
 # Manager rule:
 # - Keep Federal, State, Local Government, Regional Agency Special District,
 #   Joint, and Territorial managed lands in the public-land output.
@@ -92,6 +102,20 @@ def _feature_is_public(feature: ogr.Feature) -> bool:
         True if the feature should be included in the public-land output.
     """
     mang_type = feature.GetField("Mang_Type")
+    own_type = feature.GetField("Own_Type")
+    mang_name = feature.GetField("Mang_Name")
+    own_name = feature.GetField("Own_Name")
+    des_type = feature.GetField("Des_Tp")
+    pub_access = feature.GetField("Pub_Access")
+
+    if (
+        pub_access in EXCLUDE_PUB_ACCESS
+        or own_type in EXCLUDE_OWN_TYPES
+        or mang_name in EXCLUDE_MANG_NAMES
+        or own_name in EXCLUDE_OWN_NAMES
+        or des_type in EXCLUDE_DES_TYPES
+    ):
+        return False
 
     # First preference: use manager type. These codes are the clearest signal
     # that a feature belongs in the public-land output.
@@ -100,10 +124,7 @@ def _feature_is_public(feature: ogr.Feature) -> bool:
 
     # Fallback: when the manager is unknown, use owner type as a secondary
     # public-land signal. Unknown manager plus any other owner code is excluded.
-    return (
-        mang_type == "UNK"
-        and feature.GetField("Own_Type") in KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER
-    )
+    return mang_type == "UNK" and own_type in KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER
 
 
 def _ogr_vertex_count(geom: ogr.Geometry) -> int:
