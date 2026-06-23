@@ -247,7 +247,12 @@ The runner writes individual timestamped outputs under
 `combine_final_zonal_stats_results.py` joins the latest timestamped CSV and
 GeoPackage outputs within each zonal-statistics subdirectory. Shared columns are
 kept once, and repeated fields with conflicting values for the same `GEOID`
-raise an error. During this step, timestamped NLCD mask artifact fields such as
+raise an error. It also joins the latest prepared recreation value by county
+from `data/analysis_inputs/zonal_units/recreation_by_county`, carrying only
+`proportional_recreation_val_2024` into the county, PAD-US all-land, and PAD-US
+public-land final outputs.
+
+During this step, timestamped NLCD mask artifact fields such as
 `area_ha_valid_reclassified_NLCD2023_*` are replaced with stable derived class
 area fields:
 
@@ -275,6 +280,7 @@ The final deliverables are:
   `padus_public_lands_combined_<timestamp>.gpkg`.
 
 By default, these files are written to `data/analysis_results/combined`.
+Each contains `proportional_recreation_val_2024` joined by `GEOID`.
 
 ## Runtime Notes
 
