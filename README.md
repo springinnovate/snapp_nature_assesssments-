@@ -252,6 +252,18 @@ from `data/analysis_inputs/zonal_units/recreation_by_county`, carrying only
 `proportional_recreation_val_2024` into the county, PAD-US all-land, and PAD-US
 public-land final outputs.
 
+During this step, timestamped NLCD mask artifact fields such as
+`area_ha_valid_reclassified_NLCD2023_*` are replaced with stable derived class
+area fields:
+
+- `area_ha_nlcd_forests`
+- `area_ha_nlcd_grasslands`
+- `area_ha_nlcd_shrubland`
+- `area_ha_nlcd_water_snow`
+- `area_ha_nlcd_wetlands`
+
+The final outputs keep the corresponding `proportion_valid_nonzero_*` fields.
+
 Run:
 
 ```powershell
