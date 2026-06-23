@@ -31,6 +31,15 @@ from tqdm import tqdm
 DEFAULT_RESULTS_DIR = Path("data/analysis_results/zonal_statistics")
 DEFAULT_OUTPUT_DIR = Path("data/analysis_results/combined")
 JOIN_FIELD = "GEOID"
+NLCD_VALID_AREA_PREFIX = "area_ha_valid_reclassified_NLCD2023_"
+NLCD_PROPORTION_PREFIX = "proportion_valid_nonzero_reclassified_NLCD2023_"
+NLCD_CLASS_AREA_FIELDS = (
+    ("forests", "area_ha_nlcd_forests"),
+    ("grasslands", "area_ha_nlcd_grasslands"),
+    ("shrubland", "area_ha_nlcd_shrubland"),
+    ("water_snow", "area_ha_nlcd_water_snow"),
+    ("wetlands", "area_ha_nlcd_wetlands"),
+)
 INPUT_TIMESTAMP_FORMATS = ("%Y%m%d_%H%M%S", "%Y_%m_%d_%H_%M_%S")
 OUTPUT_TIMESTAMP_FORMAT = "%Y_%m_%d_%H_%M_%S"
 TIMESTAMP_SUFFIX = re.compile(
@@ -415,6 +424,80 @@ def _join_metric_frame(
     return combined.join(incoming[new_columns])
 
 
+def _find_nlcd_mask_column(
+    frame: pd.DataFrame,
+    prefix: str,
+    class_name: str,
+) -> str | None:
+    """Find one timestamped NLCD mask metric column.
+
+    Args:
+        frame: Combined output frame.
+        prefix: Metric column prefix.
+        class_name: NLCD class group name such as `forests`.
+
+    Returns:
+        Matching column name, or None when the class metric is absent.
+
+    Raises:
+        ValueError: If multiple matching columns are present.
+    """
+    column_prefix = f"{prefix}{class_name}"
+    matches = [column for column in frame.columns if column.startswith(column_prefix)]
+    if len(matches) > 1:
+        raise ValueError(
+            f"Expected one NLCD mask column matching {column_prefix}, "
+            f"found {len(matches)}: {', '.join(matches)}"
+        )
+    if not matches:
+        return None
+    return matches[0]
+
+
+def _derive_nlcd_class_area_fields(frame: pd.DataFrame) -> pd.DataFrame:
+    """Derive stable NLCD class area fields and drop valid-area artifacts.
+
+    Args:
+        frame: Combined CSV or GeoPackage output frame.
+
+    Returns:
+        Output frame with `area_ha_nlcd_*` fields added and
+        `area_ha_valid_reclassified_NLCD2023_*` fields removed.
+
+    Raises:
+        ValueError: If a land-cover class has only one of the area/proportion
+            input fields.
+    """
+    frame = frame.copy()
+    valid_area_columns_to_drop = []
+    for class_name, output_field in NLCD_CLASS_AREA_FIELDS:
+        valid_area_column = _find_nlcd_mask_column(
+            frame,
+            NLCD_VALID_AREA_PREFIX,
+            class_name,
+        )
+        proportion_column = _find_nlcd_mask_column(
+            frame,
+            NLCD_PROPORTION_PREFIX,
+            class_name,
+        )
+        if valid_area_column is None and proportion_column is None:
+            continue
+        if valid_area_column is None or proportion_column is None:
+            raise ValueError(
+                f"Cannot derive {output_field}; expected both "
+                f"{NLCD_VALID_AREA_PREFIX}{class_name}* and "
+                f"{NLCD_PROPORTION_PREFIX}{class_name}*."
+            )
+
+        frame[output_field] = frame[valid_area_column] * frame[proportion_column]
+        valid_area_columns_to_drop.append(valid_area_column)
+
+    if valid_area_columns_to_drop:
+        frame = frame.drop(columns=valid_area_columns_to_drop)
+    return frame
+
+
 def _combine_csvs(paths: list[Path], progress_label: str) -> pd.DataFrame:
     """Combine one result family's CSV outputs.
 
@@ -562,6 +645,7 @@ def combine_outputs(
             if csv_paths is not None:
                 output_path = output_dir / f"{project.output_stem}_{timestamp}.csv"
                 combined_csv = _combine_csvs(csv_paths, project.output_stem)
+                combined_csv = _derive_nlcd_class_area_fields(combined_csv)
                 tqdm.write(f"Writing CSV {output_path}")
                 combined_csv.to_csv(output_path, index=False)
                 written_paths.append(output_path)
@@ -574,6 +658,7 @@ def combine_outputs(
                     project.output_stem,
                     check_geometry=check_gpkg_geometry,
                 )
+                combined_gpkg = _derive_nlcd_class_area_fields(combined_gpkg)
                 tqdm.write(f"Writing GPKG {output_path}")
                 combined_gpkg.to_file(
                     output_path,
@@ -594,6 +679,7 @@ def combine_outputs(
             if csv_paths is not None:
                 output_path = output_dir / f"{group.output_stem}_{timestamp}.csv"
                 combined_csv = _combine_csvs(csv_paths, group.output_stem)
+                combined_csv = _derive_nlcd_class_area_fields(combined_csv)
                 tqdm.write(f"Writing CSV {output_path}")
                 combined_csv.to_csv(output_path, index=False)
                 written_paths.append(output_path)
@@ -606,6 +692,7 @@ def combine_outputs(
                     group.output_stem,
                     check_geometry=check_gpkg_geometry,
                 )
+                combined_gpkg = _derive_nlcd_class_area_fields(combined_gpkg)
                 tqdm.write(f"Writing GPKG {output_path}")
                 combined_gpkg.to_file(
                     output_path,
@@ -630,14 +717,56 @@ def _write_smoke_test_inputs(results_dir: Path) -> None:
         project_dir = results_dir / group_name
         project_dir.mkdir()
         for job_number, job_stem in enumerate(group.job_stems):
-            frame = pd.DataFrame(
-                {
-                    JOIN_FIELD: ["001", "002"],
-                    "county_name": ["A", "B"],
-                    f"metric_{job_number}": [job_number, job_number + 1],
-                }
-            )
+            rows = {
+                JOIN_FIELD: ["001", "002"],
+                "county_name": ["A", "B"],
+                f"metric_{job_number}": [job_number, job_number + 1],
+            }
+            if job_stem.endswith("_masks"):
+                for class_index, (class_name, _) in enumerate(NLCD_CLASS_AREA_FIELDS):
+                    rows[
+                        f"{NLCD_VALID_AREA_PREFIX}{class_name}_2026_01_01_00_00_00"
+                    ] = [100.0, 200.0]
+                    rows[
+                        f"{NLCD_PROPORTION_PREFIX}{class_name}_2026_01_01_00_00_00"
+                    ] = [0.1 * (class_index + 1), 0.2 * (class_index + 1)]
+            frame = pd.DataFrame(rows)
             frame.to_csv(project_dir / f"{job_stem}_20260101_000000.csv", index=False)
+
+
+def _validate_smoke_test_nlcd_fields(csv_outputs: list[Path]) -> None:
+    """Validate derived NLCD class area fields written by the smoke test.
+
+    Args:
+        csv_outputs: Smoke-test CSV output paths.
+
+    Raises:
+        AssertionError: If the derived NLCD fields are missing or wrong, or if
+            dropped valid-area artifact fields remain.
+    """
+    for csv_path in csv_outputs:
+        frame = pd.read_csv(csv_path, dtype={JOIN_FIELD: str})
+        artifact_columns = [
+            column
+            for column in frame.columns
+            if column.startswith(NLCD_VALID_AREA_PREFIX)
+        ]
+        if artifact_columns:
+            raise AssertionError(
+                f"Smoke test retained NLCD valid-area artifact fields: "
+                + ", ".join(artifact_columns)
+            )
+
+        for class_index, (_, output_field) in enumerate(NLCD_CLASS_AREA_FIELDS):
+            if output_field not in frame.columns:
+                raise AssertionError(f"Smoke test missing derived field {output_field}.")
+            expected = [10.0 * (class_index + 1), 40.0 * (class_index + 1)]
+            actual = frame[output_field].tolist()
+            if any(abs(left - right) > 1e-9 for left, right in zip(actual, expected)):
+                raise AssertionError(
+                    f"Smoke test wrote unexpected values for {output_field}: "
+                    f"{actual}"
+                )
 
 
 def _run_smoke_test() -> None:
@@ -653,6 +782,7 @@ def _run_smoke_test() -> None:
         csv_outputs = [path for path in written if path.suffix == ".csv"]
         if len(csv_outputs) != len(RESULT_GROUPS):
             raise AssertionError("Smoke test did not write one CSV per result group.")
+        _validate_smoke_test_nlcd_fields(csv_outputs)
 
         conflict_path = (
             results_dir / "counties" / "counties_masks_20260102_000000.csv"

@@ -247,7 +247,17 @@ The runner writes individual timestamped outputs under
 `combine_final_zonal_stats_results.py` joins the latest timestamped CSV and
 GeoPackage outputs within each zonal-statistics subdirectory. Shared columns are
 kept once, and repeated fields with conflicting values for the same `GEOID`
-raise an error.
+raise an error. During this step, timestamped NLCD mask artifact fields such as
+`area_ha_valid_reclassified_NLCD2023_*` are replaced with stable derived class
+area fields:
+
+- `area_ha_nlcd_forests`
+- `area_ha_nlcd_grasslands`
+- `area_ha_nlcd_shrubland`
+- `area_ha_nlcd_water_snow`
+- `area_ha_nlcd_wetlands`
+
+The final outputs keep the corresponding `proportion_valid_nonzero_*` fields.
 
 Run:
 
