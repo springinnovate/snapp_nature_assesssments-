@@ -1,20 +1,19 @@
-"""Prepare all-land and public-land PAD-US layers clipped to the USA boundary.
+"""Prepare all-land, public-land, and public-access PAD-US layers.
 
-This script creates two cleaned PAD-US products from the same source feature
+This script creates three cleaned PAD-US products from the same source feature
 scan:
 
 - all lands: every PAD-US feature with positive-area overlap after clipping
-- public lands: the subset of clipped PAD-US features that passes the
-  `Mang_Type` / `Own_Type` public-land rule below
+- public lands: features passing the configured ownership/management rule
+- public access: public-land features passing the configured access rule
 
-The public-land rule is intentionally kept in this file as plain constants and
-branching logic. If the project definition of public land changes, start with
-`EXCLUDE_*`, `KEEP_MANG_TYPES`, `KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER`, and
-`_feature_is_public`.
+Classification policy is stored in `config/padus_land_rules.rules` and parsed
+by `padus_land_rules` without executing Python or SQL.
 """
 
 from __future__ import annotations
 
+import argparse
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
@@ -28,6 +27,15 @@ from shapely import wkb
 from tqdm import tqdm
 
 from geometry_utils import repair_polygonal_geometry
+from padus_land_rules import (
+    PADUS_RULE_FIELDS,
+    VIRTUAL_MANAGER_VALUES,
+    RuleConfigError,
+    RuleSet,
+    build_rule_context,
+    load_rule_config,
+    parse_rule_config,
+)
 
 gdal.UseExceptions()
 ogr.UseExceptions()
@@ -45,37 +53,17 @@ USA_BOUNDARY_PATH = Path("data/analysis_inputs/boundaries/usa_boundary/usa_vecto
 OUT_DIR = Path("data/processing_outputs/padus_clipped_to_usa")
 ALL_OUT_DIR = OUT_DIR / "all_lands"
 PUBLIC_OUT_DIR = OUT_DIR / "public_lands"
+PUBLIC_ACCESS_OUT_DIR = OUT_DIR / "public_access_lands"
 PUBLIC_OUT_STEM = "padus_public_lands_clipped_to_usa"
+PUBLIC_ACCESS_OUT_STEM = "padus_public_access_lands_clipped_to_usa"
 ALL_OUT_STEM = "padus_all_lands_clipped_to_usa"
 FAILURE_STEM = "padus_lands_clipped_to_usa"
 SOURCE_OBJECTID_FIELD = "OBJECTID"
+DEFAULT_RULE_CONFIG_PATH = Path("config/padus_land_rules.rules")
 
 SIMPLIFY_TOLERANCE_METERS = 15.0
 VERTICES_PER_JOB = 10000
 N_WORKERS = cpu_count()
-
-# PAD-US stores coded values in the geodatabase even when GIS software displays
-# longer descriptions. Edit these stored codes when the public-land rule changes.
-#
-# Exclusion rule:
-# - Remove closed-access, private-owned, military/defense, and Department of
-#   Energy records before applying the manager and owner inclusion rules.
-EXCLUDE_PUB_ACCESS = {"XA"}
-EXCLUDE_OWN_TYPES = {"PVT"}
-EXCLUDE_MANG_NAMES = {"DOD", "DOE"}
-EXCLUDE_OWN_NAMES = {"DOD", "DOE"}
-EXCLUDE_DES_TYPES = {"MIL"}
-
-#
-# Manager rule:
-# - Keep Federal, State, Local Government, Regional Agency Special District,
-#   Joint, and Territorial managed lands in the public-land output.
-KEEP_MANG_TYPES = {"FED", "STAT", "LOC", "DIST", "JNT", "TERR"}
-
-# Owner fallback rule:
-# - If Manager Type is Unknown (`UNK`), keep features only when Owner Type is
-#   Local Government, Regional Agency Special District, Federal, Joint, or State.
-KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER = {"LOC", "DIST", "FED", "JNT", "STAT"}
 
 WORKER = {}
 FieldSpec = tuple[str, int, int, int, int]
@@ -95,39 +83,72 @@ def _set_axis_order(srs: osr.SpatialReference) -> osr.SpatialReference:
     return srs
 
 
-def _feature_is_public(feature: ogr.Feature) -> bool:
-    """Return whether a PAD-US feature passes the public-land rules.
+def _parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Prepare all-land, public-land, and public-access PAD-US layers."
+        )
+    )
+    parser.add_argument(
+        "--rules-config",
+        type=Path,
+        default=DEFAULT_RULE_CONFIG_PATH,
+        help="Human-readable PAD-US land-classification rule file.",
+    )
+    return parser.parse_args()
+
+
+def _feature_classifications(
+    feature: ogr.Feature,
+    rules: RuleSet,
+) -> dict[str, bool]:
+    """Evaluate configured classifications for one PAD-US feature.
 
     Args:
         feature: PAD-US source feature.
+        rules: Parsed public-land and public-access rules.
 
     Returns:
-        True if the feature should be included in the public-land output.
+        Boolean results keyed by configured rule name.
     """
-    mang_type = feature.GetField("Mang_Type")
-    own_type = feature.GetField("Own_Type")
-    mang_name = feature.GetField("Mang_Name")
-    own_name = feature.GetField("Own_Name")
-    des_type = feature.GetField("Des_Tp")
-    pub_access = feature.GetField("Pub_Access")
+    attributes = {
+        field_name: feature.GetField(field_name)
+        for field_name in (*PADUS_RULE_FIELDS, "Mang_Name", "Loc_Mang")
+    }
+    classifications = rules.evaluate(build_rule_context(attributes))
+    if classifications["public_access"] and not classifications["public_land"]:
+        raise RuleConfigError(
+            "The configured public_access rule selected a feature that the "
+            "public_land rule did not select."
+        )
+    return classifications
 
-    if (
-        pub_access in EXCLUDE_PUB_ACCESS
-        or own_type in EXCLUDE_OWN_TYPES
-        or mang_name in EXCLUDE_MANG_NAMES
-        or own_name in EXCLUDE_OWN_NAMES
-        or des_type in EXCLUDE_DES_TYPES
-    ):
-        return False
 
-    # First preference: use manager type. These codes are the clearest signal
-    # that a feature belongs in the public-land output.
-    if mang_type in KEEP_MANG_TYPES:
-        return True
-
-    # Fallback: when the manager is unknown, use owner type as a secondary
-    # public-land signal. Unknown manager plus any other owner code is excluded.
-    return mang_type == "UNK" and own_type in KEEP_OWN_TYPES_WHEN_UNKNOWN_MANAGER
+def _rule_domain_values(
+    dataset: gdal.Dataset,
+    layer: ogr.Layer,
+) -> dict[str, set[str] | frozenset[str]]:
+    """Read allowed configured values from PAD-US coded field domains."""
+    layer_defn = layer.GetLayerDefn()
+    allowed_values: dict[str, set[str] | frozenset[str]] = {}
+    for field_name in PADUS_RULE_FIELDS:
+        field_index = layer_defn.GetFieldIndex(field_name)
+        if field_index < 0:
+            raise RuleConfigError(
+                f"PAD-US layer does not contain required rule field {field_name!r}."
+            )
+        field_defn = layer_defn.GetFieldDefn(field_index)
+        domain_name = field_defn.GetDomainName()
+        domain = dataset.GetFieldDomain(domain_name) if domain_name else None
+        enumeration = domain.GetEnumeration() if domain is not None else None
+        if not enumeration:
+            raise RuleConfigError(
+                f"PAD-US field {field_name!r} does not expose a coded domain."
+            )
+        allowed_values[field_name] = set(enumeration)
+    allowed_values["manager"] = VIRTUAL_MANAGER_VALUES
+    return allowed_values
 
 
 def _ogr_vertex_count(geom: ogr.Geometry) -> int:
@@ -243,12 +264,17 @@ def _read_usa_boundary(process_srs: osr.SpatialReference):
     return boundary
 
 
-def _build_jobs(layer: ogr.Layer, boundary) -> tuple[list[list[int]], Counter]:
+def _build_jobs(
+    layer: ogr.Layer,
+    boundary,
+    rules: RuleSet,
+) -> tuple[list[list[int]], Counter]:
     """Scan PAD-US features and group candidate FIDs into vertex-sized jobs.
 
     Args:
         layer: PAD-US source layer.
         boundary: USA boundary geometry in the source layer CRS.
+        rules: Parsed public-land and public-access rules.
 
     Returns:
         Job FID lists and scan counters.
@@ -289,8 +315,11 @@ def _build_jobs(layer: ogr.Layer, boundary) -> tuple[list[list[int]], Counter]:
         current_vertices += feature_vertices
         stats["candidate_features"] += 1
         stats["candidate_vertices"] += feature_vertices
-        if _feature_is_public(feature):
+        classifications = _feature_classifications(feature, rules)
+        if classifications["public_land"]:
             stats["public_candidate_features"] += 1
+        if classifications["public_access"]:
+            stats["public_access_candidate_features"] += 1
 
         if current_vertices >= VERTICES_PER_JOB:
             jobs.append(current_job)
@@ -308,6 +337,7 @@ def _init_worker(
     gdb_path: str,
     layer_name: str,
     source_field_names: list[str],
+    rule_config_text: str,
     source_srs_wkt: str,
     process_srs_wkt: str,
     boundary_wkb: bytes,
@@ -318,6 +348,7 @@ def _init_worker(
         gdb_path: path to a geodatabase.
         layer_name: layer to process in the gdb
         source_field_names: Source fields to copy into each output row.
+        rule_config_text: Validated land-classification rule configuration.
         source_srs_wkt: Source layer CRS WKT.
         process_srs_wkt: Processing CRS WKT.
         boundary_wkb: USA boundary WKB in the processing CRS.
@@ -333,28 +364,37 @@ def _init_worker(
     WORKER["ds"] = padus_vector
     WORKER["layer"] = padus_layer
     WORKER["source_field_names"] = source_field_names
+    WORKER["rules"] = parse_rule_config(rule_config_text)
     WORKER["transform"] = transform
     WORKER["boundary"] = wkb.loads(boundary_wkb)
 
 
 def _process_job(
     fids: list[int],
-) -> tuple[list[OutputRecord], list[OutputRecord], Counter, list[dict[str, str]]]:
+) -> tuple[
+    list[OutputRecord],
+    list[OutputRecord],
+    list[OutputRecord],
+    Counter,
+    list[dict[str, str]],
+]:
     """Process a chunk of PAD-US FIDs.
 
     Args:
         fids: Source feature IDs to process.
 
     Returns:
-        All-land output WKB values, public-land output WKB values, processing
-        counters, and repair-failure rows.
+        All-land, public-land, and public-access output records, followed by
+        processing counters and repair-failure rows.
     """
     layer = WORKER["layer"]
     source_field_names = WORKER["source_field_names"]
+    rules = WORKER["rules"]
     transform = WORKER["transform"]
     boundary = WORKER["boundary"]
     all_out_records = []
     public_out_records = []
+    public_access_out_records = []
     failures = []
     stats = Counter()
 
@@ -400,14 +440,24 @@ def _process_job(
             source_fields = _feature_source_fields(feature, source_field_names)
             all_out_records.append((clipped_wkb, source_fields))
             stats["all_kept"] += 1
-            if _feature_is_public(feature):
+            classifications = _feature_classifications(feature, rules)
+            if classifications["public_land"]:
                 public_out_records.append((clipped_wkb, source_fields))
                 stats["public_kept"] += 1
+            if classifications["public_access"]:
+                public_access_out_records.append((clipped_wkb, source_fields))
+                stats["public_access_kept"] += 1
         except Exception as error:
             stats["exceptions"] += 1
             failures.append({"source_fid": fid, "reason": str(error)})
 
-    return all_out_records, public_out_records, stats, failures
+    return (
+        all_out_records,
+        public_out_records,
+        public_access_out_records,
+        stats,
+        failures,
+    )
 
 
 def _create_output_layer(
@@ -515,14 +565,21 @@ def _choose_process_srs(
 
 def main() -> None:
     """Run the PAD-US preprocessing workflow."""
+    args = _parse_args()
+    rule_config_text, rules = load_rule_config(args.rules_config)
+
     # the GDB has tons of broken polygons, this says ignore it when loading
     # which will make the load faster then we're fixing it in this script
     # anyway
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     public_out_path = PUBLIC_OUT_DIR / f"{PUBLIC_OUT_STEM}_{timestamp}.gpkg"
+    public_access_out_path = (
+        PUBLIC_ACCESS_OUT_DIR / f"{PUBLIC_ACCESS_OUT_STEM}_{timestamp}.gpkg"
+    )
     all_out_path = ALL_OUT_DIR / f"{ALL_OUT_STEM}_{timestamp}.gpkg"
     failure_path = OUT_DIR / f"{FAILURE_STEM}_{timestamp}_skipped.csv"
     PUBLIC_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    PUBLIC_ACCESS_OUT_DIR.mkdir(parents=True, exist_ok=True)
     ALL_OUT_DIR.mkdir(parents=True, exist_ok=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -531,6 +588,7 @@ def main() -> None:
     step_bar.set_description("Open PAD-US")
     padus_vector = gdal.OpenEx(PADUS_GDB_PATH)
     padus_layer = padus_vector.GetLayer(PADUS_LAYER_NAME)
+    rules.validate(_rule_domain_values(padus_vector, padus_layer))
     source_field_specs = _source_field_specs(padus_layer.GetLayerDefn())
     source_field_names = [field_spec[0] for field_spec in source_field_specs]
     source_srs = _set_axis_order(padus_layer.GetSpatialRef())
@@ -549,7 +607,7 @@ def main() -> None:
         boundary_ogr.Transform(process_to_source)
         boundary_for_scan = wkb.loads(bytes(boundary_ogr.ExportToWkb()))
 
-    jobs, scan_stats = _build_jobs(padus_layer, boundary_for_scan)
+    jobs, scan_stats = _build_jobs(padus_layer, boundary_for_scan, rules)
     padus_layer = None
     padus_vector = None
     step_bar.update()
@@ -565,13 +623,21 @@ def main() -> None:
         flush=True,
     )
     print(f"Public output: {public_out_path}", flush=True)
+    print(f"Public-access output: {public_access_out_path}", flush=True)
     print(f"All-lands output: {all_out_path}", flush=True)
+    print(f"Rules: {args.rules_config}", flush=True)
     print(f"Failure log: {failure_path}", flush=True)
 
     step_bar.set_description("Create outputs")
     public_out_ds, public_out_layer = _create_output_layer(
         public_out_path,
         PUBLIC_OUT_STEM,
+        process_srs,
+        source_field_specs,
+    )
+    public_access_out_ds, public_access_out_layer = _create_output_layer(
+        public_access_out_path,
+        PUBLIC_ACCESS_OUT_STEM,
         process_srs,
         source_field_specs,
     )
@@ -582,6 +648,7 @@ def main() -> None:
         source_field_specs,
     )
     public_out_defn = public_out_layer.GetLayerDefn()
+    public_access_out_defn = public_access_out_layer.GetLayerDefn()
     all_out_defn = all_out_layer.GetLayerDefn()
     step_bar.update()
 
@@ -589,12 +656,14 @@ def main() -> None:
     all_stats = Counter()
     failures = []
     public_written = 0
+    public_access_written = 0
     all_written = 0
 
     worker_args = (
         PADUS_GDB_PATH,
         PADUS_LAYER_NAME,
         source_field_names,
+        rule_config_text,
         source_srs.ExportToWkt(),
         process_srs.ExportToWkt(),
         wkb.dumps(boundary),
@@ -612,7 +681,13 @@ def main() -> None:
             desc="Process PAD-US jobs",
             unit="job",
         ):
-            all_out_records, public_out_records, stats, job_failures = future.result()
+            (
+                all_out_records,
+                public_out_records,
+                public_access_out_records,
+                stats,
+                job_failures,
+            ) = future.result()
             all_stats.update(stats)
             failures.extend(job_failures)
 
@@ -634,11 +709,22 @@ def main() -> None:
                     source_fields,
                 )
                 public_written += 1
+            for geom_wkb, source_fields in public_access_out_records:
+                _write_geometry_feature(
+                    public_access_out_layer,
+                    public_access_out_defn,
+                    geom_wkb,
+                    "public_access",
+                    source_fields,
+                )
+                public_access_written += 1
 
     all_out_ds.FlushCache()
     public_out_ds.FlushCache()
+    public_access_out_ds.FlushCache()
     all_out_ds = None
     public_out_ds = None
+    public_access_out_ds = None
 
     if failures:
         _write_failures(failure_path, failures)
@@ -654,6 +740,12 @@ def main() -> None:
     print(f"Wrote {all_written:,} all-land feature(s): {all_out_path}", flush=True)
     print(
         f"Wrote {public_written:,} public-land feature(s): {public_out_path}",
+        flush=True,
+    )
+    print(
+        "Wrote "
+        f"{public_access_written:,} public-access feature(s): "
+        f"{public_access_out_path}",
         flush=True,
     )
     if failures:

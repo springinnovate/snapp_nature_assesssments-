@@ -26,6 +26,9 @@ PADUS_ALL_LANDS_OUT_DIR = Path(
 PADUS_PUBLIC_LANDS_OUT_DIR = Path(
     "data/analysis_inputs/zonal_units/padus_public_lands_by_county"
 )
+PADUS_PUBLIC_ACCESS_LANDS_OUT_DIR = Path(
+    "data/analysis_inputs/zonal_units/padus_public_access_lands_by_county"
+)
 N_WORKERS = cpu_count() or 1
 TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$")
 INPUT_FIELDS_TO_COPY = ["land_type"]
@@ -94,6 +97,8 @@ def _derive_output_names(input_path: Path) -> tuple[str, Path]:
 
     if out_stem.startswith("padus_all_lands_"):
         out_dir = PADUS_ALL_LANDS_OUT_DIR
+    elif out_stem.startswith("padus_public_access_lands_"):
+        out_dir = PADUS_PUBLIC_ACCESS_LANDS_OUT_DIR
     elif out_stem.startswith("padus_public_lands_"):
         out_dir = PADUS_PUBLIC_LANDS_OUT_DIR
     else:
