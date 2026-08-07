@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import geopandas as gpd
-from osgeo import gdal, ogr, osr
+from osgeo import gdal, ogr
 from pyproj import CRS, Transformer
 import shapely
 from shapely import wkb
@@ -36,9 +36,7 @@ ogr.UseExceptions()
 DEFAULT_POPULATION_CENTERS = Path(
     "data/analysis_inputs/census_population_centers_2020.gpkg"
 )
-DEFAULT_OUTPUT_DIR = Path(
-    "data/processing_outputs/padus_population_center_proximity"
-)
+DEFAULT_OUTPUT_DIR = Path("data/processing_outputs/padus_population_center_proximity")
 INCORPORATED_LAYER = "incorporated_places_pop1000"
 CDP_LAYER = "census_designated_places_pop1000"
 DEFAULT_OUTPUT_LAYER = "padus_within_population_center_proximity"
@@ -60,6 +58,11 @@ class FilterResult:
 
 
 def _parse_args() -> argparse.Namespace:
+    """Parse command-line options for the proximity workflow.
+
+    Returns:
+        Parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Clip a PAD-US GeoPackage to land within five miles of a "
@@ -106,17 +109,26 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _default_output_path(input_path: Path) -> Path:
-    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    return DEFAULT_OUTPUT_DIR / (
-        f"{input_path.stem}_within_5_miles_population_centers_{timestamp}.gpkg"
-    )
-
-
 def _open_input_layer(
     input_path: Path,
     requested_layer: str | None,
 ) -> tuple[gdal.Dataset, ogr.Layer, str]:
+    """Open and validate the PAD-US input layer.
+
+    Args:
+        input_path: GeoPackage containing PAD-US features.
+        requested_layer: Explicit layer name, or ``None`` to require a
+            single-layer GeoPackage.
+
+    Returns:
+        Open dataset, selected layer, and resolved layer name.
+
+    Raises:
+        FileNotFoundError: If the input GeoPackage does not exist.
+        RuntimeError: If GDAL cannot open the GeoPackage.
+        ValueError: If the requested layer is unavailable, the GeoPackage has
+            multiple layers without an override, or the layer lacks a CRS.
+    """
     if not input_path.is_file():
         raise FileNotFoundError(f"Input GeoPackage does not exist: {input_path}")
 
@@ -146,6 +158,19 @@ def _open_input_layer(
 
 
 def _read_population_layer(path: Path, layer_name: str) -> gpd.GeoDataFrame:
+    """Read and validate one population-center layer.
+
+    Args:
+        path: Population-center GeoPackage.
+        layer_name: Layer to load from the GeoPackage.
+
+    Returns:
+        Non-empty GeoDataFrame with a defined CRS and complete geometry.
+
+    Raises:
+        FileNotFoundError: If the population-center GeoPackage does not exist.
+        ValueError: If the layer cannot be read or contains unusable data.
+    """
     if not path.is_file():
         raise FileNotFoundError(f"Population-center GeoPackage does not exist: {path}")
     try:
@@ -155,9 +180,7 @@ def _read_population_layer(path: Path, layer_name: str) -> gpd.GeoDataFrame:
             f"Could not read population-center layer {layer_name!r} "
             f"from {path}: {error}"
         )
-        raise ValueError(
-            message
-        ) from error
+        raise ValueError(message) from error
     if frame.crs is None:
         raise ValueError(f"Population-center layer {layer_name!r} has no CRS.")
     if frame.empty:
@@ -171,11 +194,30 @@ def _read_population_layer(path: Path, layer_name: str) -> gpd.GeoDataFrame:
 
 @lru_cache(maxsize=256)
 def _coordinate_transformer(source_crs: CRS, target_crs: CRS) -> Transformer:
-    """Cache the small set of source/UTM/output transformations in one run."""
+    """Return a cached coordinate transformer.
+
+    Args:
+        source_crs: Geometry's current coordinate reference system.
+        target_crs: Desired coordinate reference system.
+
+    Returns:
+        Reusable always-x/y pyproj transformer.
+    """
     return Transformer.from_crs(source_crs, target_crs, always_xy=True)
 
 
 def _transform_geometry(geometry, source_crs: CRS, target_crs: CRS):
+    """Transform a Shapely geometry between coordinate systems.
+
+    Args:
+        geometry: Shapely geometry to transform.
+        source_crs: Geometry's current coordinate reference system.
+        target_crs: Desired coordinate reference system.
+
+    Returns:
+        Geometry in ``target_crs``, or the original geometry when both CRSs
+        are equal.
+    """
     if source_crs == target_crs:
         return geometry
     transformer = _coordinate_transformer(source_crs, target_crs)
@@ -183,6 +225,18 @@ def _transform_geometry(geometry, source_crs: CRS, target_crs: CRS):
 
 
 def _local_utm_crs(geometry, source_crs: CRS) -> CRS:
+    """Choose the local UTM CRS containing a geometry's representative point.
+
+    Args:
+        geometry: Shapely geometry used to choose a UTM zone.
+        source_crs: Geometry's coordinate reference system.
+
+    Returns:
+        Northern- or southern-hemisphere UTM CRS for the geometry.
+
+    Raises:
+        ValueError: If the representative point is outside UTM coverage.
+    """
     representative_point = geometry.representative_point()
     lon_lat = _transform_geometry(
         representative_point,
@@ -208,7 +262,22 @@ def _buffer_geometry_locally(
     *,
     boundary_only: bool,
 ):
-    """Buffer one geometry in its local UTM CRS and return it in target CRS."""
+    """Buffer one geometry accurately in its local UTM CRS.
+
+    Args:
+        geometry: Shapely geometry to buffer.
+        source_crs: Geometry's coordinate reference system.
+        target_crs: CRS required by the PAD-US input layer.
+        distance_meters: Buffer distance in meters.
+        boundary_only: Whether to buffer only the geometry's boundary instead
+            of its complete area.
+
+    Returns:
+        Valid MultiPolygon buffer transformed into ``target_crs``.
+
+    Raises:
+        ValueError: If buffering does not produce polygon geometry.
+    """
     local_crs = _local_utm_crs(geometry, source_crs)
     local_geometry = _transform_geometry(geometry, source_crs, local_crs)
     buffer_source = local_geometry.boundary if boundary_only else local_geometry
@@ -221,6 +290,18 @@ def _buffer_geometry_locally(
 
 
 def _cdp_centroid(row, layer_name: str) -> Point:
+    """Create a CDP center point from Census centroid attributes.
+
+    Args:
+        row: Population-center feature attributes.
+        layer_name: Source layer name used in validation messages.
+
+    Returns:
+        Point constructed from ``CENTLON`` and ``CENTLAT``.
+
+    Raises:
+        ValueError: If either centroid field is missing or nonnumeric.
+    """
     missing = {"CENTLON", "CENTLAT"} - set(row.index)
     if missing:
         raise ValueError(
@@ -243,18 +324,55 @@ def build_proximity_zone(
     target_crs: CRS,
     distance_miles: float,
 ) -> tuple[list, int, int]:
-    """Build non-overlapping proximity-zone parts in the input layer CRS."""
+    """Build non-overlapping proximity-zone parts in the PAD-US CRS.
+
+    Progress bars report population-layer loads, local buffering for both
+    place types, and the final union operation.
+
+    Args:
+        population_centers_path: GeoPackage containing qualifying places.
+        incorporated_layer: Incorporated-municipality layer name.
+        cdp_layer: Census-designated-place layer name.
+        target_crs: PAD-US CRS for the returned zones.
+        distance_miles: Buffer distance in statute miles.
+
+    Returns:
+        Non-overlapping zone polygons, incorporated-place count, and CDP
+        count.
+
+    Raises:
+        ValueError: If the distance is nonpositive or source data is invalid.
+        RuntimeError: If the buffers cannot produce a polygonal union.
+    """
     if distance_miles <= 0:
         raise ValueError("--distance-miles must be greater than zero.")
 
-    incorporated = _read_population_layer(population_centers_path, incorporated_layer)
-    cdps = _read_population_layer(population_centers_path, cdp_layer)
+    with tqdm(
+        total=2,
+        desc="Load population-center layers",
+        unit="layer",
+    ) as load_bar:
+        load_bar.set_postfix_str(incorporated_layer)
+        incorporated = _read_population_layer(
+            population_centers_path,
+            incorporated_layer,
+        )
+        load_bar.update()
+        load_bar.set_postfix_str(cdp_layer)
+        cdps = _read_population_layer(population_centers_path, cdp_layer)
+        load_bar.update()
+
     incorporated_crs = CRS.from_user_input(incorporated.crs)
     cdp_crs = CRS.from_user_input(cdps.crs)
     distance_meters = distance_miles * METERS_PER_MILE
 
     buffers = []
-    for geometry in incorporated.geometry:
+    for geometry in tqdm(
+        incorporated.geometry,
+        total=len(incorporated),
+        desc="Buffer municipality boundaries",
+        unit="place",
+    ):
         buffers.append(
             _buffer_geometry_locally(
                 geometry,
@@ -265,7 +383,12 @@ def build_proximity_zone(
             )
         )
 
-    for _, row in cdps.iterrows():
+    for _, row in tqdm(
+        cdps.iterrows(),
+        total=len(cdps),
+        desc="Buffer CDP centroids",
+        unit="place",
+    ):
         center = _cdp_centroid(row, cdp_layer)
         buffers.append(
             _buffer_geometry_locally(
@@ -277,7 +400,13 @@ def build_proximity_zone(
             )
         )
 
-    merged = repair_polygonal_geometry(shapely.union_all(buffers))
+    with tqdm(
+        total=1,
+        desc="Union proximity buffers",
+        unit="operation",
+    ) as union_bar:
+        merged = repair_polygonal_geometry(shapely.union_all(buffers))
+        union_bar.update()
     if merged is None:
         raise RuntimeError("Population-center buffers produced no proximity zone.")
     return list(merged.geoms), len(incorporated), len(cdps)
@@ -288,6 +417,20 @@ def _create_output(
     output_layer_name: str,
     input_layer: ogr.Layer,
 ) -> tuple[ogr.DataSource, ogr.Layer]:
+    """Create an output GeoPackage matching the PAD-US source schema.
+
+    Args:
+        output_path: New GeoPackage to create.
+        output_layer_name: Name for the clipped output layer.
+        input_layer: PAD-US layer whose CRS and fields are copied.
+
+    Returns:
+        Writable output dataset and layer.
+
+    Raises:
+        FileExistsError: If the requested output already exists.
+        RuntimeError: If GDAL cannot create the output dataset or layer.
+    """
     if output_path.exists():
         raise FileExistsError(f"Output GeoPackage already exists: {output_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -306,7 +449,11 @@ def _create_output(
         raise RuntimeError(f"Could not create output layer {output_layer_name!r}.")
 
     input_definition = input_layer.GetLayerDefn()
-    for field_index in range(input_definition.GetFieldCount()):
+    for field_index in tqdm(
+        range(input_definition.GetFieldCount()),
+        desc="Copy output schema",
+        unit="field",
+    ):
         source = input_definition.GetFieldDefn(field_index)
         destination = ogr.FieldDefn(source.GetName(), source.GetType())
         destination.SetSubType(source.GetSubType())
@@ -314,21 +461,6 @@ def _create_output(
         destination.SetPrecision(source.GetPrecision())
         layer.CreateField(destination)
     return dataset, layer
-
-
-def _write_feature(
-    output_layer: ogr.Layer,
-    input_feature: ogr.Feature,
-    geometry,
-) -> None:
-    output_feature = ogr.Feature(output_layer.GetLayerDefn())
-    input_definition = input_feature.GetDefnRef()
-    for field_index in range(input_definition.GetFieldCount()):
-        value = input_feature.GetField(field_index)
-        if value is not None:
-            output_feature.SetField(field_index, value)
-    output_feature.SetGeometry(ogr.CreateGeometryFromWkb(wkb.dumps(geometry)))
-    output_layer.CreateFeature(output_feature)
 
 
 def filter_padus_by_population_centers(
@@ -342,72 +474,138 @@ def filter_padus_by_population_centers(
     cdp_layer: str = CDP_LAYER,
     distance_miles: float = DEFAULT_DISTANCE_MILES,
 ) -> FilterResult:
-    """Clip input features to the union of qualifying proximity zones."""
-    input_dataset, input_layer, resolved_input_layer = _open_input_layer(
-        input_path,
-        input_layer_name,
-    )
-    input_count = input_layer.GetFeatureCount()
-    target_crs = CRS.from_wkt(input_layer.GetSpatialRef().ExportToWkt())
-    zone_parts, incorporated_count, cdp_count = build_proximity_zone(
-        population_centers_path,
-        incorporated_layer,
-        cdp_layer,
-        target_crs,
-        distance_miles,
-    )
-    zone_index = STRtree(zone_parts)
+    """Clip PAD-US features to qualifying population-center proximity zones.
 
-    output_dataset, output_layer = _create_output(
-        output_path,
-        output_layer_name,
-        input_layer,
-    )
-    stats = Counter()
-    output_layer.StartTransaction()
+    Separate progress bars cover setup stages, source-feature scanning, output
+    writes, and GeoPackage finalization.
 
-    for input_feature in tqdm(
-        input_layer,
-        total=input_count,
-        desc=f"Filter {resolved_input_layer}",
-        unit="feature",
+    Args:
+        input_path: PAD-US GeoPackage to filter.
+        population_centers_path: GeoPackage containing qualifying places.
+        output_path: New GeoPackage to create.
+        input_layer_name: Optional PAD-US layer override.
+        output_layer_name: Layer name for the clipped features.
+        incorporated_layer: Incorporated-municipality layer name.
+        cdp_layer: Census-designated-place layer name.
+        distance_miles: Proximity distance in statute miles.
+
+    Returns:
+        Output path, source counts, retained count, and processing counters.
+
+    Raises:
+        FileNotFoundError: If an input GeoPackage does not exist.
+        FileExistsError: If the output GeoPackage already exists.
+        ValueError: If an input layer, CRS, distance, or centroid is invalid.
+        RuntimeError: If GDAL or geometry processing cannot create the result.
+    """
+    with tqdm(total=5, desc="Set up proximity filter", unit="stage") as setup_bar:
+        setup_bar.set_postfix_str("Open PAD-US input")
+        input_dataset, input_layer, resolved_input_layer = _open_input_layer(
+            input_path, input_layer_name
+        )
+        input_count = input_layer.GetFeatureCount()
+        target_crs = CRS.from_wkt(input_layer.GetSpatialRef().ExportToWkt())
+        setup_bar.update()
+
+        setup_bar.set_postfix_str("Build population proximity zones")
+        zone_parts, incorporated_count, cdp_count = build_proximity_zone(
+            population_centers_path,
+            incorporated_layer,
+            cdp_layer,
+            target_crs,
+            distance_miles,
+        )
+        setup_bar.update()
+
+        setup_bar.set_postfix_str("Build proximity spatial index")
+        zone_index = STRtree(zone_parts)
+        setup_bar.update()
+
+        setup_bar.set_postfix_str("Create output GeoPackage")
+        output_dataset, output_layer = _create_output(
+            output_path,
+            output_layer_name,
+            input_layer,
+        )
+        setup_bar.update()
+
+        setup_bar.set_postfix_str("Start output transaction")
+        stats = Counter()
+        output_layer.StartTransaction()
+        setup_bar.update()
+
+    with (
+        tqdm(
+            input_layer,
+            total=input_count,
+            desc=f"Process {resolved_input_layer}",
+            unit="feature",
+        ) as scan_bar,
+        tqdm(desc="Write clipped features", unit="feature") as write_bar,
     ):
-        stats["scanned"] += 1
-        ogr_geometry = input_feature.GetGeometryRef()
-        if ogr_geometry is None or ogr_geometry.IsEmpty():
-            stats["empty_geometry_skipped"] += 1
-            continue
-
-        geometry = wkb.loads(bytes(ogr_geometry.GetLinearGeometry().ExportToWkb()))
-        if not geometry.is_valid:
-            geometry = repair_polygonal_geometry(geometry)
-            if geometry is None:
-                stats["invalid_geometry_skipped"] += 1
+        for input_feature in scan_bar:
+            stats["scanned"] += 1
+            ogr_geometry = input_feature.GetGeometryRef()
+            if ogr_geometry is None or ogr_geometry.IsEmpty():
+                stats["empty_geometry_skipped"] += 1
                 continue
 
-        candidate_indexes = zone_index.query(geometry, predicate="intersects")
-        if len(candidate_indexes) == 0:
-            stats["outside_proximity_skipped"] += 1
-            continue
+            geometry = wkb.loads(
+                bytes(ogr_geometry.GetLinearGeometry().ExportToWkb())
+            )
+            if not geometry.is_valid:
+                geometry = repair_polygonal_geometry(geometry)
+                if geometry is None:
+                    stats["invalid_geometry_skipped"] += 1
+                    continue
 
-        candidate_zone = shapely.union_all(
-            [zone_parts[index] for index in candidate_indexes]
+            candidate_indexes = zone_index.query(geometry, predicate="intersects")
+            if len(candidate_indexes) == 0:
+                stats["outside_proximity_skipped"] += 1
+                continue
+
+            candidate_zone = shapely.union_all(
+                [zone_parts[index] for index in candidate_indexes]
+            )
+            clipped = repair_polygonal_geometry(
+                shapely.intersection(geometry, candidate_zone)
+            )
+            if clipped is None or clipped.area <= 0:
+                stats["zero_area_intersection_skipped"] += 1
+                continue
+
+            output_feature = ogr.Feature(output_layer.GetLayerDefn())
+            input_definition = input_feature.GetDefnRef()
+            for field_index in range(input_definition.GetFieldCount()):
+                value = input_feature.GetField(field_index)
+                if value is not None:
+                    output_feature.SetField(field_index, value)
+            output_feature.SetGeometry(ogr.CreateGeometryFromWkb(wkb.dumps(clipped)))
+            output_layer.CreateFeature(output_feature)
+            output_feature = None
+            stats["retained"] += 1
+            write_bar.update()
+            scan_bar.set_postfix(
+                retained=stats["retained"],
+                skipped=stats["scanned"] - stats["retained"],
+                refresh=False,
+            )
+            if stats["retained"] % TRANSACTION_SIZE == 0:
+                output_layer.CommitTransaction()
+                output_layer.StartTransaction()
+        scan_bar.set_postfix(
+            retained=stats["retained"],
+            skipped=stats["scanned"] - stats["retained"],
+            refresh=True,
         )
-        clipped = repair_polygonal_geometry(
-            shapely.intersection(geometry, candidate_zone)
-        )
-        if clipped is None or clipped.area <= 0:
-            stats["zero_area_intersection_skipped"] += 1
-            continue
 
-        _write_feature(output_layer, input_feature, clipped)
-        stats["retained"] += 1
-        if stats["retained"] % TRANSACTION_SIZE == 0:
-            output_layer.CommitTransaction()
-            output_layer.StartTransaction()
-
-    output_layer.CommitTransaction()
-    output_dataset.FlushCache()
+    with tqdm(total=2, desc="Finalize output GeoPackage", unit="step") as final_bar:
+        final_bar.set_postfix_str("Commit pending features")
+        output_layer.CommitTransaction()
+        final_bar.update()
+        final_bar.set_postfix_str("Flush dataset cache")
+        output_dataset.FlushCache()
+        final_bar.update()
     output_layer = None
     output_dataset = None
     input_layer = None
@@ -424,8 +622,16 @@ def filter_padus_by_population_centers(
 
 
 def main() -> None:
+    """Run the command-line proximity filter and print its final summary."""
     args = _parse_args()
-    output_path = args.output or _default_output_path(args.input_gpkg)
+    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    output_path = args.output or (
+        DEFAULT_OUTPUT_DIR
+        / (
+            f"{args.input_gpkg.stem}_within_5_miles_population_centers_"
+            f"{timestamp}.gpkg"
+        )
+    )
     result = filter_padus_by_population_centers(
         input_path=args.input_gpkg,
         input_layer_name=args.input_layer,

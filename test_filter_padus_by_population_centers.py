@@ -20,7 +20,10 @@ from filter_padus_by_population_centers import (
 
 
 class PopulationCenterBufferTest(unittest.TestCase):
+    """Verify place-type-specific buffer construction and validation."""
+
     def test_municipal_buffer_measures_from_boundary(self) -> None:
+        """Verify municipality distance is measured from its boundary."""
         crs = CRS.from_epsg(32611)
         municipality = box(500_000, 4_000_000, 530_000, 4_030_000)
 
@@ -36,6 +39,7 @@ class PopulationCenterBufferTest(unittest.TestCase):
         self.assertTrue(zone.covers(Point(499_000, 4_015_000)))
 
     def test_cdp_centroid_uses_census_fields(self) -> None:
+        """Verify a CDP center uses Census centroid fields, not geometry."""
         row = gpd.GeoDataFrame(
             {"CENTLON": [-115.25], "CENTLAT": [36.25]},
             geometry=[box(-120, 40, -119, 41)],
@@ -47,6 +51,7 @@ class PopulationCenterBufferTest(unittest.TestCase):
         self.assertEqual((center.x, center.y), (-115.25, 36.25))
 
     def test_cdp_centroid_fields_are_required(self) -> None:
+        """Verify missing Census centroid fields produce a clear error."""
         row = gpd.GeoDataFrame(
             {"GEOID": ["test"]},
             geometry=[box(-115, 36, -114, 37)],
@@ -58,12 +63,10 @@ class PopulationCenterBufferTest(unittest.TestCase):
 
 
 class PopulationCenterFilterIntegrationTest(unittest.TestCase):
-    @staticmethod
-    def _project(geometry):
-        transformer = Transformer.from_crs(4326, 32611, always_xy=True)
-        return transform(transformer.transform, geometry)
+    """Exercise the complete GeoPackage filtering workflow."""
 
     def test_end_to_end_geopackage_filter(self) -> None:
+        """Verify matching features are clipped, attributed, and written."""
         with TemporaryDirectory() as temporary_directory:
             temp = Path(temporary_directory)
             centers_path = temp / "centers.gpkg"
@@ -100,12 +103,22 @@ class PopulationCenterFilterIntegrationTest(unittest.TestCase):
                 mode="a",
             )
 
+            project_to_utm = Transformer.from_crs(4326, 32611, always_xy=True)
             public_lands = gpd.GeoDataFrame(
                 {"source_id": [1, 2, 3]},
                 geometry=[
-                    self._project(box(-115.005, 35.995, -114.995, 36.005)),
-                    self._project(box(-116.01, 35.99, -115.99, 36.01)),
-                    self._project(box(-114.505, 35.995, -114.495, 36.005)),
+                    transform(
+                        project_to_utm.transform,
+                        box(-115.005, 35.995, -114.995, 36.005),
+                    ),
+                    transform(
+                        project_to_utm.transform,
+                        box(-116.01, 35.99, -115.99, 36.01),
+                    ),
+                    transform(
+                        project_to_utm.transform,
+                        box(-114.505, 35.995, -114.495, 36.005),
+                    ),
                 ],
                 crs="EPSG:32611",
             )

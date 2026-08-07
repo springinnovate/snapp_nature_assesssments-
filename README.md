@@ -162,9 +162,11 @@ GeoPackages to the population-center proximity area described in Section
 Each place is buffered in its local UTM coordinate system so the five-mile
 distance is not calculated in longitude/latitude or a single nationwide map
 projection. Input features are clipped to the union of those zones, and all
-source attributes are retained. The script implements only this proximity
-condition; it does not evaluate protected-land, grazing, valid-right, tract
-size, housing-use, or other requirements in Section 50301.
+source attributes are retained. Progress bars report population-layer loading,
+place buffering, zone union, output-schema creation, PAD-US feature scanning,
+feature writing, and GeoPackage finalization. The script implements only this
+proximity condition; it does not evaluate protected-land, grazing, valid-right,
+tract size, housing-use, or other requirements in Section 50301.
 
 Run it with a PAD-US GeoPackage as the positional argument:
 
