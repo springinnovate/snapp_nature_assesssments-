@@ -148,7 +148,50 @@ The resulting by-county PAD-US products are written under
 `padus_public_access_lands_by_county`. This change does not add public-access
 jobs to the zonal-statistics configuration.
 
-#### 2a. Prepare Recreation Value By County
+#### 2a. Filter PAD-US Lands By Population-Center Proximity
+
+`filter_padus_by_population_centers.py` clips any of the USA-clipped PAD-US
+GeoPackages to the population-center proximity area described in Section
+50301(f)(3)(D). It combines:
+
+- a five-statute-mile band around the **boundary** of each incorporated
+  municipality with a population of at least 1,000; and
+- a five-statute-mile circle around the Census-provided `CENTLON`/`CENTLAT`
+  centroid of each census-designated place with a population of at least 1,000.
+
+Each place is buffered in its local UTM coordinate system so the five-mile
+distance is not calculated in longitude/latitude or a single nationwide map
+projection. Input features are clipped to the union of those zones, and all
+source attributes are retained. The script implements only this proximity
+condition; it does not evaluate protected-land, grazing, valid-right, tract
+size, housing-use, or other requirements in Section 50301.
+
+Run it with a PAD-US GeoPackage as the positional argument:
+
+```powershell
+python filter_padus_by_population_centers.py `
+  .\data\processing_outputs\padus_clipped_to_usa\public_lands\padus_public_lands_clipped_to_usa_<timestamp>.gpkg
+```
+
+The population-center input defaults to
+`data/analysis_inputs/census_population_centers_2020.gpkg`, using layers
+`incorporated_places_pop1000` and `census_designated_places_pop1000`. Override
+the input, layers, output, or distance when needed:
+
+```powershell
+python filter_padus_by_population_centers.py <padus.gpkg> `
+  --population-centers-gpkg <population-centers.gpkg> `
+  --input-layer <padus-layer> `
+  --output <filtered.gpkg> `
+  --distance-miles 5
+```
+
+Without `--output`, the script writes a timestamped GeoPackage under
+`data/processing_outputs/padus_population_center_proximity`. The output keeps
+only the positive-area portions of PAD-US features inside either qualifying
+zone.
+
+#### 2b. Prepare Recreation Value By County
 
 `prepare_recreation_value_by_county.py` allocates the `val_2024` values from
 `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` to
