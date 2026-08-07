@@ -1,11 +1,16 @@
-"""Clip a PAD-US GeoPackage to qualifying population-center proximity zones.
+"""Screen PAD-US land against mappable Section 50301 sale criteria.
 
-This implements only Section 50301(f)(3)(D)'s spatial condition:
+This applies the bill's mappable Bureau of Land Management, eligible-state,
+and population-center conditions:
 
+* federally owned fee land managed by the Bureau of Land Management;
+* land in one of the 11 eligible states;
 * five statute miles from an incorporated municipality's boundary; or
 * five statute miles from a Census-designated place's Census centroid.
 
-It does not evaluate the section's other exclusions or disposal requirements.
+The result is candidate land, not a determination that a tract will be sold.
+PAD-US does not establish grazing permits, incompatible existing rights,
+residential suitability, tract selection, or all protected-land exclusions.
 """
 
 from __future__ import annotations
@@ -36,21 +41,45 @@ ogr.UseExceptions()
 DEFAULT_POPULATION_CENTERS = Path(
     "data/analysis_inputs/census_population_centers_2020.gpkg"
 )
-DEFAULT_OUTPUT_DIR = Path("data/processing_outputs/padus_population_center_proximity")
+DEFAULT_OUTPUT_DIR = Path("data/processing_outputs/bbb_padus_candidate_lands")
 INCORPORATED_LAYER = "incorporated_places_pop1000"
 CDP_LAYER = "census_designated_places_pop1000"
-DEFAULT_OUTPUT_LAYER = "padus_within_population_center_proximity"
+DEFAULT_OUTPUT_LAYER = "bbb_padus_candidate_lands"
 DEFAULT_DISTANCE_MILES = 5.0
 METERS_PER_MILE = 1609.344
 TRANSACTION_SIZE = 10_000
+ELIGIBLE_STATE_CODES = (
+    "AK",
+    "AZ",
+    "CA",
+    "CO",
+    "ID",
+    "NV",
+    "NM",
+    "OR",
+    "UT",
+    "WA",
+    "WY",
+)
+ELIGIBLE_STATE_FIPS = frozenset((2, 4, 6, 8, 16, 32, 35, 41, 49, 53, 56))
+REQUIRED_PADUS_FIELDS = frozenset(
+    ("FeatClass", "Own_Type", "Mang_Name", "State_Nm")
+)
+BBB_ATTRIBUTE_FILTER = (
+    "FeatClass = 'Fee' AND Own_Type = 'FED' AND Mang_Name = 'BLM' "
+    "AND State_Nm IN ("
+    + ", ".join(f"'{state}'" for state in ELIGIBLE_STATE_CODES)
+    + ")"
+)
 
 
 @dataclass(frozen=True)
-class FilterResult:
-    """Summary returned by :func:`filter_padus_by_population_centers`."""
+class BbbFilterResult:
+    """Summary returned by the bill-specific PAD-US screening workflow."""
 
     output_path: Path
     input_features: int
+    bbb_candidate_features: int
     retained_features: int
     incorporated_places: int
     census_designated_places: int
@@ -58,15 +87,15 @@ class FilterResult:
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse command-line options for the proximity workflow.
+    """Parse command-line options for the bill-specific screening workflow.
 
     Returns:
         Parsed command-line arguments.
     """
     parser = argparse.ArgumentParser(
         description=(
-            "Clip a PAD-US GeoPackage to land within five miles of a "
-            "qualifying incorporated-place boundary or CDP centroid."
+            "Select federally owned BLM-managed fee land in an eligible state "
+            "and clip it to qualifying population-center proximity zones."
         )
     )
     parser.add_argument("input_gpkg", type=Path, help="Input PAD-US GeoPackage.")
@@ -127,7 +156,8 @@ def _open_input_layer(
         FileNotFoundError: If the input GeoPackage does not exist.
         RuntimeError: If GDAL cannot open the GeoPackage.
         ValueError: If the requested layer is unavailable, the GeoPackage has
-            multiple layers without an override, or the layer lacks a CRS.
+            multiple layers without an override, the layer lacks a CRS, or a
+            field required by the bill-specific filter is missing.
     """
     if not input_path.is_file():
         raise FileNotFoundError(f"Input GeoPackage does not exist: {input_path}")
@@ -154,6 +184,18 @@ def _open_input_layer(
 
     if layer.GetSpatialRef() is None:
         raise ValueError(f"Input layer {layer_name!r} has no CRS.")
+
+    definition = layer.GetLayerDefn()
+    available_fields = {
+        definition.GetFieldDefn(index).GetName()
+        for index in range(definition.GetFieldCount())
+    }
+    missing_fields = REQUIRED_PADUS_FIELDS - available_fields
+    if missing_fields:
+        raise ValueError(
+            f"Input layer {layer_name!r} is missing BBB filter field(s): "
+            + ", ".join(sorted(missing_fields))
+        )
     return dataset, layer, layer_name
 
 
@@ -362,6 +404,23 @@ def build_proximity_zone(
         cdps = _read_population_layer(population_centers_path, cdp_layer)
         load_bar.update()
 
+    for frame, layer_name in (
+        (incorporated, incorporated_layer),
+        (cdps, cdp_layer),
+    ):
+        if "STATE" not in frame.columns:
+            raise ValueError(
+                f"Population-center layer {layer_name!r} is missing STATE."
+            )
+    incorporated = incorporated[
+        incorporated["STATE"].isin(ELIGIBLE_STATE_FIPS)
+    ].copy()
+    cdps = cdps[cdps["STATE"].isin(ELIGIBLE_STATE_FIPS)].copy()
+    if incorporated.empty or cdps.empty:
+        raise ValueError(
+            "Population-center layers contain no places in the eligible states."
+        )
+
     incorporated_crs = CRS.from_user_input(incorporated.crs)
     cdp_crs = CRS.from_user_input(cdps.crs)
     distance_meters = distance_miles * METERS_PER_MILE
@@ -463,7 +522,7 @@ def _create_output(
     return dataset, layer
 
 
-def filter_padus_by_population_centers(
+def filter_bbb_padus_by_population_centers(
     input_path: Path,
     population_centers_path: Path,
     output_path: Path,
@@ -473,14 +532,14 @@ def filter_padus_by_population_centers(
     incorporated_layer: str = INCORPORATED_LAYER,
     cdp_layer: str = CDP_LAYER,
     distance_miles: float = DEFAULT_DISTANCE_MILES,
-) -> FilterResult:
-    """Clip PAD-US features to qualifying population-center proximity zones.
+) -> BbbFilterResult:
+    """Screen PAD-US land against the bill's mappable sale conditions.
 
     Separate progress bars cover setup stages, source-feature scanning, output
     writes, and GeoPackage finalization.
 
     Args:
-        input_path: PAD-US GeoPackage to filter.
+        input_path: PAD-US GeoPackage to screen, preferably the all-land output.
         population_centers_path: GeoPackage containing qualifying places.
         output_path: New GeoPackage to create.
         input_layer_name: Optional PAD-US layer override.
@@ -490,7 +549,8 @@ def filter_padus_by_population_centers(
         distance_miles: Proximity distance in statute miles.
 
     Returns:
-        Output path, source counts, retained count, and processing counters.
+        Output path, source counts, attribute-candidate count, retained count,
+        and processing counters.
 
     Raises:
         FileNotFoundError: If an input GeoPackage does not exist.
@@ -498,13 +558,27 @@ def filter_padus_by_population_centers(
         ValueError: If an input layer, CRS, distance, or centroid is invalid.
         RuntimeError: If GDAL or geometry processing cannot create the result.
     """
-    with tqdm(total=5, desc="Set up proximity filter", unit="stage") as setup_bar:
+    with tqdm(total=6, desc="Set up BBB land filter", unit="stage") as setup_bar:
         setup_bar.set_postfix_str("Open PAD-US input")
         input_dataset, input_layer, resolved_input_layer = _open_input_layer(
             input_path, input_layer_name
         )
         input_count = input_layer.GetFeatureCount()
         target_crs = CRS.from_wkt(input_layer.GetSpatialRef().ExportToWkt())
+        setup_bar.update()
+
+        setup_bar.set_postfix_str("Select BLM fee land in eligible states")
+        if input_layer.SetAttributeFilter(BBB_ATTRIBUTE_FILTER) != 0:
+            raise RuntimeError("GDAL could not apply the BBB PAD-US attribute filter.")
+        bbb_candidate_count = input_layer.GetFeatureCount()
+        input_layer.ResetReading()
+        stats = Counter(
+            {
+                "input_features": input_count,
+                "bbb_attribute_candidates": bbb_candidate_count,
+                "bbb_attribute_skipped": input_count - bbb_candidate_count,
+            }
+        )
         setup_bar.update()
 
         setup_bar.set_postfix_str("Build population proximity zones")
@@ -530,15 +604,14 @@ def filter_padus_by_population_centers(
         setup_bar.update()
 
         setup_bar.set_postfix_str("Start output transaction")
-        stats = Counter()
         output_layer.StartTransaction()
         setup_bar.update()
 
     with (
         tqdm(
             input_layer,
-            total=input_count,
-            desc=f"Process {resolved_input_layer}",
+            total=bbb_candidate_count,
+            desc=f"Process BBB candidates from {resolved_input_layer}",
             unit="feature",
         ) as scan_bar,
         tqdm(desc="Write clipped features", unit="feature") as write_bar,
@@ -587,7 +660,7 @@ def filter_padus_by_population_centers(
             write_bar.update()
             scan_bar.set_postfix(
                 retained=stats["retained"],
-                skipped=stats["scanned"] - stats["retained"],
+                distance_skipped=stats["scanned"] - stats["retained"],
                 refresh=False,
             )
             if stats["retained"] % TRANSACTION_SIZE == 0:
@@ -595,7 +668,7 @@ def filter_padus_by_population_centers(
                 output_layer.StartTransaction()
         scan_bar.set_postfix(
             retained=stats["retained"],
-            skipped=stats["scanned"] - stats["retained"],
+            distance_skipped=stats["scanned"] - stats["retained"],
             refresh=True,
         )
 
@@ -611,9 +684,10 @@ def filter_padus_by_population_centers(
     input_layer = None
     input_dataset = None
 
-    return FilterResult(
+    return BbbFilterResult(
         output_path=output_path,
         input_features=input_count,
+        bbb_candidate_features=bbb_candidate_count,
         retained_features=stats["retained"],
         incorporated_places=incorporated_count,
         census_designated_places=cdp_count,
@@ -622,17 +696,17 @@ def filter_padus_by_population_centers(
 
 
 def main() -> None:
-    """Run the command-line proximity filter and print its final summary."""
+    """Run the bill-specific candidate-land filter and print its summary."""
     args = _parse_args()
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     output_path = args.output or (
         DEFAULT_OUTPUT_DIR
         / (
-            f"{args.input_gpkg.stem}_within_5_miles_population_centers_"
+            f"{args.input_gpkg.stem}_bbb_candidate_lands_"
             f"{timestamp}.gpkg"
         )
     )
-    result = filter_padus_by_population_centers(
+    result = filter_bbb_padus_by_population_centers(
         input_path=args.input_gpkg,
         input_layer_name=args.input_layer,
         population_centers_path=args.population_centers_gpkg,
@@ -648,12 +722,18 @@ def main() -> None:
         f"cdp={result.census_designated_places:,}"
     )
     print(
-        "Feature stats: "
+        "BBB attribute filter: "
+        f"candidates={result.bbb_candidate_features:,} "
+        f"excluded={result.input_features - result.bbb_candidate_features:,}"
+    )
+    print(
+        "Processing stats: "
         + " ".join(f"{key}={value:,}" for key, value in result.stats.items())
     )
     print(
-        f"Wrote {result.retained_features:,} of {result.input_features:,} "
-        f"input feature(s): {result.output_path}"
+        f"Wrote {result.retained_features:,} of "
+        f"{result.bbb_candidate_features:,} BBB attribute candidate(s): "
+        f"{result.output_path}"
     )
 
 

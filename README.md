@@ -148,11 +148,19 @@ The resulting by-county PAD-US products are written under
 `padus_public_access_lands_by_county`. This change does not add public-access
 jobs to the zonal-statistics configuration.
 
-#### 2a. Filter PAD-US Lands By Population-Center Proximity
+#### 2a. Screen BBB PAD-US Candidate Lands
 
-`filter_padus_by_population_centers.py` clips any of the USA-clipped PAD-US
-GeoPackages to the population-center proximity area described in Section
-50301(f)(3)(D). It combines:
+`filter_bbb_padus_by_population_centers.py` screens a USA-clipped PAD-US
+GeoPackage against the mappable land criteria in Section 50301. Before doing
+geometry work, it selects records where:
+
+- `FeatClass = 'Fee'`;
+- `Own_Type = 'FED'`;
+- `Mang_Name = 'BLM'`; and
+- `State_Nm` is Alaska, Arizona, California, Colorado, Idaho, Nevada, New
+  Mexico, Oregon, Utah, Washington, or Wyoming.
+
+It then clips those records to the union of:
 
 - a five-statute-mile band around the **boundary** of each incorporated
   municipality with a population of at least 1,000; and
@@ -162,17 +170,21 @@ GeoPackages to the population-center proximity area described in Section
 Each place is buffered in its local UTM coordinate system so the five-mile
 distance is not calculated in longitude/latitude or a single nationwide map
 projection. Input features are clipped to the union of those zones, and all
-source attributes are retained. Progress bars report population-layer loading,
-place buffering, zone union, output-schema creation, PAD-US feature scanning,
-feature writing, and GeoPackage finalization. The script implements only this
-proximity condition; it does not evaluate protected-land, grazing, valid-right,
-tract size, housing-use, or other requirements in Section 50301.
+source attributes are retained. Progress bars report PAD-US attribute
+selection, population-layer loading, place buffering, zone union,
+output-schema creation, candidate scanning, feature writing, and GeoPackage
+finalization.
+
+The output is a screening layer of candidate land, not a determination that a
+tract will be offered or sold. PAD-US does not establish existing grazing
+permits or leases, incompatible valid existing rights, residential suitability,
+tract selection, or every federally protected-land exclusion in the bill.
 
 Run it with a PAD-US GeoPackage as the positional argument:
 
 ```powershell
-python filter_padus_by_population_centers.py `
-  .\data\processing_outputs\padus_clipped_to_usa\public_lands\padus_public_lands_clipped_to_usa_<timestamp>.gpkg
+python filter_bbb_padus_by_population_centers.py `
+  .\data\processing_outputs\padus_clipped_to_usa\all_lands\padus_all_lands_clipped_to_usa_<timestamp>.gpkg
 ```
 
 The population-center input defaults to
@@ -181,7 +193,7 @@ The population-center input defaults to
 the input, layers, output, or distance when needed:
 
 ```powershell
-python filter_padus_by_population_centers.py <padus.gpkg> `
+python filter_bbb_padus_by_population_centers.py <padus.gpkg> `
   --population-centers-gpkg <population-centers.gpkg> `
   --input-layer <padus-layer> `
   --output <filtered.gpkg> `
@@ -189,9 +201,9 @@ python filter_padus_by_population_centers.py <padus.gpkg> `
 ```
 
 Without `--output`, the script writes a timestamped GeoPackage under
-`data/processing_outputs/padus_population_center_proximity`. The output keeps
-only the positive-area portions of PAD-US features inside either qualifying
-zone.
+`data/processing_outputs/bbb_padus_candidate_lands`. The output keeps only the
+positive-area portions of qualifying federal BLM fee features inside either
+population-center zone.
 
 #### 2b. Prepare Recreation Value By County
 
