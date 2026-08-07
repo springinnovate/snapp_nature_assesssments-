@@ -1,15 +1,35 @@
-# PAD-US values use the stored geodatabase codes, not their display labels.
-# `manager` is a normalized value derived from Mang_Name and Loc_Mang so the
-# PAD-US 4.1 representation of NASA can be expressed as a stable rule value.
-
 public_land =
-    Own_Type in {FED, JNT, LOC, DIST, STAT, TERR}
-    OR (
-        Own_Type in {NGO, PVT, UNK}
-        AND Mang_Type in {FED, LOC, DIST, STAT}
+    Own_Type not in {TRIB}
+    AND (
+            (
+                Own_Type in {DIST, FED, JNT, LOC, STAT}
+            ) OR (
+                (
+                    Own_Type in {DESG, NGO, PVT, UNK}
+                ) AND (
+                    Mang_Type in {DIST, FED, JNT, LOC, STAT}
+                )
+            )
     )
 
 public_access =
     public_land
-    AND Des_Tp not in {MIL, PCON, POTH, PPRK, PREC}
-    AND manager not in {NASA, DOE}
+    AND (
+        Pub_Access in {OA}
+        OR (
+            Pub_Access in {RA, UK}
+            AND Own_Type not in {PVT}
+            AND manager not in {DOD, DOE, NASA}
+            AND Des_Tp not in {
+                MIL,
+                PAGR,
+                PCON,
+                PFOR,
+                PHCA,
+                POTH,
+                PPRK,
+                PRAN,
+                PREC
+            }
+        )
+    )

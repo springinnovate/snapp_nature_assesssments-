@@ -93,16 +93,28 @@ syntax; it is parsed and validated without executing Python or SQL:
 
 ```text
 public_land =
-    Own_Type in {FED, JNT, LOC, DIST, STAT, TERR}
-    OR (
-        Own_Type in {NGO, PVT, UNK}
-        AND Mang_Type in {FED, LOC, DIST, STAT}
+    Own_Type not in {TRIB}
+    AND (
+        Own_Type in {DIST, FED, JNT, LOC, STAT}
+        OR (
+            Own_Type in {DESG, NGO, PVT, UNK}
+            AND Mang_Type in {DIST, FED, JNT, LOC, STAT}
+        )
     )
 
 public_access =
     public_land
-    AND Des_Tp not in {MIL, PCON, POTH, PPRK, PREC}
-    AND manager not in {NASA, DOE}
+    AND (
+        Pub_Access in {OA}
+        OR (
+            Pub_Access in {RA, UK}
+            AND Own_Type not in {PVT}
+            AND manager not in {DOD, DOE, NASA}
+            AND Des_Tp not in {
+                MIL, PAGR, PCON, PFOR, PHCA, POTH, PPRK, PRAN, PREC
+            }
+        )
+    )
 ```
 
 The all-land product includes every PAD-US feature that has positive-area
@@ -111,18 +123,18 @@ overlap with the USA boundary after processing.
 The public-land product is a subset of the all-land product. PAD-US stores
 coded values in the geodatabase even when GIS software displays longer
 descriptions, so the configured rule uses stored codes. Federal, Joint, Local
-Government, Regional Agency Special District, State, and Territorial owners
-are included. Non-Governmental Organization, Private, and Unknown owners are
-included only when managed by a Federal, Local Government, Regional Agency
-Special District, or State entity.
+Government, Regional Agency Special District, and State owners are included.
+Designation, Non-Governmental Organization, Private, and Unknown owners are
+included only when managed by one of those public entity types. Tribal and
+Territorial records are not selected.
 
-The public-access product is a subset of public land. It excludes Military
-Land, Private Conservation, Private Other or Unknown, Private Park, and Private
-Recreation or Education designations, plus NASA- and DOE-managed records.
-Watershed Protection Areas remain included. PAD-US 4.1 stores NASA under the
+The public-access product is a subset of public land. Open Access (`OA`) records
+are included directly. Restricted Access (`RA`) and Unknown (`UK`) records are
+included only when they are not privately owned, are not managed by DOD, DOE,
+or NASA, and do not use one of the configured private or military designation
+codes. Closed (`XA`) records are excluded. PAD-US 4.1 stores NASA under the
 local manager value `National Aeronautics and Space Administration (NASA)`, so
 the script normalizes that exact value to the configured `NASA` manager token.
-No rule is applied to `Pub_Access`, reservoirs generally, or DOD generally.
 
 All three clipped products contain `land_type`, source `OBJECTID`, the PAD-US
 source attributes, and geometry. The rule parser rejects unsupported fields,
