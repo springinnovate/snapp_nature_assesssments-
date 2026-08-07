@@ -67,8 +67,9 @@ Run commands from the repository root unless otherwise noted.
 #### 1. Prepare PAD-US Lands
 
 `prepare_padus_all_and_public_lands.py` converts the PAD-US layer
-`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` into two
-USA-clipped GeoPackages: one all-land product and one public-land subset.
+`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` into three
+USA-clipped GeoPackages: an all-land product, a public-land subset, and a
+public-access subset of the public-land product.
 Geometries are simplified with a 15 m tolerance, clipped to the USA boundary,
 and repaired where possible.
 
@@ -76,6 +77,8 @@ and repaired where possible.
   `data/processing_outputs/padus_clipped_to_usa/all_lands`
 - `padus_public_lands_clipped_to_usa_<timestamp>.gpkg` in
   `data/processing_outputs/padus_clipped_to_usa/public_lands`
+- `padus_public_access_lands_clipped_to_usa_<timestamp>.gpkg` in
+  `data/processing_outputs/padus_clipped_to_usa/public_access_lands`
 
 Run:
 
@@ -83,26 +86,47 @@ Run:
 python prepare_padus_all_and_public_lands.py
 ```
 
+The default classification policy is stored in
+`config/padus_land_rules.rules`. Pass a different rule file with
+`--rules-config <path>` when needed. The file uses a constrained, declarative
+syntax; it is parsed and validated without executing Python or SQL:
+
+```text
+public_land =
+    Own_Type in {FED, JNT, LOC, DIST, STAT, TERR}
+    OR (
+        Own_Type in {NGO, PVT, UNK}
+        AND Mang_Type in {FED, LOC, DIST, STAT}
+    )
+
+public_access =
+    public_land
+    AND Des_Tp not in {MIL, PCON, POTH, PPRK, PREC}
+    AND manager not in {NASA, DOE}
+```
+
 The all-land product includes every PAD-US feature that has positive-area
 overlap with the USA boundary after processing.
 
 The public-land product is a subset of the all-land product. PAD-US stores
 coded values in the geodatabase even when GIS software displays longer
-descriptions, so the rule uses stored codes:
+descriptions, so the configured rule uses stored codes. Federal, Joint, Local
+Government, Regional Agency Special District, State, and Territorial owners
+are included. Non-Governmental Organization, Private, and Unknown owners are
+included only when managed by a Federal, Local Government, Regional Agency
+Special District, or State entity.
 
-- Before applying the inclusion rules, exclude features where `Pub_Access` is
-  `XA` (closed access), `Own_Type` is `PVT` (private owner), `Mang_Name` or
-  `Own_Name` is `DOD` or `DOE`, or `Des_Tp` is `MIL`. The `Pub_Access` value
-  `UK` (unknown access) is not excluded by itself.
-- Keep features where `Mang_Type` is `FED`, `STAT`, `LOC`, `DIST`, `JNT`, or
-  `TERR`. These correspond to Federal, State, Local Government, Regional Agency
-  Special District, Joint, and Territorial managers.
-- If `Mang_Type` is `UNK`, keep the feature only when `Own_Type` is `LOC`,
-  `DIST`, `FED`, `JNT`, or `STAT`. These correspond to Local Government,
-  Regional Agency Special District, Federal, Joint, and State owners.
-- Exclude all other features from the public-land product.
+The public-access product is a subset of public land. It excludes Military
+Land, Private Conservation, Private Other or Unknown, Private Park, and Private
+Recreation or Education designations, plus NASA- and DOE-managed records.
+Watershed Protection Areas remain included. PAD-US 4.1 stores NASA under the
+local manager value `National Aeronautics and Space Administration (NASA)`, so
+the script normalizes that exact value to the configured `NASA` manager token.
+No rule is applied to `Pub_Access`, reservoirs generally, or DOD generally.
 
-Both PAD-US products keep only `land_type` and geometry.
+All three clipped products contain `land_type`, source `OBJECTID`, the PAD-US
+source attributes, and geometry. The rule parser rejects unsupported fields,
+operators, codes, and malformed expressions before geometry processing starts.
 
 #### 2. Cut PAD-US Lands By County
 
@@ -111,15 +135,18 @@ feature per county. It intersects the input with county boundaries, combines the
 pieces within each county into a single non-overlapping polygon or multipolygon,
 and copies the county attributes plus `land_type`.
 
-Run the script once for all lands and once for public lands:
+Run the script once for each of the three prepared products:
 
 ```powershell
 python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\all_lands\padus_all_lands_clipped_to_usa_<timestamp>.gpkg
 python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\public_lands\padus_public_lands_clipped_to_usa_<timestamp>.gpkg
+python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\public_access_lands\padus_public_access_lands_clipped_to_usa_<timestamp>.gpkg
 ```
 
 The resulting by-county PAD-US products are written under
-`data/analysis_inputs/zonal_units` and become zonal units for later analysis.
+`data/analysis_inputs/zonal_units`. Public-access outputs are routed to
+`padus_public_access_lands_by_county`. This change does not add public-access
+jobs to the zonal-statistics configuration.
 
 #### 2a. Prepare Recreation Value By County
 
