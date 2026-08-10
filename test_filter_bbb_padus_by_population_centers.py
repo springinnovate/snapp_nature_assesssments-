@@ -10,9 +10,14 @@ from shapely.geometry import Point, box
 from shapely.ops import transform
 
 from filter_bbb_padus_by_population_centers import (
+    BBB_CANDIDATE_LAND_TYPE,
     CDP_LAYER,
+    DEFAULT_OUTPUT_LAYER,
+    DEFAULT_UNPROTECTED_OUTPUT_LAYER,
+    FEDERALLY_PROTECTED_DESIGNATION_TYPES,
     INCORPORATED_LAYER,
     METERS_PER_MILE,
+    UNPROTECTED_LAND_TYPE,
     _buffer_geometry_locally,
     _cdp_centroid,
     _open_input_layer,
@@ -66,6 +71,13 @@ class PopulationCenterBufferTest(unittest.TestCase):
 class BbbPopulationCenterFilterIntegrationTest(unittest.TestCase):
     """Exercise the complete bill-specific GeoPackage screening workflow."""
 
+    def test_statutory_designation_codes_are_protected(self) -> None:
+        """Verify PAD-US codes cover each directly mappable bill category."""
+        self.assertEqual(
+            set(FEDERALLY_PROTECTED_DESIGNATION_TYPES),
+            {"NCA", "NM", "NP", "NRA", "NT", "NWR", "WA", "WSR"},
+        )
+
     def test_missing_bbb_fields_are_rejected(self) -> None:
         """Verify PAD-US inputs must contain all bill-filter attributes."""
         with TemporaryDirectory() as temporary_directory:
@@ -79,12 +91,25 @@ class BbbPopulationCenterFilterIntegrationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "BBB filter field"):
                 _open_input_layer(input_path, "missing_fields")
 
+    def test_intermediate_and_final_outputs_must_be_distinct(self) -> None:
+        """Verify the two named products cannot overwrite one another."""
+        with TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory) / "same.gpkg"
+            with self.assertRaisesRegex(ValueError, "must be different files"):
+                filter_bbb_padus_by_population_centers(
+                    input_path=Path("missing-input.gpkg"),
+                    population_centers_path=Path("missing-centers.gpkg"),
+                    unprotected_output_path=output_path,
+                    output_path=output_path,
+                )
+
     def test_end_to_end_geopackage_filter(self) -> None:
         """Verify all mappable bill filters are applied before output."""
         with TemporaryDirectory() as temporary_directory:
             temp = Path(temporary_directory)
             centers_path = temp / "centers.gpkg"
             input_path = temp / "padus_lands.gpkg"
+            unprotected_output_path = temp / "unprotected_blm.gpkg"
             output_path = temp / "filtered.gpkg"
 
             incorporated = gpd.GeoDataFrame(
@@ -128,7 +153,8 @@ class BbbPopulationCenterFilterIntegrationTest(unittest.TestCase):
             project_to_utm = Transformer.from_crs(4326, 32611, always_xy=True)
             padus_lands = gpd.GeoDataFrame(
                 {
-                    "source_id": [1, 2, 3, 4, 5, 6, 7],
+                    "source_id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+                    "land_type": ["all"] * 11,
                     "FeatClass": [
                         "Fee",
                         "Fee",
@@ -137,6 +163,10 @@ class BbbPopulationCenterFilterIntegrationTest(unittest.TestCase):
                         "Fee",
                         "Fee",
                         "Designation",
+                        "Designation",
+                        "Proclamation",
+                        "Designation",
+                        "Proclamation",
                     ],
                     "Own_Type": [
                         "FED",
@@ -146,6 +176,10 @@ class BbbPopulationCenterFilterIntegrationTest(unittest.TestCase):
                         "FED",
                         "STAT",
                         "FED",
+                        "DESG",
+                        "DESG",
+                        "DESG",
+                        "DESG",
                     ],
                     "Mang_Name": [
                         "BLM",
@@ -155,8 +189,37 @@ class BbbPopulationCenterFilterIntegrationTest(unittest.TestCase):
                         "NPS",
                         "BLM",
                         "BLM",
+                        "BLM",
+                        "NPS",
+                        "BLM",
+                        "FWS",
                     ],
-                    "State_Nm": ["AZ", "NV", "CA", "MT", "AZ", "AZ", "AZ"],
+                    "State_Nm": [
+                        "AZ",
+                        "NV",
+                        "CA",
+                        "MT",
+                        "AZ",
+                        "AZ",
+                        "AZ",
+                        "AZ",
+                        "CA",
+                        "AZ",
+                        "AZ",
+                    ],
+                    "Des_Tp": [
+                        "PUB",
+                        "PUB",
+                        "PUB",
+                        "PUB",
+                        "FOTH",
+                        "PUB",
+                        "WSA",
+                        "NM",
+                        "PROC",
+                        "WSA",
+                        "PROC",
+                    ],
                 },
                 geometry=[
                     transform(
@@ -187,6 +250,22 @@ class BbbPopulationCenterFilterIntegrationTest(unittest.TestCase):
                         project_to_utm.transform,
                         box(-115.005, 35.995, -114.995, 36.005),
                     ),
+                    transform(
+                        project_to_utm.transform,
+                        box(-115.005, 35.995, -115.0, 36.005),
+                    ),
+                    transform(
+                        project_to_utm.transform,
+                        box(-114.505, 35.995, -114.495, 36.005),
+                    ),
+                    transform(
+                        project_to_utm.transform,
+                        box(-115.0, 35.995, -114.995, 36.005),
+                    ),
+                    transform(
+                        project_to_utm.transform,
+                        box(-113.01, 35.99, -112.99, 36.01),
+                    ),
                 ],
                 crs="EPSG:32611",
             )
@@ -200,20 +279,52 @@ class BbbPopulationCenterFilterIntegrationTest(unittest.TestCase):
                 input_path=input_path,
                 input_layer_name="padus_lands",
                 population_centers_path=centers_path,
+                unprotected_output_path=unprotected_output_path,
                 output_path=output_path,
             )
 
+            unprotected_output = gpd.read_file(unprotected_output_path)
             output = gpd.read_file(output_path)
-            self.assertEqual(result.input_features, 7)
+            self.assertEqual(
+                gpd.list_layers(unprotected_output_path)["name"].tolist(),
+                [DEFAULT_UNPROTECTED_OUTPUT_LAYER],
+            )
+            self.assertEqual(
+                gpd.list_layers(output_path)["name"].tolist(),
+                [DEFAULT_OUTPUT_LAYER],
+            )
+            self.assertEqual(result.input_features, 11)
             self.assertEqual(result.bbb_candidate_features, 3)
-            self.assertEqual(result.retained_features, 2)
+            self.assertEqual(result.unprotected_features, 2)
+            self.assertEqual(result.retained_features, 1)
             self.assertEqual(result.incorporated_places, 1)
             self.assertEqual(result.census_designated_places, 1)
-            self.assertEqual(set(output["source_id"]), {1, 3})
-            self.assertEqual(result.stats["bbb_attribute_skipped"], 4)
+            self.assertEqual(result.federally_protected_features, 3)
+            self.assertEqual(set(unprotected_output["source_id"]), {1, 2})
+            self.assertEqual(
+                set(unprotected_output["land_type"]),
+                {UNPROTECTED_LAND_TYPE},
+            )
+            self.assertEqual(set(output["source_id"]), {1})
+            self.assertEqual(
+                set(output["land_type"]),
+                {BBB_CANDIDATE_LAND_TYPE},
+            )
+            self.assertEqual(result.stats["bbb_attribute_skipped"], 8)
             self.assertEqual(result.stats["outside_proximity_skipped"], 1)
+            self.assertEqual(result.stats["federally_protected_clipped"], 1)
+            self.assertEqual(
+                result.stats["federally_protected_fully_excluded"],
+                1,
+            )
             self.assertEqual(output.crs, padus_lands.crs)
+            self.assertEqual(unprotected_output.crs, padus_lands.crs)
+            self.assertTrue(unprotected_output.geometry.is_valid.all())
             self.assertTrue(output.geometry.is_valid.all())
+            self.assertLess(
+                output.geometry.area.iloc[0],
+                padus_lands.geometry.iloc[0].area,
+            )
 
 
 if __name__ == "__main__":

@@ -14,12 +14,13 @@ public_land =
 
 public_access =
     public_land
+    AND manager not in {NASA}
     AND (
         Pub_Access in {OA}
         OR (
             Pub_Access in {RA, UK}
             AND Own_Type not in {PVT}
-            AND manager not in {DOD, DOE, NASA}
+            AND manager not in {DOD, DOE}
             AND Des_Tp not in {
                 MIL,
                 PAGR,

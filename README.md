@@ -147,18 +147,22 @@ feature per county. It intersects the input with county boundaries, combines the
 pieces within each county into a single non-overlapping polygon or multipolygon,
 and copies the county attributes plus `land_type`.
 
-Run the script once for each of the three prepared products:
+Run the script once for each prepared PAD-US and BBB product:
 
 ```powershell
 python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\all_lands\padus_all_lands_clipped_to_usa_<timestamp>.gpkg
 python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\public_lands\padus_public_lands_clipped_to_usa_<timestamp>.gpkg
 python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\public_access_lands\padus_public_access_lands_clipped_to_usa_<timestamp>.gpkg
+python cut_and_flatten_by_county.py .\data\processing_outputs\blm_lands_excluding_federally_protected_areas\blm_lands_excluding_federally_protected_areas_<timestamp>.gpkg
+python cut_and_flatten_by_county.py .\data\processing_outputs\bbb_candidate_blm_lands\bbb_candidate_blm_lands_within_5_miles_of_population_centers_<timestamp>.gpkg
 ```
 
 The resulting by-county PAD-US products are written under
 `data/analysis_inputs/zonal_units`. Public-access outputs are routed to
-`padus_public_access_lands_by_county`. This change does not add public-access
-jobs to the zonal-statistics configuration.
+`padus_public_access_lands_by_county`, protected-area-filtered BLM outputs to
+`blm_lands_excluding_federally_protected_areas_by_county`, and final BBB
+outputs to `bbb_candidate_blm_lands_by_county`. This change does not add these
+products as jobs in the zonal-statistics configuration.
 
 #### 2a. Screen BBB PAD-US Candidate Lands
 
@@ -172,6 +176,17 @@ geometry work, it selects records where:
 - `State_Nm` is Alaska, Arizona, California, Colorado, Idaho, Nevada, New
   Mexico, Oregon, Utah, Washington, or Wyoming.
 
+The script first subtracts federally protected areas represented by overlapping
+PAD-US records and writes that intermediate BLM-only result. It uses designation
+codes for National Monuments, National Recreation Areas, Wilderness Areas, Wild
+and Scenic Rivers, National Trails, National Conservation Areas, National
+Wildlife Refuges, and National Parks. It also uses NPS and FWS
+approved/proclamation boundaries to cover National Park System units and,
+conservatively, National Wildlife Refuge and National Fish Hatchery System
+units. The FWS boundary proxy can include some additional FWS administrative
+areas because PAD-US does not provide a separate system-membership field for
+every boundary.
+
 It then clips those records to the union of:
 
 - a five-statute-mile band around the **boundary** of each incorporated
@@ -183,39 +198,55 @@ Each place is buffered in its local UTM coordinate system so the five-mile
 distance is not calculated in longitude/latitude or a single nationwide map
 projection. Input features are clipped to the union of those zones, and all
 source attributes are retained. Progress bars report PAD-US attribute
-selection, population-layer loading, place buffering, zone union,
-output-schema creation, candidate scanning, feature writing, and GeoPackage
-finalization.
+selection, protected-area loading and indexing, population-layer loading,
+place buffering, zone union, output-schema creation, candidate scanning,
+feature writing, and GeoPackage finalization.
 
-The output is a screening layer of candidate land, not a determination that a
-tract will be offered or sold. PAD-US does not establish existing grazing
-permits or leases, incompatible valid existing rights, residential suitability,
-tract selection, or every federally protected-land exclusion in the bill.
+The two outputs are screening layers, not determinations that a tract will be
+offered or sold:
+
+- `blm_lands_excluding_federally_protected_areas_<timestamp>.gpkg`, containing
+  eligible-state BLM fee land after only the protected-area subtraction, with
+  layer `blm_lands_excluding_federally_protected_areas` and `land_type` value
+  `blm_excluding_federally_protected`; and
+- `bbb_candidate_blm_lands_within_5_miles_of_population_centers_<timestamp>.gpkg`,
+  containing the preceding land that also satisfies the bill's five-mile rule,
+  with layer `bbb_candidate_blm_lands` and `land_type` value
+  `bbb_candidate_blm`.
+
+PAD-US does not establish existing grazing permits or leases, incompatible
+valid existing rights, residential suitability, or tract selection.
+Protected-area coverage is limited to the records present in the supplied
+PAD-US GeoPackage.
 
 Run it with a PAD-US GeoPackage as the positional argument:
 
 ```powershell
+python prepare_population_centers_2020.py
+
 python filter_bbb_padus_by_population_centers.py `
   .\data\processing_outputs\padus_clipped_to_usa\all_lands\padus_all_lands_clipped_to_usa_<timestamp>.gpkg
 ```
 
-The population-center input defaults to
+The preparation command downloads and caches 2020 Census place geometry and
+population tables, then writes the population-center input to
 `data/analysis_inputs/census_population_centers_2020.gpkg`, using layers
-`incorporated_places_pop1000` and `census_designated_places_pop1000`. Override
-the input, layers, output, or distance when needed:
+`incorporated_places_pop1000` and `census_designated_places_pop1000`. The BBB
+filter uses that file by default. Override the input, layers, output, or
+distance when needed:
 
 ```powershell
 python filter_bbb_padus_by_population_centers.py <padus.gpkg> `
   --population-centers-gpkg <population-centers.gpkg> `
   --input-layer <padus-layer> `
-  --output <filtered.gpkg> `
+  --unprotected-output <blm-minus-protected.gpkg> `
+  --output <final-bbb-candidates.gpkg> `
   --distance-miles 5
 ```
 
-Without `--output`, the script writes a timestamped GeoPackage under
-`data/processing_outputs/bbb_padus_candidate_lands`. The output keeps only the
-positive-area portions of qualifying federal BLM fee features inside either
-population-center zone.
+Without output overrides, the script writes the intermediate GeoPackage under
+`data/processing_outputs/blm_lands_excluding_federally_protected_areas` and the
+final GeoPackage under `data/processing_outputs/bbb_candidate_blm_lands`.
 
 #### 2b. Prepare Recreation Value By County
 
