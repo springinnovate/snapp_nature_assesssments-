@@ -29,6 +29,13 @@ PADUS_PUBLIC_LANDS_OUT_DIR = Path(
 PADUS_PUBLIC_ACCESS_LANDS_OUT_DIR = Path(
     "data/analysis_inputs/zonal_units/padus_public_access_lands_by_county"
 )
+BLM_UNPROTECTED_LANDS_OUT_DIR = Path(
+    "data/analysis_inputs/zonal_units/"
+    "blm_lands_excluding_federally_protected_areas_by_county"
+)
+BBB_CANDIDATE_BLM_LANDS_OUT_DIR = Path(
+    "data/analysis_inputs/zonal_units/bbb_candidate_blm_lands_by_county"
+)
 N_WORKERS = cpu_count() or 1
 TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$")
 INPUT_FIELDS_TO_COPY = ["land_type"]
@@ -90,18 +97,26 @@ def _derive_output_names(input_path: Path) -> tuple[str, Path]:
     """
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     input_stem = TIMESTAMP_SUFFIX.sub("", input_path.stem)
-    if "_clipped_to_usa" in input_stem:
+    if input_stem.startswith(
+        "blm_lands_excluding_federally_protected_areas"
+    ):
+        out_stem = f"{input_stem}_by_county"
+        out_dir = BLM_UNPROTECTED_LANDS_OUT_DIR
+    elif input_stem.startswith("bbb_candidate_blm_lands_"):
+        out_stem = f"{input_stem}_by_county"
+        out_dir = BBB_CANDIDATE_BLM_LANDS_OUT_DIR
+    elif "_clipped_to_usa" in input_stem:
         out_stem = input_stem.replace("_clipped_to_usa", "_clipped_by_county")
+        if out_stem.startswith("padus_all_lands_"):
+            out_dir = PADUS_ALL_LANDS_OUT_DIR
+        elif out_stem.startswith("padus_public_access_lands_"):
+            out_dir = PADUS_PUBLIC_ACCESS_LANDS_OUT_DIR
+        elif out_stem.startswith("padus_public_lands_"):
+            out_dir = PADUS_PUBLIC_LANDS_OUT_DIR
+        else:
+            out_dir = DEFAULT_OUT_DIR
     else:
         out_stem = f"{input_stem}_clipped_by_county"
-
-    if out_stem.startswith("padus_all_lands_"):
-        out_dir = PADUS_ALL_LANDS_OUT_DIR
-    elif out_stem.startswith("padus_public_access_lands_"):
-        out_dir = PADUS_PUBLIC_ACCESS_LANDS_OUT_DIR
-    elif out_stem.startswith("padus_public_lands_"):
-        out_dir = PADUS_PUBLIC_LANDS_OUT_DIR
-    else:
         out_dir = DEFAULT_OUT_DIR
     return out_stem, out_dir / f"{out_stem}_{timestamp}.gpkg"
 

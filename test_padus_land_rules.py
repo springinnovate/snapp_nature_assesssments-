@@ -42,13 +42,18 @@ ALLOWED_VALUES = {
     },
     "Des_Tp": {
         "MIL",
+        "PAGR",
         "PCON",
+        "PFOR",
+        "PHCA",
         "POTH",
         "PPRK",
+        "PRAN",
         "PREC",
         "WPA",
     },
-    "manager": {"NASA", "DOE"},
+    "Pub_Access": {"OA", "RA", "XA", "UK"},
+    "manager": {"NASA", "DOE", "DOD"},
 }
 
 
@@ -68,12 +73,27 @@ class PadusLandRulesTest(unittest.TestCase):
         des_type: str = "WPA",
         mang_name: str = "BLM",
         loc_mang: str = "Bureau of Land Management",
+        pub_access: str = "UK",
     ) -> dict[str, bool]:
+        """Classify one representative PAD-US attribute combination.
+
+        Args:
+            own_type: PAD-US owner-type code.
+            mang_type: PAD-US manager-type code.
+            des_type: PAD-US designation-type code.
+            mang_name: PAD-US national manager code.
+            loc_mang: PAD-US local manager value.
+            pub_access: PAD-US public-access code.
+
+        Returns:
+            Boolean public-land and public-access classifications.
+        """
         context = build_rule_context(
             {
                 "Own_Type": own_type,
                 "Mang_Type": mang_type,
                 "Des_Tp": des_type,
+                "Pub_Access": pub_access,
                 "Mang_Name": mang_name,
                 "Loc_Mang": loc_mang,
             }
@@ -81,14 +101,20 @@ class PadusLandRulesTest(unittest.TestCase):
         return self.rules.evaluate(context)
 
     def test_public_owner_types_are_public_land(self) -> None:
-        for own_type in ("FED", "JNT", "LOC", "DIST", "STAT", "TERR"):
+        for own_type in ("FED", "JNT", "LOC", "DIST", "STAT"):
             with self.subTest(own_type=own_type):
                 result = self.classify(own_type=own_type, mang_type="PVT")
                 self.assertTrue(result["public_land"])
                 self.assertTrue(result["public_access"])
 
+        for own_type in ("TERR", "TRIB"):
+            with self.subTest(own_type=own_type):
+                result = self.classify(own_type=own_type, mang_type="FED")
+                self.assertFalse(result["public_land"])
+                self.assertFalse(result["public_access"])
+
     def test_fallback_owner_requires_public_manager(self) -> None:
-        for own_type in ("NGO", "PVT", "UNK"):
+        for own_type in ("DESG", "NGO", "PVT", "UNK"):
             for mang_type in ("FED", "LOC", "DIST", "STAT"):
                 with self.subTest(own_type=own_type, mang_type=mang_type):
                     self.assertTrue(
@@ -102,8 +128,38 @@ class PadusLandRulesTest(unittest.TestCase):
         self.assertFalse(excluded["public_land"])
         self.assertFalse(excluded["public_access"])
 
-    def test_public_access_excludes_only_configured_designations(self) -> None:
-        for des_type in ("MIL", "PCON", "POTH", "PPRK", "PREC"):
+    def test_restricted_and_unknown_access_can_be_public(self) -> None:
+        for pub_access in ("RA", "UK"):
+            with self.subTest(pub_access=pub_access):
+                result = self.classify(
+                    own_type="FED",
+                    mang_type="FED",
+                    pub_access=pub_access,
+                )
+                self.assertTrue(result["public_access"])
+
+    def test_nonopen_access_excludes_private_owners(self) -> None:
+        result = self.classify(
+            own_type="PVT",
+            mang_type="FED",
+            pub_access="RA",
+        )
+
+        self.assertTrue(result["public_land"])
+        self.assertFalse(result["public_access"])
+
+    def test_nonopen_access_excludes_configured_designations(self) -> None:
+        for des_type in (
+            "MIL",
+            "PAGR",
+            "PCON",
+            "PFOR",
+            "PHCA",
+            "POTH",
+            "PPRK",
+            "PRAN",
+            "PREC",
+        ):
             with self.subTest(des_type=des_type):
                 result = self.classify(
                     own_type="FED",
@@ -121,7 +177,7 @@ class PadusLandRulesTest(unittest.TestCase):
             )["public_access"]
         )
 
-    def test_public_access_excludes_exact_nasa_and_doe_managers(self) -> None:
+    def test_nonopen_access_excludes_configured_managers(self) -> None:
         nasa = self.classify(
             own_type="FED",
             mang_type="FED",
@@ -147,14 +203,35 @@ class PadusLandRulesTest(unittest.TestCase):
         )
         self.assertTrue(similar_name["public_access"])
 
-    def test_dod_is_not_an_unconfigured_manager_exclusion(self) -> None:
-        result = self.classify(
+        dod = self.classify(
             own_type="FED",
             mang_type="FED",
             des_type="WPA",
             mang_name="DOD",
         )
+        self.assertFalse(dod["public_access"])
+
+    def test_open_access_overrides_secondary_exclusions(self) -> None:
+        result = self.classify(
+            own_type="PVT",
+            mang_type="FED",
+            des_type="MIL",
+            mang_name="DOD",
+            pub_access="OA",
+        )
+
+        self.assertTrue(result["public_land"])
         self.assertTrue(result["public_access"])
+
+    def test_closed_access_is_not_public_access(self) -> None:
+        result = self.classify(
+            own_type="FED",
+            mang_type="FED",
+            pub_access="XA",
+        )
+
+        self.assertTrue(result["public_land"])
+        self.assertFalse(result["public_access"])
 
     def test_invalid_syntax_field_and_code_fail_clearly(self) -> None:
         with self.assertRaisesRegex(RuleConfigError, "Expected field"):

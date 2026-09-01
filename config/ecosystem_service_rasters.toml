@@ -1,0 +1,92 @@
+# Explicit raster inventory for the current SNAPP TIFF zonal-statistics handoff.
+#
+# Only entries with `include = true` are written to the generated runner config.
+# This prevents categorical source rasters and intermediate component rasters in
+# data/analysis_inputs/ecosystem_services from being analyzed accidentally.
+
+[[rasters]]
+label = "Carbon stock per pixel"
+filename = "totalC_tCO2e_pixel_2020.tif"
+units = "t CO2e per pixel"
+include = true
+
+[[rasters]]
+label = "Carbon stock per hectare"
+filename = "totalC_tCO2e_ha_2020.tif"
+units = "t CO2e per ha"
+include = true
+
+[[rasters]]
+label = "Avoided dredging costs"
+filename = "avoided_dredging_costs_raster.tif"
+units = "USD 2024 per 30 m pixel"
+include = true
+
+[[rasters]]
+label = "Avoided SDWA health costs"
+filename = "avoided_sdwa_health_costs_raster.tif"
+units = "USD 2024 per 30 m pixel"
+include = true
+
+[[rasters]]
+label = "Avoided water-treatment costs"
+filename = "avoided_treatment_costs_raster.tif"
+units = "USD 2024 per 30 m pixel"
+include = true
+
+[[rasters]]
+label = "Surface-water provisioning value"
+filename = "Wval_sw_2020usd_total.tif"
+units = "USD 2020 per 4 km pixel"
+include = true
+
+[[rasters]]
+label = "Pollination-attributed crop-yield value"
+filename = "pollination_attributed_annual_crop_yield_value.tif"
+units = "USD 2024 per ha in source; USD 2024 per pixel after scaling"
+include = true
+scale = 0.09
+derived_filename = "pollination_attributed_annual_crop_yield_value_usd_per_pixel.vrt"
+
+[[rasters]]
+label = "Flood mitigation annual value"
+filename = "annual_value_masked_to_wetlands.tif"
+units = "USD 2024 annual value per pixel"
+include = true
+
+[[rasters]]
+label = "Flood mitigation net present value"
+filename = "marginal_npv_masked_to_wetlands.tif"
+units = "USD 2024 net present value per pixel"
+include = true
+
+[[rasters]]
+label = "Coral coastal-protection value"
+filename = "Coral_Reefs_2024adj_CPI.tif"
+units = "USD; spreadsheet labels 2010 while the local filename says 2024-adjusted"
+include = true
+
+# These spreadsheet rows are deliberately blocked until the correct inputs are
+# supplied. Change `include` to true only after replacing the placeholder with
+# a validated value raster and confirming its units.
+
+[[rasters]]
+label = "Air quality"
+filename = "air_quality_2021_usd_per_county.tif"
+units = "USD 2021 per county"
+include = false
+reason = "The spreadsheet says this raster is being prepared by Sumil; it is not in the local data stack."
+
+[[rasters]]
+label = "Mangrove value"
+filename = "mangrove_2020_usd_per_ha.tif"
+units = "USD 2020 average per ha"
+include = false
+reason = "The local mangrove_CONUS.tif is categorical CCAP land cover (values -128/0/16/17), not a monetary value raster."
+
+[[rasters]]
+label = "Mental health"
+filename = "mental_health_2024_usd_per_county.tif"
+units = "USD 2024 per county"
+include = false
+reason = "No mental-health TIFF is present in the local data stack."

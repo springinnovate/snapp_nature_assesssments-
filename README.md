@@ -52,7 +52,7 @@ The main input paths are:
 | Counties | `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` |
 | PAD-US geodatabase | `data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb` |
 | Recreation value polygons | `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` |
-| Ecosystem service rasters | `data/analysis_inputs/ecosystem_services/*.tif` |
+| Ecosystem service rasters | `data/analysis_inputs/ecosystem_services` (selected explicitly by `config/ecosystem_service_rasters.toml`) |
 | NLCD 2023 land cover raster | `data/analysis_inputs/nlcd/Annual_NLCD_LndCov_2023_CU_C1V0.tif` |
 | Land-cover reclassification tables | `data/workflow_assets/landcover_reclass/*.csv` |
 | NHDPlus HR geodatabase | `data/analysis_inputs/hydrography/nhdplus/NHDPlus_H_National_Release_2_GDB/NHDPlus_H_National_Release_2_GDB.gdb` |
@@ -93,16 +93,28 @@ syntax; it is parsed and validated without executing Python or SQL:
 
 ```text
 public_land =
-    Own_Type in {FED, JNT, LOC, DIST, STAT, TERR}
-    OR (
-        Own_Type in {NGO, PVT, UNK}
-        AND Mang_Type in {FED, LOC, DIST, STAT}
+    Own_Type not in {TRIB}
+    AND (
+        Own_Type in {DIST, FED, JNT, LOC, STAT}
+        OR (
+            Own_Type in {DESG, NGO, PVT, UNK}
+            AND Mang_Type in {DIST, FED, JNT, LOC, STAT}
+        )
     )
 
 public_access =
     public_land
-    AND Des_Tp not in {MIL, PCON, POTH, PPRK, PREC}
-    AND manager not in {NASA, DOE}
+    AND (
+        Pub_Access in {OA}
+        OR (
+            Pub_Access in {RA, UK}
+            AND Own_Type not in {PVT}
+            AND manager not in {DOD, DOE, NASA}
+            AND Des_Tp not in {
+                MIL, PAGR, PCON, PFOR, PHCA, POTH, PPRK, PRAN, PREC
+            }
+        )
+    )
 ```
 
 The all-land product includes every PAD-US feature that has positive-area
@@ -111,18 +123,18 @@ overlap with the USA boundary after processing.
 The public-land product is a subset of the all-land product. PAD-US stores
 coded values in the geodatabase even when GIS software displays longer
 descriptions, so the configured rule uses stored codes. Federal, Joint, Local
-Government, Regional Agency Special District, State, and Territorial owners
-are included. Non-Governmental Organization, Private, and Unknown owners are
-included only when managed by a Federal, Local Government, Regional Agency
-Special District, or State entity.
+Government, Regional Agency Special District, and State owners are included.
+Designation, Non-Governmental Organization, Private, and Unknown owners are
+included only when managed by one of those public entity types. Tribal and
+Territorial records are not selected.
 
-The public-access product is a subset of public land. It excludes Military
-Land, Private Conservation, Private Other or Unknown, Private Park, and Private
-Recreation or Education designations, plus NASA- and DOE-managed records.
-Watershed Protection Areas remain included. PAD-US 4.1 stores NASA under the
+The public-access product is a subset of public land. Open Access (`OA`) records
+are included directly. Restricted Access (`RA`) and Unknown (`UK`) records are
+included only when they are not privately owned, are not managed by DOD, DOE,
+or NASA, and do not use one of the configured private or military designation
+codes. Closed (`XA`) records are excluded. PAD-US 4.1 stores NASA under the
 local manager value `National Aeronautics and Space Administration (NASA)`, so
 the script normalizes that exact value to the configured `NASA` manager token.
-No rule is applied to `Pub_Access`, reservoirs generally, or DOD generally.
 
 All three clipped products contain `land_type`, source `OBJECTID`, the PAD-US
 source attributes, and geometry. The rule parser rejects unsupported fields,
@@ -135,20 +147,108 @@ feature per county. It intersects the input with county boundaries, combines the
 pieces within each county into a single non-overlapping polygon or multipolygon,
 and copies the county attributes plus `land_type`.
 
-Run the script once for each of the three prepared products:
+Run the script once for each prepared PAD-US and BBB product:
 
 ```powershell
 python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\all_lands\padus_all_lands_clipped_to_usa_<timestamp>.gpkg
 python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\public_lands\padus_public_lands_clipped_to_usa_<timestamp>.gpkg
 python cut_and_flatten_by_county.py .\data\processing_outputs\padus_clipped_to_usa\public_access_lands\padus_public_access_lands_clipped_to_usa_<timestamp>.gpkg
+python cut_and_flatten_by_county.py .\data\processing_outputs\blm_lands_excluding_federally_protected_areas\blm_lands_excluding_federally_protected_areas_<timestamp>.gpkg
+python cut_and_flatten_by_county.py .\data\processing_outputs\bbb_candidate_blm_lands\bbb_candidate_blm_lands_within_5_miles_of_population_centers_<timestamp>.gpkg
 ```
 
 The resulting by-county PAD-US products are written under
 `data/analysis_inputs/zonal_units`. Public-access outputs are routed to
-`padus_public_access_lands_by_county`. This change does not add public-access
-jobs to the zonal-statistics configuration.
+`padus_public_access_lands_by_county`, protected-area-filtered BLM outputs to
+`blm_lands_excluding_federally_protected_areas_by_county`, and final BBB
+outputs to `bbb_candidate_blm_lands_by_county`. This change does not add these
+products as jobs in the zonal-statistics configuration.
 
-#### 2a. Prepare Recreation Value By County
+#### 2a. Screen BBB PAD-US Candidate Lands
+
+`filter_bbb_padus_by_population_centers.py` screens a USA-clipped PAD-US
+GeoPackage against the mappable land criteria in Section 50301. Before doing
+geometry work, it selects records where:
+
+- `FeatClass = 'Fee'`;
+- `Own_Type = 'FED'`;
+- `Mang_Name = 'BLM'`; and
+- `State_Nm` is Alaska, Arizona, California, Colorado, Idaho, Nevada, New
+  Mexico, Oregon, Utah, Washington, or Wyoming.
+
+The script first subtracts federally protected areas represented by overlapping
+PAD-US records and writes that intermediate BLM-only result. It uses designation
+codes for National Monuments, National Recreation Areas, Wilderness Areas, Wild
+and Scenic Rivers, National Trails, National Conservation Areas, National
+Wildlife Refuges, and National Parks. It also uses NPS and FWS
+approved/proclamation boundaries to cover National Park System units and,
+conservatively, National Wildlife Refuge and National Fish Hatchery System
+units. The FWS boundary proxy can include some additional FWS administrative
+areas because PAD-US does not provide a separate system-membership field for
+every boundary.
+
+It then clips those records to the union of:
+
+- a five-statute-mile band around the **boundary** of each incorporated
+  municipality with a population of at least 1,000; and
+- a five-statute-mile circle around the Census-provided `CENTLON`/`CENTLAT`
+  centroid of each census-designated place with a population of at least 1,000.
+
+Each place is buffered in its local UTM coordinate system so the five-mile
+distance is not calculated in longitude/latitude or a single nationwide map
+projection. Input features are clipped to the union of those zones, and all
+source attributes are retained. Progress bars report PAD-US attribute
+selection, protected-area loading and indexing, population-layer loading,
+place buffering, zone union, output-schema creation, candidate scanning,
+feature writing, and GeoPackage finalization.
+
+The two outputs are screening layers, not determinations that a tract will be
+offered or sold:
+
+- `blm_lands_excluding_federally_protected_areas_<timestamp>.gpkg`, containing
+  eligible-state BLM fee land after only the protected-area subtraction, with
+  layer `blm_lands_excluding_federally_protected_areas` and `land_type` value
+  `blm_excluding_federally_protected`; and
+- `bbb_candidate_blm_lands_within_5_miles_of_population_centers_<timestamp>.gpkg`,
+  containing the preceding land that also satisfies the bill's five-mile rule,
+  with layer `bbb_candidate_blm_lands` and `land_type` value
+  `bbb_candidate_blm`.
+
+PAD-US does not establish existing grazing permits or leases, incompatible
+valid existing rights, residential suitability, or tract selection.
+Protected-area coverage is limited to the records present in the supplied
+PAD-US GeoPackage.
+
+Run it with a PAD-US GeoPackage as the positional argument:
+
+```powershell
+python prepare_population_centers_2020.py
+
+python filter_bbb_padus_by_population_centers.py `
+  .\data\processing_outputs\padus_clipped_to_usa\all_lands\padus_all_lands_clipped_to_usa_<timestamp>.gpkg
+```
+
+The preparation command downloads and caches 2020 Census place geometry and
+population tables, then writes the population-center input to
+`data/analysis_inputs/census_population_centers_2020.gpkg`, using layers
+`incorporated_places_pop1000` and `census_designated_places_pop1000`. The BBB
+filter uses that file by default. Override the input, layers, output, or
+distance when needed:
+
+```powershell
+python filter_bbb_padus_by_population_centers.py <padus.gpkg> `
+  --population-centers-gpkg <population-centers.gpkg> `
+  --input-layer <padus-layer> `
+  --unprotected-output <blm-minus-protected.gpkg> `
+  --output <final-bbb-candidates.gpkg> `
+  --distance-miles 5
+```
+
+Without output overrides, the script writes the intermediate GeoPackage under
+`data/processing_outputs/blm_lands_excluding_federally_protected_areas` and the
+final GeoPackage under `data/processing_outputs/bbb_candidate_blm_lands`.
+
+#### 2b. Prepare Recreation Value By County
 
 `prepare_recreation_value_by_county.py` allocates the `val_2024` values from
 `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` to
@@ -231,6 +331,81 @@ unless the rule is changed explicitly in the script.
 
 ### Zonal Statistics
 
+#### TIFF handoff workflow
+
+For the current ecosystem-service TIFF handoff, place source rasters in
+`data/analysis_inputs/ecosystem_services`, then review
+`config/ecosystem_service_rasters.toml`. Only entries with `include = true` are
+analyzed. This is intentionally safer than running a `*.tif` wildcard: the
+folder also contains component rasters and categorical CCAP inputs that are not
+standalone valuation layers.
+
+Generate a raster-only runner configuration with:
+
+```powershell
+python prepare_tif_zonal_stats_config.py
+```
+
+The preparation step validates every enabled TIFF, automatically selects the
+newest timestamped county-cut GeoPackage for each available land product, and
+writes:
+
+```text
+data/processing_outputs/zonal_stats_config/snapp_assessment_tif_zonal_stats.yaml
+```
+
+The generated `[project]` section sets
+`max_simplify_tolerance_meters = 15`. The zonal-statistics toolkit uses this
+explicit physical tolerance when simplifying aggregation geometry; it does not
+derive the tolerance from each raster's pixel size. This avoids the previous
+2 km simplification applied to the 4 km water-provisioning raster while retaining
+geometry simplification for PAD-US performance.
+
+By default the generated config covers counties, PAD-US all lands, PAD-US
+public lands, PAD-US public-access lands, and BBB candidate BLM lands. It also
+includes BLM lands excluding mapped federal protections when that intermediate
+product has been cut by county. Use repeatable `--zone` options to run only a
+subset; for example:
+
+```powershell
+python prepare_tif_zonal_stats_config.py --zone all --zone public --zone public-access --zone bbb-candidates
+```
+
+The manifest applies the required `0.09` pollination per-hectare to 30 m-pixel
+conversion through a lightweight VRT, avoiding a duplicate multi-gigabyte
+TIFF. Air quality and mental health remain disabled because their TIFFs are not
+in the local data stack. Mangroves remain disabled because the local
+`mangrove_CONUS.tif` contains categorical CCAP values (`-128`, `0`, `16`, and
+`17`), not monetary values.
+
+The coral row also needs a metadata decision before publication: the spreadsheet
+labels it USD 2010, while the local filename is `Coral_Reefs_2024adj_CPI.tif`.
+It is enabled for the requested zonal run, and the discrepancy is recorded in
+the manifest rather than silently choosing one currency year.
+
+Run the generated config from this repository root. With the toolkit clone used
+on the original workstation, the command is:
+
+```powershell
+conda activate zonal-stats-toolkit
+python D:\repositories\zonal_stats_toolkit\runner.py .\data\processing_outputs\zonal_stats_config\snapp_assessment_tif_zonal_stats.yaml --job-workers 4 --raster-workers 2
+```
+
+The TIFF jobs write timestamped CSV and GeoPackage results under
+`data/analysis_results/zonal_statistics/<zonal-product>`. After the run, create
+the latest joined deliverables with:
+
+```powershell
+conda activate geo
+python combine_final_zonal_stats_results.py
+```
+
+The resulting combined filenames identify the zonal product directly, including
+`padus_public_access_lands_combined_*` and
+`bbb_candidate_blm_lands_combined_*`.
+
+#### Full legacy assessment configuration
+
 The zonal statistics configuration is:
 
 ```text
@@ -253,15 +428,16 @@ From this repository root, run the toolkit runner. Replace
 [`zonal_stats_toolkit`](https://github.com/springinnovate/zonal_stats_toolkit):
 
 ```powershell
-python <zonal_stats_toolkit_repo>\pipeline_runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
+python <zonal_stats_toolkit_repo>\runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
 ```
 
-The configured metrics are:
+The legacy configuration combines raster, mask, area, freshwater, and coastline
+jobs. Its configured metrics are:
 
 | Input family | Operations |
 | --- | --- |
-| Ecosystem service rasters | `sum`, `mean`, `stdev`, `valid_count`, `total_count`, `area_ha_valid`, `area_ha_total` |
-| NLCD reclassification masks | `sum` |
+| Ecosystem service rasters | `sum`, `mean`, `area_ha_valid`, `proportion_valid_nonzero` |
+| NLCD reclassification masks | `area_ha_valid`, `proportion_valid_nonzero` |
 | Zonal unit area | `intersect_area_ha` |
 | NHD freshwater polygons | `intersect_area_ha` |
 | Coastline | `intersect_length_km` |
@@ -276,8 +452,8 @@ GeoPackage outputs within each zonal-statistics subdirectory. Shared columns are
 kept once, and repeated fields with conflicting values for the same `GEOID`
 raise an error. It also joins the latest prepared recreation value by county
 from `data/analysis_inputs/zonal_units/recreation_by_county`, carrying only
-`proportional_recreation_val_2024` into the county, PAD-US all-land, and PAD-US
-public-land final outputs.
+`proportional_recreation_val_2024` into each available county-keyed final
+output.
 
 During this step, timestamped NLCD mask artifact fields such as
 `area_ha_valid_reclassified_NLCD2023_*` are replaced with stable derived class
@@ -305,6 +481,14 @@ The final deliverables are:
   `padus_all_lands_combined_<timestamp>.gpkg`.
 - `padus_public_lands_combined_<timestamp>.csv` and
   `padus_public_lands_combined_<timestamp>.gpkg`.
+- `padus_public_access_lands_combined_<timestamp>.csv` and
+  `padus_public_access_lands_combined_<timestamp>.gpkg`, when those zonal jobs
+  have been run.
+- `blm_lands_excluding_federally_protected_areas_combined_<timestamp>.csv` and
+  `.gpkg`, when that county-cut intermediate and its zonal jobs exist.
+- `bbb_candidate_blm_lands_combined_<timestamp>.csv` and
+  `bbb_candidate_blm_lands_combined_<timestamp>.gpkg`, when those zonal jobs
+  have been run.
 
 By default, these files are written to `data/analysis_results/combined`.
 Each contains `proportional_recreation_val_2024` joined by `GEOID`.
