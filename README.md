@@ -52,7 +52,7 @@ The main input paths are:
 | Counties | `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` |
 | PAD-US geodatabase | `data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb` |
 | Recreation value polygons | `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` |
-| Ecosystem service rasters | `data/analysis_inputs/ecosystem_services/*.tif` |
+| Ecosystem service rasters | `data/analysis_inputs/ecosystem_services` (selected explicitly by `config/ecosystem_service_rasters.toml`) |
 | NLCD 2023 land cover raster | `data/analysis_inputs/nlcd/Annual_NLCD_LndCov_2023_CU_C1V0.tif` |
 | Land-cover reclassification tables | `data/workflow_assets/landcover_reclass/*.csv` |
 | NHDPlus HR geodatabase | `data/analysis_inputs/hydrography/nhdplus/NHDPlus_H_National_Release_2_GDB/NHDPlus_H_National_Release_2_GDB.gdb` |
@@ -331,6 +331,81 @@ unless the rule is changed explicitly in the script.
 
 ### Zonal Statistics
 
+#### TIFF handoff workflow
+
+For the current ecosystem-service TIFF handoff, place source rasters in
+`data/analysis_inputs/ecosystem_services`, then review
+`config/ecosystem_service_rasters.toml`. Only entries with `include = true` are
+analyzed. This is intentionally safer than running a `*.tif` wildcard: the
+folder also contains component rasters and categorical CCAP inputs that are not
+standalone valuation layers.
+
+Generate a raster-only runner configuration with:
+
+```powershell
+python prepare_tif_zonal_stats_config.py
+```
+
+The preparation step validates every enabled TIFF, automatically selects the
+newest timestamped county-cut GeoPackage for each available land product, and
+writes:
+
+```text
+data/processing_outputs/zonal_stats_config/snapp_assessment_tif_zonal_stats.yaml
+```
+
+The generated `[project]` section sets
+`max_simplify_tolerance_meters = 15`. The zonal-statistics toolkit uses this
+explicit physical tolerance when simplifying aggregation geometry; it does not
+derive the tolerance from each raster's pixel size. This avoids the previous
+2 km simplification applied to the 4 km water-provisioning raster while retaining
+geometry simplification for PAD-US performance.
+
+By default the generated config covers counties, PAD-US all lands, PAD-US
+public lands, PAD-US public-access lands, and BBB candidate BLM lands. It also
+includes BLM lands excluding mapped federal protections when that intermediate
+product has been cut by county. Use repeatable `--zone` options to run only a
+subset; for example:
+
+```powershell
+python prepare_tif_zonal_stats_config.py --zone all --zone public --zone public-access --zone bbb-candidates
+```
+
+The manifest applies the required `0.09` pollination per-hectare to 30 m-pixel
+conversion through a lightweight VRT, avoiding a duplicate multi-gigabyte
+TIFF. Air quality and mental health remain disabled because their TIFFs are not
+in the local data stack. Mangroves remain disabled because the local
+`mangrove_CONUS.tif` contains categorical CCAP values (`-128`, `0`, `16`, and
+`17`), not monetary values.
+
+The coral row also needs a metadata decision before publication: the spreadsheet
+labels it USD 2010, while the local filename is `Coral_Reefs_2024adj_CPI.tif`.
+It is enabled for the requested zonal run, and the discrepancy is recorded in
+the manifest rather than silently choosing one currency year.
+
+Run the generated config from this repository root. With the toolkit clone used
+on the original workstation, the command is:
+
+```powershell
+conda activate zonal-stats-toolkit
+python D:\repositories\zonal_stats_toolkit\runner.py .\data\processing_outputs\zonal_stats_config\snapp_assessment_tif_zonal_stats.yaml --job-workers 4 --raster-workers 2
+```
+
+The TIFF jobs write timestamped CSV and GeoPackage results under
+`data/analysis_results/zonal_statistics/<zonal-product>`. After the run, create
+the latest joined deliverables with:
+
+```powershell
+conda activate geo
+python combine_final_zonal_stats_results.py
+```
+
+The resulting combined filenames identify the zonal product directly, including
+`padus_public_access_lands_combined_*` and
+`bbb_candidate_blm_lands_combined_*`.
+
+#### Full legacy assessment configuration
+
 The zonal statistics configuration is:
 
 ```text
@@ -353,15 +428,16 @@ From this repository root, run the toolkit runner. Replace
 [`zonal_stats_toolkit`](https://github.com/springinnovate/zonal_stats_toolkit):
 
 ```powershell
-python <zonal_stats_toolkit_repo>\pipeline_runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
+python <zonal_stats_toolkit_repo>\runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
 ```
 
-The configured metrics are:
+The legacy configuration combines raster, mask, area, freshwater, and coastline
+jobs. Its configured metrics are:
 
 | Input family | Operations |
 | --- | --- |
-| Ecosystem service rasters | `sum`, `mean`, `stdev`, `valid_count`, `total_count`, `area_ha_valid`, `area_ha_total` |
-| NLCD reclassification masks | `sum` |
+| Ecosystem service rasters | `sum`, `mean`, `area_ha_valid`, `proportion_valid_nonzero` |
+| NLCD reclassification masks | `area_ha_valid`, `proportion_valid_nonzero` |
 | Zonal unit area | `intersect_area_ha` |
 | NHD freshwater polygons | `intersect_area_ha` |
 | Coastline | `intersect_length_km` |
@@ -376,8 +452,8 @@ GeoPackage outputs within each zonal-statistics subdirectory. Shared columns are
 kept once, and repeated fields with conflicting values for the same `GEOID`
 raise an error. It also joins the latest prepared recreation value by county
 from `data/analysis_inputs/zonal_units/recreation_by_county`, carrying only
-`proportional_recreation_val_2024` into the county, PAD-US all-land, and PAD-US
-public-land final outputs.
+`proportional_recreation_val_2024` into each available county-keyed final
+output.
 
 During this step, timestamped NLCD mask artifact fields such as
 `area_ha_valid_reclassified_NLCD2023_*` are replaced with stable derived class
@@ -405,6 +481,14 @@ The final deliverables are:
   `padus_all_lands_combined_<timestamp>.gpkg`.
 - `padus_public_lands_combined_<timestamp>.csv` and
   `padus_public_lands_combined_<timestamp>.gpkg`.
+- `padus_public_access_lands_combined_<timestamp>.csv` and
+  `padus_public_access_lands_combined_<timestamp>.gpkg`, when those zonal jobs
+  have been run.
+- `blm_lands_excluding_federally_protected_areas_combined_<timestamp>.csv` and
+  `.gpkg`, when that county-cut intermediate and its zonal jobs exist.
+- `bbb_candidate_blm_lands_combined_<timestamp>.csv` and
+  `bbb_candidate_blm_lands_combined_<timestamp>.gpkg`, when those zonal jobs
+  have been run.
 
 By default, these files are written to `data/analysis_results/combined`.
 Each contains `proportional_recreation_val_2024` joined by `GEOID`.
