@@ -1,7 +1,15 @@
-"""Reproduce the October 2026 SNAPP county valuation integration (issue #58).
+"""Build the October 2026 SNAPP county ecosystem-service valuation GeoPackage.
 
-Run from any directory; defaults are relative to this script. Source files are
-never modified. See docs/county_valuation_integration_2026.md for assumptions.
+Join county estimates, allocate state fisheries values and recreation polygon
+values to counties, and apply the assessment's recorded valuation adjustments.
+The output preserves county boundaries and includes original values, adjustment
+factors, adjusted values, source information, and coverage tables.
+
+Run: python build_county_ecosystem_service_valuations_2026.py
+Inputs: data/workflow_assets/county_integration/sources.csv (paths under data/).
+Output: data/analysis_results/combined/counties_ecosystem_services_<timestamp>.gpkg.
+Source files are never modified. See docs/county_valuation_integration_2026.md
+for input releases, allocation methods, units, and interpretation limits.
 """
 from __future__ import annotations
 

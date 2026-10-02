@@ -309,27 +309,32 @@ The final deliverables are:
 By default, these files are written to `data/analysis_results/combined`.
 Each contains `proportional_recreation_val_2024` joined by `GEOID`.
 
-## October 2026 County Valuation Integration
+## Build County Ecosystem-Service Valuations for the 2026 Assessment
 
-`integrate_county_valuations_2026.py` integrates the additional county, state,
-and polygon valuation sources with the September 10 county ecosystem-service
-GeoPackage. It writes a new timestamped GeoPackage under
-`data/analysis_results/combined`, with original values, explicit adjustment
-factors, adjusted values, and provenance/coverage tables.
+[`build_county_ecosystem_service_valuations_2026.py`](build_county_ecosystem_service_valuations_2026.py)
+builds a county dataset for comparing ecosystem-service values in the October
+2026 SNAPP assessment. It adds grazing, air quality, wages, timber, fisheries,
+urban heat, recreation, and physical-health estimates to the September 10 county
+results. County estimates are joined by FIPS; state fisheries and recreation
+polygon values are distributed to counties using the documented allocation rules.
+
+Place the source files under `data/` as listed in the
+[input and methods guide](docs/county_valuation_integration_2026.md#input-data).
+With the repository's Python environment active, run from the repository folder:
 
 ```powershell
-python integrate_county_valuations_2026.py --workers 8 --geometry-workers 8
+python build_county_ecosystem_service_valuations_2026.py
 ```
 
-Independent services run in parallel, recreation intersections run in threaded
-batches, and `tqdm` reports progress. Completed services and recreation batches
-are checkpointed; rerun the same command to resume after a failure. Source
-data are preserved and the final GeoPackage is published only after validation.
+The new `data/analysis_results/combined/counties_ecosystem_services_<timestamp>.gpkg`
+contains the county map, original values, adjustment factors, adjusted values,
+and tables describing sources and missing coverage. Open it in QGIS or read it
+with GeoPandas. The original files are preserved.
 
-See [the integration record](docs/county_valuation_integration_2026.md) for the
-file layout, exact source/field mappings, confirmed factors, Connecticut
-crosswalk, missing-value rules, and validation procedure. The inputs can be
-staged with `move_county_inputs.cmd`; preview its moves with `--dry-run`.
+Before comparing or summing values, read the guide's
+[interpretation notes](docs/county_valuation_integration_2026.md#interpreting-the-values):
+missing values differ from zero, some estimates are allocated across boundaries,
+and the services include different units and time horizons.
 
 ## Runtime Notes
 
