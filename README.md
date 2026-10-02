@@ -309,6 +309,28 @@ The final deliverables are:
 By default, these files are written to `data/analysis_results/combined`.
 Each contains `proportional_recreation_val_2024` joined by `GEOID`.
 
+## October 2026 County Valuation Integration
+
+`integrate_county_valuations_2026.py` integrates the additional county, state,
+and polygon valuation sources with the September 10 county ecosystem-service
+GeoPackage. It writes a new timestamped GeoPackage under
+`data/analysis_results/combined`, with original values, explicit adjustment
+factors, adjusted values, and provenance/coverage tables.
+
+```powershell
+python integrate_county_valuations_2026.py --workers 8 --geometry-workers 8
+```
+
+Independent services run in parallel, recreation intersections run in threaded
+batches, and `tqdm` reports progress. Completed services and recreation batches
+are checkpointed; rerun the same command to resume after a failure. Source
+data are preserved and the final GeoPackage is published only after validation.
+
+See [the integration record](docs/county_valuation_integration_2026.md) for the
+file layout, exact source/field mappings, confirmed factors, Connecticut
+crosswalk, missing-value rules, and validation procedure. The inputs can be
+staged with `move_county_inputs.cmd`; preview its moves with `--dry-run`.
+
 ## Runtime Notes
 
 The PAD-US, NHD, NLCD preparation, and zonal statistics steps are the expensive
