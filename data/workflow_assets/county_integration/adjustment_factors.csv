@@ -1,0 +1,28 @@
+service,factor,reason,source_units
+carbon_ha,4.32612,User confirmed 3.66 * 1.182 on both existing carbon aggregates; no additional SCC price specified,source raster aggregate labelled tCO2e/ha
+carbon_pixel,4.32612,User confirmed 3.66 * 1.182 on both existing carbon aggregates; no additional SCC price specified,source raster aggregate labelled tCO2e/pixel
+avoided_air_quality_heath_costs,1.135,User supplied inflation adjustment; field spelling requested by user,USD annual
+dredging,1,User supplied,USD
+sdwa,1,User supplied,USD
+water_treatment,1,User supplied,USD
+provisioning,1.182,User supplied inflation adjustment,USD 2020
+provisioning_irr,1.182,Same adjustment as water provisioning total,USD 2020
+provisioning_pow,1.182,Same adjustment as water provisioning total,USD 2020
+provisioning_pub,1.182,Same adjustment as water provisioning total,USD 2020
+grazing,1,User supplied; CountyGrazingValueYear is already a county total,USD 2024 annual
+jobs_cultural,1.065,User supplied inflation adjustment,USD 2022 wages
+jobs_raw_materials,1.065,User supplied inflation adjustment,USD 2022 wages
+jobs_processing,1.065,User supplied inflation adjustment,USD 2022 wages
+jobs_harvesting,1.065,User supplied inflation adjustment,USD 2022 wages
+jobs,1.065,Sum of four raw wage categories; user supplied inflation adjustment,USD 2022 wages
+timber,1,User supplied; total_annual_rent is already a county total,USD 2024 annual
+flood_npv,1,User supplied,USD NPV
+flood_annual,1,User supplied,USD annual
+corals,1,User confirmed existing Coral_Reefs_2024adj_CPI is already adjusted,USD 2024
+mangroves,1.182,User requested existing county values; retain source signs,USD source aggregate
+marine_fisheries,1.027,User supplied inflation adjustment,USD 2023
+inland_fisheries,1.065,User supplied inflation adjustment,USD 2022
+urban_heat,1.135,User supplied inflation adjustment,USD 2021
+recreation,1,User supplied,USD 2024
+physical_health,1.027,User supplied inflation adjustment,USD 2023
+mental_health,1,User supplied,USD

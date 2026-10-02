@@ -309,6 +309,33 @@ The final deliverables are:
 By default, these files are written to `data/analysis_results/combined`.
 Each contains `proportional_recreation_val_2024` joined by `GEOID`.
 
+## Build County Ecosystem-Service Valuations for the 2026 Assessment
+
+[`build_county_ecosystem_service_valuations_2026.py`](build_county_ecosystem_service_valuations_2026.py)
+builds a county dataset for comparing ecosystem-service values in the October
+2026 SNAPP assessment. It adds grazing, air quality, wages, timber, fisheries,
+urban heat, recreation, and physical-health estimates to the September 10 county
+results. County estimates are joined by FIPS; state fisheries and recreation
+polygon values are distributed to counties using the documented allocation rules.
+
+Place the source files under `data/` as listed in the
+[input and methods guide](docs/county_valuation_integration_2026.md#input-data).
+With the repository's Python environment active, run from the repository folder:
+
+```powershell
+python build_county_ecosystem_service_valuations_2026.py
+```
+
+The new `data/analysis_results/combined/counties_ecosystem_services_<timestamp>.gpkg`
+contains the county map, original values, adjustment factors, adjusted values,
+and tables describing sources and missing coverage. Open it in QGIS or read it
+with GeoPandas. The original files are preserved.
+
+Before comparing or summing values, read the guide's
+[interpretation notes](docs/county_valuation_integration_2026.md#interpreting-the-values):
+missing values differ from zero, some estimates are allocated across boundaries,
+and the services include different units and time horizons.
+
 ## Runtime Notes
 
 The PAD-US, NHD, NLCD preparation, and zonal statistics steps are the expensive
