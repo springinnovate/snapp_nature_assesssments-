@@ -10,7 +10,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
 
 from build_county_ecosystem_service_valuations_2026 import (
     DROP_FIELDS, county_values, fips, numbers, polygon_values,
@@ -106,6 +106,45 @@ class CountyIntegrationTests(unittest.TestCase):
         overlap = gpd.GeoDataFrame({"GEOID": ["01001", "01003"]}, geometry=[box(0, 0, 4, 1)] * 2, crs=6933)
         with self.assertRaises(ValueError):
             polygon_values(overlap, polygons, "value", "siteid")
+
+    def test_hexagon_crossing_county_boundary_distributes_value_by_area(self):
+        """A symmetric boundary-crossing hexagon assigns half its value per county."""
+        counties = gpd.GeoDataFrame(
+            {"GEOID": ["01001", "01003"]},
+            geometry=[box(-2, -2, 0, 2), box(0, -2, 2, 2)], crs=6933)
+        hexagon = Polygon([(-1, 0), (-0.5, 1), (0.5, 1), (1, 0), (0.5, -1), (-0.5, -1)])
+        polygons = gpd.GeoDataFrame({"siteid": ["hex"], "value": [120.0]},
+                                   geometry=[hexagon], crs=6933)
+        values, audit = polygon_values(counties, polygons, "value", "siteid", workers=2)
+        np.testing.assert_allclose(values, [60, 60])
+        self.assertEqual(audit.allocated_fraction.iloc[0], 1)
+        self.assertEqual(audit.unallocated_value.iloc[0], 0)
+
+    def test_small_coverage_excess_is_capped_with_auditable_correction(self):
+        """Tiny excess preserves county shares and uncovered source value."""
+        counties = gpd.GeoDataFrame(
+            {"GEOID": ["01001", "01003"]},
+            geometry=[box(0, 0, 1.000004, 1), box(1, 0, 2, 1)], crs=6933)
+        polygons = gpd.GeoDataFrame(
+            {"siteid": ["covered", "partial"], "value": [100.0, 80.0]},
+            geometry=[box(0, 0, 2, 1), box(0, 2, 4, 3)], crs=6933)
+        with tempfile.TemporaryDirectory() as temp:
+            values, audit = polygon_values(counties, polygons, "value", "siteid",
+                                            chunk_size=1, workers=2, checkpoint_dir=Path(temp))
+            self.assertAlmostEqual(values.sum(), 100)
+            self.assertAlmostEqual(values.iloc[0] / values.iloc[1], 1.000004)
+            self.assertAlmostEqual(audit.raw_allocated_fraction.iloc[0], 1.000002)
+            self.assertEqual(audit.allocated_fraction.iloc[0], 1)
+            self.assertAlmostEqual(audit.coverage_correction_value.iloc[0], 0.0002)
+            self.assertEqual(audit.unallocated_value.to_list(), [0, 80])
+            with patch("shapely.intersection", side_effect=AssertionError("should resume")):
+                resumed_values, resumed_audit = polygon_values(
+                    counties, polygons, "value", "siteid", chunk_size=1, checkpoint_dir=Path(temp))
+            pd.testing.assert_series_equal(values, resumed_values)
+            pd.testing.assert_frame_equal(audit, resumed_audit)
+        counties.loc[0, "geometry"] = box(0, 0, 1.001, 1)
+        with self.assertRaisesRegex(ValueError, "covered.*1.000500000"):
+            polygon_values(counties, polygons, "value", "siteid")
 
     def test_gpkg_keeps_geometry_source_and_attributes_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as temp:

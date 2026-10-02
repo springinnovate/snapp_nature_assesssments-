@@ -35,6 +35,8 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "data/workflow_assets/county_integration"
 AREA_CRS = "EPSG:6933"  # Equal area, including Alaska, Hawaii and US territories.
+# Cap only numerical/sliver excess; substantial county overlap is still an error.
+RECREATION_COVERAGE_TOLERANCE = 1e-5
 DROP_FIELDS = (
     "sum_national_attributed_annual_crop_yield_value_zstd",
     "sum_pollination_attributed_annual_crop_yield_value",
@@ -222,7 +224,30 @@ def state_values(frame, field, county_states, weights):
 
 def polygon_values(counties, polygons, value_field, id_field, chunk_size=2000,
                    workers=1, checkpoint_dir=None):
-    """Area-weight source polygons without renormalizing away uncovered area."""
+    """Distribute polygon values by county intersection area.
+
+    A source polygon crossing a county boundary contributes its value times the
+    fraction of its full area inside each county. Uncovered area remains
+    unallocated. Numerical excess up to 1e-5 of the source area is capped at one
+    by scaling that polygon's county shares together; larger excess is rejected.
+
+    Args:
+        counties: County GeoDataFrame containing GEOID and geometry.
+        polygons: Source GeoDataFrame containing values, IDs, and geometry.
+        value_field: Column containing the total value of each source polygon.
+        id_field: Column containing unique, non-null source polygon IDs.
+        chunk_size: Number of source polygons per intersection batch.
+        workers: Number of intersection threads.
+        checkpoint_dir: Optional directory for resumable batch checkpoints.
+
+    Returns:
+        A county-value Series indexed by GEOID and a per-source allocation audit,
+        including raw and corrected fractions and any correction in value.
+
+    Raises:
+        ValueError: Inputs or checkpoints are invalid, or county intersections
+            exceed a polygon's full area by more than the numerical tolerance.
+    """
     if counties.crs is None or polygons.crs is None:
         raise ValueError("Polygon allocation requires defined coordinate systems")
     if polygons[id_field].isna().any() or polygons[id_field].duplicated().any():
@@ -238,53 +263,94 @@ def polygon_values(counties, polygons, value_field, id_field, chunk_size=2000,
     tree = shapely.STRtree(county_geom)
     totals = np.zeros(len(counties))
     fractions = np.zeros(len(polygons))
+    raw_fractions = np.zeros(len(polygons))
     if checkpoint_dir is not None:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     def batch(start):
+        """Calculate or restore one batch of area-weighted county contributions.
+
+        Args:
+            start: First source polygon index in the batch.
+
+        Returns:
+            Start index, county totals, corrected fractions, and raw fractions.
+
+        Raises:
+            ValueError: A checkpoint is invalid or a source is over-allocated.
+        """
         cache = checkpoint_dir / f"{start:09d}.npz" if checkpoint_dir else None
         size = min(chunk_size, len(polygons) - start)
         if cache and cache.exists():
             with np.load(cache, allow_pickle=False) as saved:
                 partial_totals, partial_fractions = saved["totals"], saved["fractions"]
-            if partial_totals.shape != totals.shape or partial_fractions.shape != (size,):
+                partial_raw_fractions = saved["raw_fractions"]
+            if (partial_totals.shape != totals.shape or partial_fractions.shape != (size,)
+                    or partial_raw_fractions.shape != (size,)):
                 raise ValueError(f"Invalid recreation checkpoint: {cache}")
-            if not np.isfinite(partial_totals).all() or not np.isfinite(partial_fractions).all():
+            if (not np.isfinite(partial_totals).all() or not np.isfinite(partial_fractions).all()
+                    or not np.isfinite(partial_raw_fractions).all()):
                 raise ValueError(f"Non-finite recreation checkpoint: {cache}")
-            return start, partial_totals, partial_fractions
+            if ((partial_fractions < 0).any() or (partial_fractions > 1).any()
+                    or not np.allclose(partial_fractions, np.minimum(partial_raw_fractions, 1),
+                                       rtol=0, atol=1e-12)
+                    or (partial_raw_fractions > 1 + RECREATION_COVERAGE_TOLERANCE).any()):
+                raise ValueError(f"Invalid recreation checkpoint coverage: {cache}")
+            return start, partial_totals, partial_fractions, partial_raw_fractions
         partial_totals = np.zeros(len(counties))
-        partial_fractions = np.zeros(size)
+        partial_raw_fractions = np.zeros(size)
         subset = source_geom[start:start + chunk_size]
         si, ci = tree.query(subset, predicate="intersects")
         if len(si):
             intersection_area = shapely.area(shapely.intersection(subset[si], county_geom[ci]))
             fraction = intersection_area / areas[start + si]
-            np.add.at(partial_fractions, si, fraction)
+            np.add.at(partial_raw_fractions, si, fraction)
+            excessive = np.flatnonzero(partial_raw_fractions > 1 + RECREATION_COVERAGE_TOLERANCE)
+            if len(excessive):
+                examples = [
+                    f"{polygons.iloc[start + i][id_field]} ({partial_raw_fractions[i]:.9f})"
+                    for i in excessive[:5]
+                ]
+                raise ValueError(
+                    "County overlaps allocate a recreation polygon more than once; "
+                    f"coverage exceeds tolerance {RECREATION_COVERAGE_TOLERANCE:g}: "
+                    + ", ".join(examples)
+                )
+            # Correct every small excess before adding county dollars, so the
+            # audit and county totals conserve the same bounded source value.
+            fraction /= np.maximum(1, partial_raw_fractions[si])
             np.add.at(partial_totals, ci, values[start + si] * fraction)
+        partial_fractions = np.minimum(partial_raw_fractions, 1)
         if cache:
             with tempfile.NamedTemporaryFile(dir=checkpoint_dir, suffix=".npz", delete=False) as stream:
                 temporary = Path(stream.name)
-                np.savez_compressed(stream, totals=partial_totals, fractions=partial_fractions)
+                np.savez_compressed(stream, totals=partial_totals, fractions=partial_fractions,
+                                    raw_fractions=partial_raw_fractions)
             temporary.replace(cache)
-        return start, partial_totals, partial_fractions
+        return start, partial_totals, partial_fractions, partial_raw_fractions
 
     starts = range(0, len(polygons), chunk_size)
     batch_totals = np.zeros((len(starts), len(counties)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(batch, start) for start in starts]
         for future in tqdm(as_completed(futures), total=len(starts), desc="Recreation batches", unit="batch"):
-            start, partial_totals, partial_fractions = future.result()
+            start, partial_totals, partial_fractions, partial_raw_fractions = future.result()
             batch_totals[start // chunk_size] = partial_totals
             fractions[start:start + len(partial_fractions)] = partial_fractions
+            raw_fractions[start:start + len(partial_raw_fractions)] = partial_raw_fractions
     # Progress follows completed batches, but totals reduce in stable source order.
     totals = batch_totals.sum(axis=0)
-    if (fractions > 1 + 1e-6).any():
-        raise ValueError("County overlaps allocate a recreation polygon more than once")
     close(float(totals.sum()), float(np.dot(values, fractions)), "Recreation allocation")
+    corrected = raw_fractions > 1
+    if corrected.any():
+        logging.info("Capped numerical recreation coverage excess for %s polygons; max raw fraction %.9f",
+                     int(corrected.sum()), float(raw_fractions.max()))
     audit = pd.DataFrame({"source_key": polygons[id_field].astype(str).to_numpy(),
-                          "input_value": values, "allocated_fraction": fractions,
+                          "input_value": values, "raw_allocated_fraction": raw_fractions,
+                          "allocated_fraction": fractions,
                           "allocated_value": values * fractions,
-                          "unallocated_value": values * (1 - fractions)})
+                          "unallocated_value": values * (1 - fractions),
+                          "coverage_correction_value": values * (raw_fractions - fractions)})
     return pd.Series(totals, index=counties.GEOID), audit
 
 
@@ -444,9 +510,12 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
         polygons = gpd.read_file(paths["recreation"], columns=["siteid", "val_2024"])
         recreation, recreation_audit = polygon_values(counties, polygons, "val_2024", "siteid", workers=geometry_workers, checkpoint_dir=chunk_dir)
         add("recreation", recreation, pd.Series("polygon_area_allocation", index=ids), "recreation", "val_2024",
-            "EPSG:6933 intersection area / full source polygon area; uncovered value retained in audit",
+            "EPSG:6933 intersection area / full source polygon area; small numerical excess capped; uncovered value retained in audit",
             {"input_known_total": float(recreation_audit.input_value.sum()),
-             "unmatched_total": float(recreation_audit.unallocated_value.sum())})
+             "unmatched_total": float(recreation_audit.unallocated_value.sum()),
+             "coverage_correction_total": float(recreation_audit.coverage_correction_value.sum()),
+             "coverage_corrected_polygons": int((recreation_audit.raw_allocated_fraction > 1).sum()),
+             "max_raw_allocated_fraction": float(recreation_audit.raw_allocated_fraction.max())})
     return {"originals": originals, "statuses": statuses, "metadata": metadata,
             "issues": issues, "checks": checks, "recreation_audit": recreation_audit}
 

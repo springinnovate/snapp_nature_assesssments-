@@ -119,6 +119,19 @@ this assessment. A polygon's full area is the denominator: value outside the
 county footprint stays unallocated and is recorded, rather than redistributed
 to the counties that happen to overlap it.
 
+A hexagon crossing county boundaries is split proportionally among those
+counties. For example, a $100 hexagon with 30% of its area in one county and 70%
+in another contributes $30 and $70. The shares are measured against the full
+source polygon area, including any portion outside the county footprint.
+
+Very small source slivers can accumulate numerical error during intersection.
+If summed county shares exceed 100% by at most `1e-5` (0.001% of the source
+area), the script scales that polygon's county contributions together to total
+100%. Larger excess still stops the run and identifies the affected source IDs.
+The allocation table records `raw_allocated_fraction` and
+`coverage_correction_value` alongside the corrected fraction and dollars.
+This correction never redistributes genuinely uncovered source value.
+
 ### Existing services and assessment decisions
 
 The following county sums are taken directly from the starting GeoPackage.
@@ -253,9 +266,11 @@ by itself establish that values are economically comparable or non-overlapping.
 The county allocations reproduced all 71 supplied fisheries state totals (23
 marine and 48 inland; maximum absolute difference below $0.000001). All 325,791
 recreation polygons were accounted for. Their source values totaled
-$881,801,006,000, of which $881,637,401,423.39 was assigned to counties and
-$163,604,576.61 remained outside the covered footprint, net of very small
-boundary overlaps. The workflow checks geometry coverage, source-total
+$881,801,006,000, of which $881,637,401,419.08 was assigned to counties and
+$163,604,580.92 remained outside the covered footprint after the bounded
+numerical coverage correction. That correction removed $4.31 of aggregate
+excess from 78,137 polygons with extremely small raw excess fractions in this
+validation run. The workflow checks geometry coverage, source-total
 reconciliation, and preservation of the starting county data before producing
 the completed file.
 
