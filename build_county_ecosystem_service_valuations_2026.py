@@ -2,8 +2,8 @@
 
 Join county estimates, allocate state fisheries values and recreation polygon
 values to counties, and apply the assessment's recorded valuation adjustments.
-The output preserves county boundaries and includes original values, adjustment
-factors, adjusted values, source information, and coverage tables.
+The output preserves county boundaries, replaces value statistics with adjusted
+fields suffixed _adj, and retains one adjustment-factor column per service.
 
 Run: python build_county_ecosystem_service_valuations_2026.py
 Inputs: data/workflow_assets/county_integration/sources.csv (paths under data/).
@@ -426,7 +426,67 @@ def input_weights(path, ids, prefix):
     return numbers(frame.set_index("GEOID")[fields[0]]).reindex(ids)
 
 
-def write_output(base_path, output, layer, geom, additions, tables):
+def adjusted_county_fields(base, originals, summaries, factors):
+    """Apply configured factors to canonical county value fields suffixed _adj.
+
+    Raster statistics keep their source-derived names with an _adj suffix.
+    Air-quality monetary summaries are adjusted together; counts, areas, and proportions
+    are unchanged. Services without an existing field use their service name.
+
+    Args:
+        base: Original county attributes indexed by GEOID.
+        originals: Raw per-service county Series from the integration tasks.
+        summaries: Raw air-quality statistics indexed by GEOID.
+        factors: Reviewed adjustment configuration indexed by service.
+
+    Returns:
+        Adjusted fields with visible per-service factors, and a mapping from
+        each service to its adjusted total field. No raw-value copies are created.
+
+    Raises:
+        ValueError: A field is assigned twice or air-quality totals disagree.
+    """
+    fields = pd.DataFrame(index=base.index)
+    output_fields = {}
+    value_stats = {"sum", "mean", "median", "min", "max", "stdev", "std"}
+    for service, values in tqdm(originals.items(), desc="Apply value adjustments", unit="service"):
+        factor = float(factors.loc[service, "factor"])
+        fields[f"{service}_adj_factor"] = factor
+        if service in BASE_FIELDS:
+            total_field = BASE_FIELDS[service]
+            stem = total_field.removeprefix("sum_")
+            raw_fields = {}
+            for field in base.columns:
+                if not field.endswith("_" + stem):
+                    continue
+                operation = field[:-(len(stem) + 1)]
+                if operation in value_stats or re.fullmatch(r"p\d+(?:\.\d+)?", operation):
+                    raw_fields[field] = numbers(base[field])
+            raw_fields[total_field] = values
+        elif service == "avoided_air_quality_heath_costs":
+            total_field = "sum_dollars_annual"
+            if not np.allclose(summaries[total_field].reindex(base.index), values.reindex(base.index),
+                               rtol=1e-12, atol=0.001, equal_nan=True):
+                raise ValueError("Air-quality canonical sum differs from the service total")
+            raw_fields = {f"{stat}_dollars_annual": summaries[f"{stat}_dollars_annual"]
+                          for stat in ("sum", "mean", "median", "min", "max", "stdev")}
+            for stat in ("valid_count", "total_count"):
+                field = f"{stat}_dollars_annual"
+                fields[field] = summaries[field].reindex(base.index)
+        else:
+            total_field = service
+            raw_fields = {total_field: values}
+        output_fields[service] = total_field + "_adj"
+        for field, raw in raw_fields.items():
+            field += "_adj"
+            if field in fields:
+                raise ValueError(f"Duplicate adjusted county field: {field}")
+            raw = raw.reindex(base.index).astype(float)
+            fields[field] = raw * factor
+    return fields, output_fields
+
+
+def write_output(base_path, output, layer, geom, additions, tables, renamed_fields=None):
     """Validate and publish a GeoPackage and matching geometry-free CSV.
 
     Args:
@@ -434,8 +494,10 @@ def write_output(base_path, output, layer, geom, additions, tables):
         output: New .gpkg path; its .csv sibling is written in the same run.
         layer: Original county feature layer name.
         geom: Original geometry column name, excluded only from the CSV.
-        additions: County-indexed numeric values and summaries to add.
+        additions: County-indexed numeric values and summaries to create/update.
         tables: Supporting provenance and reconciliation tables.
+        renamed_fields: Mapping of raw value fields to their adjusted field names.
+            Renamed raw fields are updated, not retained as duplicate columns.
 
     Raises:
         FileExistsError: Either destination already exists.
@@ -461,11 +523,21 @@ def write_output(base_path, output, layer, geom, additions, tables):
             for name in ("ST_IsEmpty", "ST_MinX", "ST_MaxX", "ST_MinY", "ST_MaxY"):
                 con.create_function(name, 1, unexpected_geometry_edit)
             original_fields = [r[1] for r in con.execute(f"PRAGMA table_info({quote(layer)})")]
-            if set(additions.columns) & set(original_fields):
-                raise ValueError("Output fields already present; use the original base input")
+            renames = dict(renamed_fields or {})
+            if (set(additions.columns) & set(original_fields)
+                    or not set(renames) <= set(original_fields)
+                    or set(renames) & {"GEOID", "fid", geom}
+                    or not set(renames.values()) <= set(additions.columns)
+                    or any(target != source + "_adj" for source, target in renames.items())):
+                raise ValueError("Only explicit raw-to-_adj value field renames are allowed")
             for field in DROP_FIELDS:
-                con.execute(f"ALTER TABLE {quote(layer)} DROP COLUMN {quote(field)}")
-            for field in tqdm(additions.columns, desc="Create valuation fields", unit="field"):
+                if field in original_fields:
+                    con.execute(f"ALTER TABLE {quote(layer)} DROP COLUMN {quote(field)}")
+            for source, target in tqdm(renames.items(), desc="Rename adjusted statistics", unit="field"):
+                con.execute(f"ALTER TABLE {quote(layer)} RENAME COLUMN {quote(source)} TO {quote(target)}")
+            for field in tqdm(additions.columns, desc="Prepare value fields", unit="field"):
+                if field in renames.values():
+                    continue
                 sqltype = "INTEGER" if pd.api.types.is_integer_dtype(additions[field]) else "REAL"
                 con.execute(f"ALTER TABLE {quote(layer)} ADD COLUMN {quote(field)} {sqltype}")
             # Use the existing integer primary key, avoiding a full geometry-table
@@ -490,7 +562,7 @@ def write_output(base_path, output, layer, geom, additions, tables):
                 con.execute("INSERT INTO gpkg_contents(table_name,data_type,identifier,description,last_change) VALUES (?, 'attributes', ?, ?, ?)",
                             (name, name, "October 2026 county valuation integration audit", now))
             con.commit()
-            keep = [c for c in original_fields if c not in DROP_FIELDS]
+            keep = [c for c in original_fields if c not in DROP_FIELDS and c not in renames]
             query = f"SELECT {','.join(map(quote, keep))} FROM {quote(layer)} ORDER BY fid"
             before, after = original.execute(query), con.execute(query)
             with tqdm(total=len(additions), desc="Verify preserved counties", unit="county") as progress:
@@ -699,6 +771,9 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     for path in paths.values():
         if not path.is_file():
             raise FileNotFoundError(path)
+    with closing(read_db(paths["base"])) as con:
+        if con.execute("SELECT 1 FROM sqlite_master WHERE name='integration_run'").fetchone():
+            raise ValueError("The base is already an integrated output; use raw county zonals to avoid applying factors twice")
     fingerprints = {name: sha256(path) for name, path in tqdm(paths.items(), desc="Hash sources", unit="file")}
     if output is not None and output.exists():
         raise FileExistsError(output)
@@ -770,18 +845,14 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     recreation_audit = results["recreation"]["recreation_audit"]
     if set(originals) != set(factors.index):
         raise ValueError("Adjustment factor configuration does not exactly match integrated services")
-    additions = pd.DataFrame(index=ids)
-    for service, values in originals.items():
-        factor = float(factors.loc[service, "factor"])
-        additions[f"{service}_orig"] = values
-        additions[f"{service}_adj_factor"] = factor
-        additions[f"{service}_adj"] = values * factor
+    summary_frames = []
     for result in results.values():
         summary_fields = result.get("summary_fields", pd.DataFrame())
         if len(summary_fields.columns):
-            if set(summary_fields.columns) & set(additions.columns):
-                raise ValueError("Duplicate county summary fields")
-            additions = additions.join(summary_fields, how="left")
+            summary_frames.append(summary_fields)
+    summaries = pd.concat(summary_frames, axis=1) if summary_frames else pd.DataFrame(index=ids)
+    additions, output_fields = adjusted_county_fields(base, originals, summaries, factors)
+    renamed_fields = {field: field + "_adj" for field in base if field + "_adj" in additions}
     # Source hashes also make interrupted/rerun inputs identifiable.
     for name, path in tqdm(paths.items(), desc="Verify source hashes", unit="file"):
         if sha256(path) != fingerprints[name]:
@@ -796,6 +867,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         for name in ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv")
     ])], ignore_index=True)
     meta = pd.DataFrame(metadata)
+    meta["output_field"] = meta.service.map(output_fields)
     for field in ("factor", "reason", "source_units"):
         meta["factor_reason" if field == "reason" else field] = meta.service.map(factors[field])
     meta["adjusted_total"] = meta.original_total * meta.factor
@@ -809,26 +881,28 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "integration_ct_crosswalk": crosswalk,
         "integration_checkpoints": pd.DataFrame({"task": list(signatures), "signature": list(signatures.values())}),
         "integration_summary_fields": pd.DataFrame([
-            {"field": f"{stat}_dollars_annual", "source": "air_quality", "source_field": "dollars_annual",
-             "units": "category count" if stat.endswith("count") else "USD annual; unadjusted",
-             "method": "Target-county land/pollutant categories after CT crosswalk; population stdev (ddof=0); monetary stats null if incomplete"}
+            {"field": f"{stat}_dollars_annual" + ("" if stat.endswith("count") else "_adj"), "source": "air_quality", "source_field": "dollars_annual",
+             "units": "category count" if stat.endswith("count") else "USD annual; configured air-quality factor applied",
+             "method": "Target-county categories after CT crosswalk; population stdev (ddof=0); adjusted monetary fields suffixed _adj; counts unchanged; null if incomplete"}
             for stat in ("sum", "mean", "median", "min", "max", "stdev", "valid_count", "total_count")
         ]),
         "integration_run": pd.DataFrame([{
             "created_utc": datetime.now(timezone.utc).isoformat(), "script": Path(__file__).name,
             "script_sha256": sha256(__file__), "area_crs": AREA_CRS,
             "base_counties": len(ids), "removed_fields": json.dumps(DROP_FIELDS),
+            "renamed_value_fields": json.dumps(renamed_fields, sort_keys=True),
             "notes": "Carbon units not reinterpreted as dollars; mangrove signs retained; no cross-service grand total. "
-                     "Raw pollination sum preserved; pollination_adj applies the configured 0.09 factor once. "
-                     "Air-quality category summaries are unadjusted USD; missing values remain null. "
+                     "Configured factors applied to value statistics suffixed _adj; one service_adj_factor column retained; raw value columns omitted. "
+                     "Geometry, counts, areas, and proportions unchanged. "
                      "CSV and GeoPackage county attributes verified equal; CSV excludes geometry only.",
         }]),
     }
     if output is None:
         output = data_root / "analysis_results/combined" / f"snapp_ecosystem_services_counties_{datetime.now():%Y_%m_%d_%H_%M_%S}.gpkg"
     logging.info("Writing %s", output)
-    write_output(paths["base"], output, layer, geom, additions, tables)
-    logging.info("Verified %s counties, %s valuation fields, geometry and original attributes preserved", len(ids), len(additions.columns))
+    write_output(paths["base"], output, layer, geom, additions, tables,
+                 renamed_fields=renamed_fields)
+    logging.info("Verified %s counties and %s adjusted/summary fields; geometry and non-value attributes preserved", len(ids), len(additions.columns))
     return output
 
 

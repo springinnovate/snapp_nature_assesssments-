@@ -57,11 +57,14 @@ python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry
 This reuses the existing September county raster aggregates; it does not rerun
 raster zonal statistics. Check `sources.csv` before running and retain its pinned
 raw September county input. `adjustment_factors.csv` contains the `pollination`
-row with factor `0.09`. The corresponding `pollination_adj` is the converted
-dollar total; the original `sum_pollination_attributed_annual_crop_yield_value`
-and `pollination_orig` remain unmodified for traceability. This 30 m pixel-area
+row with factor `0.09`. The converted dollar total is
+`sum_pollination_attributed_annual_crop_yield_value_adj`; the mean and other value
+statistics also receive this factor and an `_adj` suffix. The visible
+`pollination_adj_factor` records `0.09`. Raw-value columns and the duplicate
+`pollination_adj` alias are not exported. This 30 m pixel-area
 conversion must not also be applied upstream. The builder rejects a base that
-only contains the already-scaled per-pixel VRT aggregate.
+only contains the already-scaled per-pixel VRT aggregate, or an already-integrated
+output, to prevent applying adjustments twice. Source files are never changed.
 
 To select a basename, pass `--output <new-name>.gpkg`; its `.csv` sibling is
 automatic. Neither destination may already exist. A reduced or reprojected GIS
@@ -126,14 +129,14 @@ county total twice are rejected.
 
 ### Air-quality category summaries
 
-The county CSV and feature layer also contain these unadjusted-source summaries:
+The county CSV and feature layer contain these adjusted summaries:
 
 | Fields | Definition |
 | --- | --- |
-| `sum_dollars_annual` | County sum; equals `avoided_air_quality_heath_costs_orig` |
-| `mean_dollars_annual`, `median_dollars_annual` | Mean and median across county land-cover/pollutant categories |
-| `min_dollars_annual`, `max_dollars_annual` | Smallest and largest category contribution |
-| `stdev_dollars_annual` | Population standard deviation across categories (`ddof=0`) |
+| `sum_dollars_annual_adj` | County sum multiplied by the configured air-quality factor |
+| `mean_dollars_annual_adj`, `median_dollars_annual_adj` | Adjusted mean and median across county land-cover/pollutant categories |
+| `min_dollars_annual_adj`, `max_dollars_annual_adj` | Adjusted smallest and largest category contribution |
+| `stdev_dollars_annual_adj` | Adjusted population standard deviation across categories (`ddof=0`) |
 | `valid_count_dollars_annual`, `total_count_dollars_annual` | Known categories and total categories represented |
 
 These are summaries of CSV category estimates, not raster pixels or per-area
@@ -143,8 +146,10 @@ first allocated by the existing crosswalk, then recombined within each target
 land-cover/pollutant category before computing statistics. An unknown contribution
 keeps that category unknown. Monetary summaries remain null for incomplete or
 absent county coverage; absent counties have zero represented-category counts.
-The existing `avoided_air_quality_heath_costs_adj` remains the separately
-inflation-adjusted county total. The summary fields are not multiplied by 1.135.
+All six monetary statistics are multiplied by `1.135`, recorded in
+`avoided_air_quality_heath_costs_adj_factor`. Counts are not multiplied.
+Neither raw monetary summaries nor a duplicate
+`avoided_air_quality_heath_costs_adj` total are exported.
 
 The air-quality field intentionally retains the assessment's spelling
 `avoided_air_quality_heath_costs`. The jobs measure is wages, not a count of jobs.
@@ -176,8 +181,11 @@ This correction never redistributes genuinely uncovered source value.
 
 ### Existing services and assessment decisions
 
-The following county sums are taken directly from the starting GeoPackage.
-Their original columns remain available alongside the new valuation fields.
+The following county sums are read from the starting GeoPackage. Their value
+statistics (`sum`, `mean`, `median`, `min`, `max`, `stdev`, `std`, and available
+`p<number>` percentiles) are multiplied by the configured factor and renamed
+with an `_adj` suffix, replacing the raw columns in the output. Counts, areas,
+and proportions are not adjusted or renamed. Factor-1 services still use `_adj`.
 
 | Output service | Existing source field | Adjustment factor |
 | --- | --- | --- |
@@ -205,8 +213,8 @@ The remaining factors follow the recorded assessment choices; the script does
 not estimate new inflation rates or infer unrecorded source years.
 
 The duplicate crop-yield sum `sum_national_attributed_annual_crop_yield_value_zstd`
-is removed as an assessment decision. The pollination sum is retained, reversing
-its earlier removal, along with its non-sum diagnostic columns. Other original fields,
+is removed as an assessment decision. The adjusted pollination sum is included,
+along with its adjusted value statistics and unchanged non-value diagnostics. Other original fields,
 including `Wsw` quantities and the two unidentified `CONUS_Coastal_2021_CCAP`
 bands, are preserved without additional valuation adjustments.
 
@@ -245,9 +253,9 @@ data/analysis_results/combined/snapp_ecosystem_services_counties_YYYY_MM_DD_HH_M
 
 Open it in QGIS and select the county layer `tl_2024_us_county_60_states`. For the
 listed inputs, it has 3,225 counties or county equivalents, the original county
-boundaries, 84 valuation fields describing 28 services or service components,
-and eight unadjusted air-quality summary fields. Both files have matching county
-attributes, including the retained raw pollination sum. Geometry is present only
+boundaries, adjusted value fields and 28 visible service adjustment factors,
+plus air-quality category counts. Both files have matching county
+attributes, including the adjusted pollination statistics. Geometry is present only
 in the GeoPackage. The CSV preserves leading-zero GEOIDs and nulls; do not let
 spreadsheet software interpret GEOID as a number. Publication verifies both
 files and refuses to replace an existing file; a publication failure rolls back
@@ -255,16 +263,19 @@ any file published by that attempt.
 Puerto Rico and the U.S. Virgin Islands remain present even when source data for
 a service are unavailable.
 
-Each service has three fields:
+Each configured service has adjusted values and a visible factor, without raw-value copies:
 
 | Suffix | Meaning | Example |
 | --- | --- | --- |
-| `_orig` | County value after joining/allocation, before adjustment | `grazing_orig` |
 | `_adj_factor` | Multiplier applied, including an explicit 1.0 where applicable | `grazing_adj_factor` |
-| `_adj` | Original value multiplied by the adjustment factor | `grazing_adj` |
+| `_adj` | Source statistic or allocated county value multiplied by the factor | `sum_pollination_attributed_annual_crop_yield_value_adj`, `grazing_adj` |
 
-For example, a county value of 100 with factor 1.135 becomes 113.5. The `_orig`
-field is a county estimate; it may have been allocated from a state or polygon
+For example, a raw county sum of 100 with factor 1.135 becomes an adjusted sum
+of 113.5. No `_orig` columns are emitted. Raster services use the statistic name
+plus `_adj`, not an additional service-total alias. Services without existing
+statistic fields use `<service>_adj`. `integration_services.output_field` identifies
+each service's total field; that audit table also records the factor and aggregate
+before/after totals. A value may have been allocated from a state or polygon
 source rather than measured directly at county scale.
 
 To read the county layer in Python, substitute the actual timestamped filename:
@@ -274,7 +285,7 @@ import geopandas as gpd
 
 path = "data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.gpkg"
 counties = gpd.read_file(path, layer="tl_2024_us_county_60_states")
-print(counties[["GEOID", "NAME", "grazing_orig", "grazing_adj_factor", "grazing_adj"]].head())
+print(counties[["GEOID", "NAME", "grazing_adj_factor", "grazing_adj"]].head())
 ```
 
 The GeoPackage also contains tables to help evaluate and reproduce the estimates:
@@ -290,7 +301,7 @@ The GeoPackage also contains tables to help evaluate and reproduce the estimates
 | Which Connecticut county-to-region weights were used? | `integration_ct_crosswalk` |
 | Which script version and execution produced the file? | `integration_run` |
 | Which saved intermediate results identify this run's completed work? | `integration_checkpoints` |
-| What do the new raw air-quality summary fields mean? | `integration_summary_fields` |
+| What do the adjusted air-quality statistics and unchanged counts mean? | `integration_summary_fields` |
 
 ## Interpreting the values
 

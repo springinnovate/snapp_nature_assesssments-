@@ -539,12 +539,18 @@ and `.gpkg` files with all county attributes. The GeoPackage also contains the
 county map and tables describing sources and missing coverage. The original
 files are preserved.
 
-Both formats retain `sum_pollination_attributed_annual_crop_yield_value`, add
-`pollination_adj` using the configured `pollination` factor of `0.09`, and include
-`sum_dollars_annual`, `mean_dollars_annual`, `median_dollars_annual`,
-`min_dollars_annual`, `max_dollars_annual`, `stdev_dollars_annual`,
+Both formats include `sum_pollination_attributed_annual_crop_yield_value_adj`
+and the other adjusted pollination value statistics using `pollination_adj_factor`
+of `0.09`. Air quality includes
+`sum_dollars_annual_adj`, `mean_dollars_annual_adj`, `median_dollars_annual_adj`,
+`min_dollars_annual_adj`, `max_dollars_annual_adj`, `stdev_dollars_annual_adj`,
 `valid_count_dollars_annual`, and `total_count_dollars_annual` from the air-quality
-CSV. These air-quality statistics describe land-cover/pollutant categories,
+CSV, with monetary statistics multiplied by the visible
+`avoided_air_quality_heath_costs_adj_factor` of `1.135`.
+For every configured service, value statistics use their source names plus `_adj`;
+raw values and duplicate service-value aliases are omitted. Adjustment factors
+remain visible; counts, areas, and proportions remain unchanged.
+These air-quality statistics describe land-cover/pollutant categories,
 not raster pixels. See the guide for units, Connecticut allocation, and null
 handling. No raster zonal rerun is needed for these fields.
 
