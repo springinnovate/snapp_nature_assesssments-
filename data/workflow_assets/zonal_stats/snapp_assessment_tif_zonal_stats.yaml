@@ -1,0 +1,86 @@
+# Reviewed TIFF zonal run definition. The toolkit uses INI syntax in .yaml files.
+# Edit this file, then run prepare_tif_zonal_stats_config.py to validate inputs
+# and freeze a runnable, timestamped .yaml under this directory's runs/ folder.
+# Paths in [project] are relative to this file. Job vector patterns are relative
+# to zonal_units_dir. Raster filenames are relative to raster_dir.
+
+[project]
+name = snapp_assessment_tif_zonal_stats
+global_work_dir = ../../processing_outputs/zonal_stats_work
+results_dir = ../../analysis_results/zonal_statistics
+raster_dir = ../../analysis_inputs/ecosystem_services
+derived_raster_dir = ../../processing_outputs/zonal_stats_derived_rasters
+zonal_units_dir = ../../analysis_inputs/zonal_units
+log_level = INFO
+max_simplify_tolerance_meters = 15
+# JSON inventory stored inside the run config, not in a separate manifest.
+raster_inventory =
+    [
+      {"label": "Carbon stock per pixel", "filename": "totalC_tCO2e_pixel_2020.tif", "units": "t CO2e per pixel", "include": true},
+      {"label": "Carbon stock per hectare", "filename": "totalC_tCO2e_ha_2020.tif", "units": "t CO2e per ha", "include": true},
+      {"label": "Avoided dredging costs", "filename": "avoided_dredging_costs_raster.tif", "units": "USD 2024 per 30 m pixel", "include": true},
+      {"label": "Avoided SDWA health costs", "filename": "avoided_sdwa_health_costs_raster.tif", "units": "USD 2024 per 30 m pixel", "include": true},
+      {"label": "Avoided water-treatment costs", "filename": "avoided_treatment_costs_raster.tif", "units": "USD 2024 per 30 m pixel", "include": true},
+      {"label": "Surface-water provisioning value", "filename": "Wval_sw_2020usd_total.tif", "units": "USD 2020 per 4 km pixel", "include": true},
+      {"label": "Pollination-attributed crop-yield value", "filename": "pollination_attributed_annual_crop_yield_value.tif", "units": "USD 2024 per ha in source; USD 2024 per pixel after scaling", "include": true, "scale": 0.09, "derived_filename": "pollination_attributed_annual_crop_yield_value_usd_per_pixel.vrt"},
+      {"label": "Flood mitigation annual value", "filename": "annual_value_masked_to_wetlands.tif", "units": "USD 2024 annual value per pixel", "include": true},
+      {"label": "Flood mitigation net present value", "filename": "marginal_npv_masked_to_wetlands.tif", "units": "USD 2024 net present value per pixel", "include": true},
+      {"label": "Coral coastal-protection value", "filename": "Coral_Reefs_2024adj_CPI.tif", "units": "USD; spreadsheet labels 2010 while the local filename says 2024-adjusted", "include": true},
+      {"label": "Air quality", "filename": "air_quality_2021_usd_per_county.tif", "units": "USD 2021 per county", "include": false, "reason": "No approved value TIFF is supplied; county CSV valuations use the separate county integration workflow."},
+      {"label": "Mangrove value", "filename": "mangrove_2020_usd_per_ha.tif", "units": "USD 2020 average per ha", "include": false, "reason": "The local mangrove_CONUS.tif is categorical CCAP land cover (values -128/0/16/17), not a monetary value raster."},
+      {"label": "Mental health", "filename": "mental_health_2024_usd_per_county.tif", "units": "USD 2024 per county", "include": false, "reason": "No validated mental-health TIFF is selected in this handoff; review the actual supplied raster before enabling."}
+    ]
+
+[job:counties_ecosystem_services]
+zone_key = counties
+label = Counties
+vector_pattern = counties/tl_2024_us_county_50_states.gpkg
+agg_layer = tl_2024_us_county_60_states
+agg_field = GEOID
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
+results_subdir = counties
+
+[job:pad_ecosystem_services]
+zone_key = all
+label = PAD-US all lands by county
+vector_pattern = padus_all_lands_by_county/padus_all_lands_clipped_by_county_*.gpkg
+agg_layer = padus_all_lands_clipped_by_county
+agg_field = GEOID
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
+results_subdir = padus_all_lands
+
+[job:public_ecosystem_services]
+zone_key = public
+label = PAD-US public lands by county
+vector_pattern = padus_public_lands_by_county/padus_public_lands_clipped_by_county_*.gpkg
+agg_layer = padus_public_lands_clipped_by_county
+agg_field = GEOID
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
+results_subdir = padus_public_lands
+
+[job:public_access_ecosystem_services]
+zone_key = public-access
+label = PAD-US public-access lands by county
+vector_pattern = padus_public_access_lands_by_county/padus_public_access_lands_clipped_by_county_*.gpkg
+agg_layer = padus_public_access_lands_clipped_by_county
+agg_field = GEOID
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
+results_subdir = padus_public_access_lands
+
+[job:blm_unprotected_ecosystem_services]
+zone_key = blm-unprotected
+label = BLM lands excluding mapped federal protections by county
+vector_pattern = blm_lands_excluding_federally_protected_areas_by_county/blm_lands_excluding_federally_protected_areas_by_county_*.gpkg
+agg_layer = blm_lands_excluding_federally_protected_areas_by_county
+agg_field = GEOID
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
+results_subdir = blm_lands_excluding_federally_protected_areas
+
+[job:bbb_candidate_ecosystem_services]
+zone_key = bbb-candidates
+label = BBB candidate BLM lands by county
+vector_pattern = bbb_candidate_blm_lands_by_county/bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county_*.gpkg
+agg_layer = bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county
+agg_field = GEOID
+operations = sum, mean, area_ha_valid, proportion_valid_nonzero
+results_subdir = bbb_candidate_blm_lands

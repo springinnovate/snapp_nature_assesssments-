@@ -52,7 +52,7 @@ The main input paths are:
 | Counties | `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` |
 | PAD-US geodatabase | `data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb` |
 | Recreation value polygons | `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` |
-| Ecosystem service rasters | `data/analysis_inputs/ecosystem_services` (selected explicitly by `config/ecosystem_service_rasters.toml`) |
+| Ecosystem service rasters | `data/analysis_inputs/ecosystem_services` (selected in `data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml`) |
 | NLCD 2023 land cover raster | `data/analysis_inputs/nlcd/Annual_NLCD_LndCov_2023_CU_C1V0.tif` |
 | Land-cover reclassification tables | `data/workflow_assets/landcover_reclass/*.csv` |
 | NHDPlus HR geodatabase | `data/analysis_inputs/hydrography/nhdplus/NHDPlus_H_National_Release_2_GDB/NHDPlus_H_National_Release_2_GDB.gdb` |
@@ -335,10 +335,16 @@ unless the rule is changed explicitly in the script.
 
 For the current ecosystem-service TIFF handoff, place source rasters in
 `data/analysis_inputs/ecosystem_services`, then review
-`config/ecosystem_service_rasters.toml`. Only entries with `include = true` are
-analyzed. This is intentionally safer than running a `*.tif` wildcard: the
-folder also contains component rasters and categorical CCAP inputs that are not
-standalone valuation layers.
+`data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml`.
+This version-controlled definition contains the raster inventory, units,
+include/exclude decisions, scale factors, zone patterns, metrics, output roots,
+and simplification tolerance. There is no separate TOML raster manifest.
+
+The toolkit historically uses INI sections in files named `.yaml`; the inline
+`[project].raster_inventory` is a JSON list inside that existing format. Only
+entries with `"include": true` are analyzed. Paths in `[project]` are relative
+to the definition; zone patterns are relative to `zonal_units_dir`. Use
+`--config <path.yaml>` to prepare another reviewed definition.
 
 Generate a raster-only runner configuration with:
 
@@ -348,14 +354,26 @@ python prepare_tif_zonal_stats_config.py
 
 The preparation step validates every enabled TIFF, automatically selects the
 newest timestamped county-cut GeoPackage for each available land product, and
-writes:
+writes a new runnable snapshot:
 
 ```text
-data/processing_outputs/zonal_stats_config/snapp_assessment_tif_zonal_stats.yaml
+data/workflow_assets/zonal_stats/runs/snapp_assessment_tif_zonal_stats_<UTC-timestamp>.yaml
 ```
 
-The generated `[project]` section sets
-`max_simplify_tolerance_meters = 15`. The zonal-statistics toolkit uses this
+The definition and `runs/*.yaml` snapshots are Git-trackable. Commit the reviewed
+definition and the snapshot actually used for an analysis. Each snapshot records
+the complete source definition (including blocked raster reasons), its SHA-256,
+the generator SHA-256, source and analysis raster paths, units and scale factors,
+selected concrete vector versions, skipped-zone reasons, metrics, and outputs.
+Keep that snapshot with any exported results so the analysis can be traced back
+to its exact inputs and policy. Historical configs in ignored
+`data/processing_outputs/zonal_stats_config` are preserved, but preparation no
+longer overwrites that old fixed filename. `--output` can name a new snapshot;
+existing configs are never overwritten.
+
+The reviewed `[project]` section defaults to
+`max_simplify_tolerance_meters = 15`; preparation copies its configured value
+into the snapshot. The zonal-statistics toolkit uses this
 explicit physical tolerance when simplifying aggregation geometry; it does not
 derive the tolerance from each raster's pixel size. This avoids the previous
 2 km simplification applied to the 4 km water-provisioning raster while retaining
@@ -371,24 +389,29 @@ subset; for example:
 python prepare_tif_zonal_stats_config.py --zone all --zone public --zone public-access --zone bbb-candidates
 ```
 
-The manifest applies the required `0.09` pollination per-hectare to 30 m-pixel
+The inline inventory applies the required `0.09` pollination per-hectare to 30 m-pixel
 conversion through a lightweight VRT, avoiding a duplicate multi-gigabyte
-TIFF. Air quality and mental health remain disabled because their TIFFs are not
-in the local data stack. Mangroves remain disabled because the local
+TIFF. Each run's VRT is stored in its own subdirectory under
+`data/processing_outputs/zonal_stats_derived_rasters`, so later changes to scale
+factors cannot overwrite an earlier run's conversion. Air quality and mental
+health remain disabled in this handoff until validated value TIFFs are selected;
+the county air-quality CSV is handled by the separate county valuation builder.
+Mangroves remain disabled because the local
 `mangrove_CONUS.tif` contains categorical CCAP values (`-128`, `0`, `16`, and
 `17`), not monetary values.
 
 The coral row also needs a metadata decision before publication: the spreadsheet
 labels it USD 2010, while the local filename is `Coral_Reefs_2024adj_CPI.tif`.
 It is enabled for the requested zonal run, and the discrepancy is recorded in
-the manifest rather than silently choosing one currency year.
+the inline inventory and every frozen run snapshot.
 
-Run the generated config from this repository root. With the toolkit clone used
-on the original workstation, the command is:
+Run the exact path printed by preparation. Do not use a wildcard that would
+execute several historical runs. With the toolkit clone used on the original
+workstation, replace `<UTC-timestamp>` below with that printed filename:
 
 ```powershell
 conda activate zonal-stats-toolkit
-python D:\repositories\zonal_stats_toolkit\runner.py .\data\processing_outputs\zonal_stats_config\snapp_assessment_tif_zonal_stats.yaml --job-workers 4 --raster-workers 2
+python D:\repositories\zonal_stats_toolkit\runner.py .\data\workflow_assets\zonal_stats\runs\snapp_assessment_tif_zonal_stats_<UTC-timestamp>.yaml --job-workers 4 --raster-workers 2
 ```
 
 The TIFF jobs write timestamped CSV and GeoPackage results under
