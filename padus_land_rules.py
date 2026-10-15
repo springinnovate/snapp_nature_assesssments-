@@ -8,12 +8,12 @@ import re
 from typing import Callable, Mapping
 
 
-PADUS_RULE_FIELDS = ("Own_Type", "Mang_Type", "Des_Tp")
+PADUS_RULE_FIELDS = ("Own_Type", "Mang_Type", "Des_Tp", "Pub_Access")
 VIRTUAL_MANAGER_FIELD = "manager"
 ALLOWED_FIELDS = frozenset((*PADUS_RULE_FIELDS, VIRTUAL_MANAGER_FIELD))
 REQUIRED_RULES = frozenset(("public_land", "public_access"))
 NASA_LOCAL_MANAGER = "National Aeronautics and Space Administration (NASA)"
-VIRTUAL_MANAGER_VALUES = frozenset(("NASA", "DOE"))
+VIRTUAL_MANAGER_VALUES = frozenset(("NASA", "DOE", "DOD"))
 
 
 class RuleConfigError(ValueError):
@@ -250,7 +250,8 @@ def load_rule_config(path: Path) -> tuple[str, RuleSet]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as error:
-        raise RuleConfigError(f"Could not read PAD-US rules from {path}: {error}") from error
+        message = f"Could not read PAD-US rules from {path}: {error}"
+        raise RuleConfigError(message) from error
     try:
         return text, parse_rule_config(text)
     except RuleConfigError as error:

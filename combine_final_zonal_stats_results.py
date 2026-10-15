@@ -3,11 +3,14 @@
 The zonal statistics workflow writes one CSV and/or GeoPackage per metric
 family. Those outputs may be grouped into subdirectories, with each subdirectory
 treated as its own final-output project. This final step joins those
-metric-family outputs into three deliverable datasets:
+metric-family outputs into the available deliverable datasets, including:
 
 - counties
 - PAD-US all lands cut by county
 - PAD-US public lands cut by county
+- PAD-US public-access lands cut by county
+- BLM lands excluding mapped federal protections cut by county
+- BBB candidate BLM lands cut by county
 
 Each combined dataset is keyed by `GEOID`. Shared fields such as county names or
 state codes are kept once. If the same field appears in multiple inputs with
@@ -125,6 +128,20 @@ RESULT_PROJECTS = {
     "padus_public_lands": ResultProject(
         output_stem="padus_public_lands_combined",
         job_prefixes=("public_",),
+    ),
+    "padus_public_access_lands": ResultProject(
+        output_stem="padus_public_access_lands_combined",
+        job_prefixes=("public_access_",),
+    ),
+    "blm_lands_excluding_federally_protected_areas": ResultProject(
+        output_stem=(
+            "blm_lands_excluding_federally_protected_areas_combined"
+        ),
+        job_prefixes=("blm_unprotected_",),
+    ),
+    "bbb_candidate_blm_lands": ResultProject(
+        output_stem="bbb_candidate_blm_lands_combined",
+        job_prefixes=("bbb_candidate_",),
     ),
 }
 
@@ -895,6 +912,21 @@ def _write_smoke_test_inputs(results_dir: Path) -> None:
             frame = pd.DataFrame(rows)
             frame.to_csv(project_dir / f"{job_stem}_20260101_000000.csv", index=False)
 
+    legacy_project_names = set(RESULT_GROUPS)
+    for project_name, project in RESULT_PROJECTS.items():
+        if project_name in legacy_project_names:
+            continue
+        project_dir = results_dir / project_name
+        project_dir.mkdir()
+        job_stem = f"{project.job_prefixes[0]}ecosystem_services"
+        pd.DataFrame(
+            {
+                JOIN_FIELD: ["001", "002"],
+                "county_name": ["A", "B"],
+                f"metric_{project_name}": [1.0, 2.0],
+            }
+        ).to_csv(project_dir / f"{job_stem}_20260101_000000.csv", index=False)
+
 
 def _write_smoke_test_recreation_input(recreation_dir: Path) -> None:
     """Write a tiny prepared recreation value GeoPackage for `--smoke-test`.
@@ -931,6 +963,14 @@ def _validate_smoke_test_nlcd_fields(csv_outputs: list[Path]) -> None:
     """
     for csv_path in csv_outputs:
         frame = pd.read_csv(csv_path, dtype={JOIN_FIELD: str})
+        has_nlcd_metrics = any(
+            column.startswith(NLCD_VALID_AREA_PREFIX)
+            or column.startswith(NLCD_PROPORTION_PREFIX)
+            or column in {output_field for _, output_field in NLCD_CLASS_AREA_FIELDS}
+            for column in frame.columns
+        )
+        if not has_nlcd_metrics:
+            continue
         artifact_columns = [
             column
             for column in frame.columns
@@ -967,6 +1007,12 @@ def _validate_smoke_test_recreation_values(csv_outputs: list[Path]) -> None:
         "counties_combined": {"001": 10.0, "002": 20.0},
         "padus_all_lands_combined": {"001": 10.0, "002": 20.0},
         "padus_public_lands_combined": {"001": 10.0, "002": 20.0},
+        "padus_public_access_lands_combined": {"001": 10.0, "002": 20.0},
+        "blm_lands_excluding_federally_protected_areas_combined": {
+            "001": 10.0,
+            "002": 20.0,
+        },
+        "bbb_candidate_blm_lands_combined": {"001": 10.0, "002": 20.0},
     }
     for csv_path in csv_outputs:
         output_stem = TIMESTAMP_SUFFIX.sub("", csv_path.stem)
@@ -992,8 +1038,8 @@ def _run_smoke_test() -> None:
 
         written = combine_outputs(results_dir, output_dir, recreation_dir=recreation_dir)
         csv_outputs = [path for path in written if path.suffix == ".csv"]
-        if len(csv_outputs) != len(RESULT_GROUPS):
-            raise AssertionError("Smoke test did not write one CSV per result group.")
+        if len(csv_outputs) != len(RESULT_PROJECTS):
+            raise AssertionError("Smoke test did not write one CSV per result project.")
         _validate_smoke_test_nlcd_fields(csv_outputs)
         _validate_smoke_test_recreation_values(csv_outputs)
 
