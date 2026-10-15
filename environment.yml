@@ -11,6 +11,7 @@ dependencies:
   - rasterio
   - fiona
   - pandas
+  - openpyxl
   - geopandas
   - shapely>=2
   - rtree

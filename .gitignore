@@ -1,5 +1,11 @@
 __pycache__/**
-data/**
+data/*
+!data/workflow_assets/
+data/workflow_assets/*
+!data/workflow_assets/county_integration/
+data/workflow_assets/county_integration/*
+!data/workflow_assets/county_integration/*.csv
 run_configs/**
 output/**
 data_unorganized/**
+/move_county_inputs.cmd
