@@ -13,9 +13,9 @@ import shapely
 from shapely.geometry import Polygon, box
 
 from build_county_ecosystem_service_valuations_2026 import (
-    DROP_FIELDS, county_values, fips, numbers, polygon_values,
+    DROP_FIELDS, air_quality_summary, county_values, fips, numbers, polygon_values,
     read_attributes, sha256, state_values, validate_crosswalk, write_output,
-    load_checkpoint, save_checkpoint,
+    load_checkpoint, run, save_checkpoint,
 )
 
 
@@ -97,6 +97,84 @@ class CountyIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             state_values(frame, "value", states, weights * 0)
 
+    def test_air_quality_summaries_keep_raw_units_and_missing_counties(self):
+        """Statistics describe category values, not pixels or adjusted dollars."""
+        source = pd.DataFrame({"FIPS": [1001, 1001, 1001, 99999],
+                               "land": ["forest", "grass", "shrub", "forest"],
+                               "pollutant": ["PM2.5"] * 4,
+                               "dollars_annual": [10.0, 20.0, 30.0, 5.0]})
+        totals, _, _, audit = county_values(source, "FIPS", "dollars_annual", self.ids,
+                                          self.crosswalk, aggregate=True)
+        summary = air_quality_summary(source, self.ids, self.crosswalk, totals)
+        row = summary.loc["01001"]
+        self.assertEqual(row.sum_dollars_annual, 60)
+        self.assertEqual(row.mean_dollars_annual, 20)
+        self.assertEqual(row.median_dollars_annual, 20)
+        self.assertEqual(row.min_dollars_annual, 10)
+        self.assertEqual(row.max_dollars_annual, 30)
+        self.assertAlmostEqual(row.stdev_dollars_annual, np.std([10, 20, 30], ddof=0))
+        self.assertEqual(row.valid_count_dollars_annual, 3)
+        self.assertEqual(row.total_count_dollars_annual, 3)
+        self.assertTrue(np.isnan(summary.loc["09110", "sum_dollars_annual"]))
+        self.assertEqual(summary.loc["09110", "total_count_dollars_annual"], 0)
+        self.assertEqual(audit["unmatched_total"], 5)
+
+    def test_air_quality_ct_recombines_categories_before_statistics(self):
+        """CT means count target categories once, not once per old-county piece."""
+        source = pd.DataFrame({"FIPS": [9001, 9001, 9003, 9003],
+                               "land": ["forest", "grass"] * 2,
+                               "pollutant": ["PM2.5"] * 4,
+                               "dollars_annual": [10.0, 30.0, 40.0, 80.0]})
+        totals = county_values(source, "FIPS", "dollars_annual", self.ids,
+                               self.crosswalk, aggregate=True)[0]
+        summary = air_quality_summary(source, self.ids, self.crosswalk, totals)
+        self.assertEqual(summary.loc["09110", "sum_dollars_annual"], 10)
+        self.assertEqual(summary.loc["09110", "mean_dollars_annual"], 5)
+        self.assertEqual(summary.loc["09120", "sum_dollars_annual"], 150)
+        self.assertEqual(summary.loc["09120", "mean_dollars_annual"], 75)
+        self.assertEqual(summary.loc["09120", "stdev_dollars_annual"], 27.5)
+        self.assertEqual(summary.loc["09120", "valid_count_dollars_annual"], 2)
+        partial = source.iloc[:2]
+        totals = county_values(partial, "FIPS", "dollars_annual", self.ids,
+                               self.crosswalk, aggregate=True)[0]
+        summary = air_quality_summary(partial, self.ids, self.crosswalk, totals)
+        self.assertTrue(np.isnan(summary.loc["09120", "mean_dollars_annual"]))
+        self.assertEqual(summary.loc["09120", "valid_count_dollars_annual"], 0)
+        self.assertEqual(summary.loc["09120", "total_count_dollars_annual"], 2)
+
+    def test_air_quality_incomplete_values_and_normalized_duplicate_keys(self):
+        """Missing contributions cannot become complete statistics or zeros."""
+        source = pd.DataFrame({"FIPS": [1001, "01001"], "land": ["forest", "grass"],
+                               "pollutant": ["PM2.5"] * 2, "dollars_annual": [10.0, None]})
+        totals = county_values(source, "FIPS", "dollars_annual", self.ids,
+                               self.crosswalk, aggregate=True)[0]
+        summary = air_quality_summary(source, self.ids, self.crosswalk, totals)
+        self.assertTrue(np.isnan(summary.loc["01001", "sum_dollars_annual"]))
+        self.assertTrue(np.isnan(summary.loc["01001", "mean_dollars_annual"]))
+        self.assertEqual(summary.loc["01001", "valid_count_dollars_annual"], 1)
+        self.assertEqual(summary.loc["01001", "total_count_dollars_annual"], 2)
+        source.loc[1, "land"] = "forest"
+        with self.assertRaisesRegex(ValueError, "Duplicate air-quality"):
+            air_quality_summary(source, self.ids, self.crosswalk, totals)
+
+    def test_builder_rejects_scaled_pollination_instead_of_applying_point09_twice(self):
+        """An already-per-pixel VRT aggregate must not silently be scaled again."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config"
+            config.mkdir()
+            gpd.GeoDataFrame(
+                {"GEOID": ["01001"], "STATEFP": ["01"],
+                 "sum_pollination_attributed_annual_crop_yield_value_usd_per_pixel": [9.0]},
+                geometry=[box(0, 0, 1, 1)], crs=4326,
+            ).to_file(root / "base.gpkg", layer="counties", driver="GPKG")
+            (config / "sources.csv").write_text("source,path\nbase,base.gpkg\n", encoding="utf-8")
+            (config / "adjustment_factors.csv").write_text(
+                "service,factor,reason,source_units\npollination,0.09,conversion,USD\n", encoding="utf-8")
+            self.crosswalk.to_csv(config / "ct_county_crosswalk.csv", index=False)
+            with self.assertRaisesRegex(ValueError, "must not receive.*second time"):
+                run(root, config, workers=1, geometry_workers=1)
+
     def test_polygon_allocation_keeps_uncovered_fraction(self):
         counties = gpd.GeoDataFrame({"GEOID": ["01001", "01003"]}, geometry=[box(0, 0, 1, 1), box(1, 0, 3, 1)], crs=6933)
         polygons = gpd.GeoDataFrame({"siteid": ["a", "b"], "value": [40.0, 10.0]}, geometry=[box(0, 0, 4, 1), box(5, 0, 6, 1)], crs=6933)
@@ -151,17 +229,29 @@ class CountyIntegrationTests(unittest.TestCase):
             base = Path(temp) / "base.gpkg"
             output = Path(temp) / "output.gpkg"
             frame = gpd.GeoDataFrame({"GEOID": ["01001", "01003"], "keep": [-12.0, 0.0],
+                                     "sum_pollination_attributed_annual_crop_yield_value": [100.0, 200.0],
                                      **{field: [1.0, 2.0] for field in DROP_FIELDS}},
                                     geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)], crs=4326)
             frame.to_file(base, layer="counties", driver="GPKG")
             before = sha256(base)
             additions = pd.DataFrame({"test_orig": [12.0, np.nan], "test_adj_factor": [1.5, 1.5], "test_adj": [18.0, np.nan]}, index=frame.GEOID)
+            additions["pollination_orig"] = [100.0, 200.0]
+            additions["pollination_adj_factor"] = 0.09
+            additions["pollination_adj"] = additions.pollination_orig * additions.pollination_adj_factor
+            additions["sum_dollars_annual"] = [12.0, np.nan]
+            additions["mean_dollars_annual"] = [4.0, np.nan]
             table = pd.DataFrame({"service": ["test"], "factor": [1.5]})
             write_output(base, output, "counties", "geom", additions, {"integration_services": table})
             self.assertEqual(sha256(base), before)
             attrs, _, _ = read_attributes(output)
             self.assertEqual(attrs.keep.to_list(), [-12, 0])
             self.assertFalse(set(DROP_FIELDS) & set(attrs.columns))
+            self.assertEqual(attrs.sum_pollination_attributed_annual_crop_yield_value.to_list(), [100, 200])
+            self.assertEqual(attrs.pollination_adj.to_list(), [9, 18])
+            csv = pd.read_csv(output.with_suffix(".csv"), dtype={"GEOID": str}, float_precision="round_trip")
+            self.assertNotIn("geometry", csv.columns)
+            pd.testing.assert_frame_equal(attrs, csv, check_dtype=False)
+            self.assertTrue(np.isnan(csv.mean_dollars_annual.iloc[1]))
             with closing(sqlite3.connect(output)) as con:
                 self.assertEqual(con.execute("SELECT data_type FROM gpkg_contents WHERE table_name='integration_services'").fetchone()[0], "attributes")
             self.assertTrue(gpd.read_file(output, layer="counties").geometry.equals(frame.geometry))
@@ -173,7 +263,26 @@ class CountyIntegrationTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 write_output(base, failed_output, "counties", "geom", invalid, {})
             self.assertFalse(failed_output.exists())
+            self.assertFalse(failed_output.with_suffix(".csv").exists())
             self.assertEqual(sha256(base), before)
+            occupied = Path(temp) / "occupied.gpkg"
+            occupied.with_suffix(".csv").touch()
+            with self.assertRaises(FileExistsError):
+                write_output(base, occupied, "counties", "geom", additions, {})
+            self.assertFalse(occupied.exists())
+            original_link = Path.hardlink_to
+
+            def fail_csv_publish(destination, target):
+                """Simulate failure publishing the second member of the pair."""
+                if destination.suffix == ".csv":
+                    raise PermissionError("simulated CSV publication failure")
+                return original_link(destination, target)
+
+            with patch.object(Path, "hardlink_to", new=fail_csv_publish):
+                with self.assertRaises(PermissionError):
+                    write_output(base, failed_output, "counties", "geom", additions, {})
+            self.assertFalse(failed_output.exists())
+            self.assertFalse(failed_output.with_suffix(".csv").exists())
 
     def test_service_checkpoint_round_trip_and_signature(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -183,11 +292,14 @@ class CountyIntegrationTests(unittest.TestCase):
                 "statuses": [pd.DataFrame({"GEOID": ["01001", "01003"], "service": ["test"] * 2, "status": ["source", "missing"]})],
                 "metadata": [{"service": "test"}], "issues": [], "checks": [],
                 "recreation_audit": pd.DataFrame(),
+                "summary_fields": pd.DataFrame({"sum_dollars_annual": [12.0, np.nan]},
+                                               index=pd.Index(["01001", "01003"], name="GEOID")),
             }
             save_checkpoint(path, "abc", result)
             loaded = load_checkpoint(path, "abc")
             pd.testing.assert_series_equal(result["originals"]["test"], loaded["originals"]["test"], check_names=False)
             self.assertEqual(loaded["metadata"], result["metadata"])
+            pd.testing.assert_frame_equal(result["summary_fields"], loaded["summary_fields"])
             with self.assertRaises(ValueError):
                 load_checkpoint(path, "changed-input")
 

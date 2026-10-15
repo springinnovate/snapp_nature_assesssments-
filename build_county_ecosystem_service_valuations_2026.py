@@ -1,4 +1,4 @@
-"""Build the October 2026 SNAPP county ecosystem-service valuation GeoPackage.
+"""Build paired CSV/GeoPackage county ecosystem-service valuation exports.
 
 Join county estimates, allocate state fisheries values and recreation polygon
 values to counties, and apply the assessment's recorded valuation adjustments.
@@ -7,7 +7,7 @@ factors, adjusted values, source information, and coverage tables.
 
 Run: python build_county_ecosystem_service_valuations_2026.py
 Inputs: data/workflow_assets/county_integration/sources.csv (paths under data/).
-Output: data/analysis_results/combined/counties_ecosystem_services_<timestamp>.gpkg.
+Outputs: data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.{csv,gpkg}.
 Source files are never modified. See docs/county_valuation_integration_2026.md
 for input releases, allocation methods, units, and interpretation limits.
 """
@@ -39,9 +39,9 @@ AREA_CRS = "EPSG:6933"  # Equal area, including Alaska, Hawaii and US territorie
 RECREATION_COVERAGE_TOLERANCE = 1e-5
 DROP_FIELDS = (
     "sum_national_attributed_annual_crop_yield_value_zstd",
-    "sum_pollination_attributed_annual_crop_yield_value",
 )
 BASE_FIELDS = {
+    "pollination": "sum_pollination_attributed_annual_crop_yield_value",
     "carbon_ha": "sum_totalC_tCO2e_ha_2020",
     "carbon_pixel": "sum_totalC_tCO2e_pixel_2020",
     "dredging": "sum_avoided_dredging_costs_raster",
@@ -189,6 +189,69 @@ def county_values(frame, key, field, ids, crosswalk, *, aggregate=False, zero_mi
     audit = {"input_known_total": original_known_total, "unmatched_total": float(unmatched),
              "withheld_partial_total": float(withheld + partial_input)}
     return result, status, issues, audit
+
+
+def air_quality_summary(frame, ids, crosswalk, county_totals):
+    """Summarize unadjusted annual dollars across target-county categories.
+
+    Historical Connecticut records are allocated by the existing land-area
+    crosswalk, then recombined by land cover and pollutant before summarizing.
+    A category with any unknown contribution stays unknown. Monetary summaries
+    stay null for an incomplete county; count fields describe known categories.
+
+    Args:
+        frame: Source records with FIPS, land, pollutant, and dollars_annual.
+        ids: Target county GEOID index.
+        crosswalk: Historical source-to-target county land-area weights.
+        county_totals: Reconciled totals returned by county_values.
+
+    Returns:
+        DataFrame indexed by GEOID with sum, mean, median, min, max, population
+        stdev, valid_count, and total_count fields suffixed dollars_annual.
+
+    Raises:
+        ValueError: Categories are invalid/duplicated or totals do not reconcile.
+    """
+    data = frame[["FIPS", "land", "pollutant"]].copy()
+    data["FIPS"] = data.FIPS.map(fips)
+    data["value"] = numbers(frame.dollars_annual)
+    if data[["land", "pollutant"]].isna().any().any():
+        raise ValueError("Air-quality land and pollutant categories must be non-null")
+    if data.duplicated(["FIPS", "land", "pollutant"]).any():
+        raise ValueError("Duplicate air-quality county/land/pollutant rows")
+    if set(data.FIPS) & set(crosswalk.source_geoid):
+        # Match county_values' incomplete-CT policy when an old county is absent.
+        missing = sorted(set(crosswalk.source_geoid) - set(data.FIPS))
+        if missing:
+            categories = data[["land", "pollutant"]].drop_duplicates()
+            unknown = pd.DataFrame({"FIPS": missing}).merge(categories, how="cross")
+            unknown["value"] = np.nan
+            data = pd.concat([data, unknown], ignore_index=True)
+    direct = data.loc[data.FIPS.isin(ids)].assign(GEOID=lambda d: d.FIPS)
+    historical = data.loc[~data.FIPS.isin(ids)].merge(
+        crosswalk, left_on="FIPS", right_on="source_geoid", how="inner")
+    historical["value"] = historical.value * historical.weight
+    historical["GEOID"] = historical.target_geoid
+    allocated = pd.concat([direct, historical], ignore_index=True)
+    categories = allocated.groupby(["GEOID", "land", "pollutant"]).value
+    category_values = categories.sum(min_count=1)
+    category_values[categories.count() < categories.size()] = np.nan
+    grouped = category_values.groupby(level="GEOID")
+    summary = grouped.agg(["mean", "median", "min", "max", "count", "size"])
+    summary["stdev"] = grouped.std(ddof=0)
+    sums = grouped.sum(min_count=1)
+    sums[grouped.count() < grouped.size()] = np.nan
+    if not np.allclose(sums.reindex(ids), county_totals.reindex(ids),
+                       rtol=1e-12, atol=0.001, equal_nan=True):
+        raise ValueError("Air-quality category summaries disagree with reconciled county totals")
+    summary["sum"] = county_totals
+    summary = summary.reindex(ids)
+    for field in ("sum", "mean", "median", "min", "max", "stdev"):
+        summary.loc[county_totals.isna(), field] = np.nan
+    summary[["count", "size"]] = summary[["count", "size"]].fillna(0).astype("int64")
+    summary = summary.rename(columns={"count": "valid_count", "size": "total_count"})
+    fields = ["sum", "mean", "median", "min", "max", "stdev", "valid_count", "total_count"]
+    return summary[fields].add_suffix("_dollars_annual")
 
 
 def state_values(frame, field, county_states, weights):
@@ -364,12 +427,30 @@ def input_weights(path, ids, prefix):
 
 
 def write_output(base_path, output, layer, geom, additions, tables):
-    """Back up the whole GeoPackage and change attributes only, then validate."""
-    if output.exists():
-        raise FileExistsError(output)
+    """Validate and publish a GeoPackage and matching geometry-free CSV.
+
+    Args:
+        base_path: Original county GeoPackage to preserve.
+        output: New .gpkg path; its .csv sibling is written in the same run.
+        layer: Original county feature layer name.
+        geom: Original geometry column name, excluded only from the CSV.
+        additions: County-indexed numeric values and summaries to add.
+        tables: Supporting provenance and reconciliation tables.
+
+    Raises:
+        FileExistsError: Either destination already exists.
+        ValueError: The extension or preservation/export checks fail.
+    """
+    if output.suffix.lower() != ".gpkg":
+        raise ValueError("--output must be a .gpkg path; its .csv sibling is automatic")
+    csv_output = output.with_suffix(".csv")
+    for destination in (output, csv_output):
+        if destination.exists():
+            raise FileExistsError(destination)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="county-integration-", dir=output.parent) as temporary:
         stage = Path(temporary) / output.name
+        csv_stage = stage.with_suffix(".csv")
         with closing(read_db(base_path)) as original, closing(sqlite3.connect(stage)) as con:
             original.backup(con)
             # GDAL's FID-update triggers reference these functions even when their
@@ -385,7 +466,8 @@ def write_output(base_path, output, layer, geom, additions, tables):
             for field in DROP_FIELDS:
                 con.execute(f"ALTER TABLE {quote(layer)} DROP COLUMN {quote(field)}")
             for field in tqdm(additions.columns, desc="Create valuation fields", unit="field"):
-                con.execute(f"ALTER TABLE {quote(layer)} ADD COLUMN {quote(field)} REAL")
+                sqltype = "INTEGER" if pd.api.types.is_integer_dtype(additions[field]) else "REAL"
+                con.execute(f"ALTER TABLE {quote(layer)} ADD COLUMN {quote(field)} {sqltype}")
             # Use the existing integer primary key, avoiding a full geometry-table
             # scan for each GEOID (GEOID is not indexed in the supplied base).
             fid_by_geoid = dict(con.execute(f"SELECT GEOID,fid FROM {quote(layer)}"))
@@ -425,14 +507,34 @@ def write_output(base_path, output, layer, geom, additions, tables):
                 raise ValueError("GeoPackage integrity check failed")
             if con.execute("PRAGMA foreign_key_check").fetchall():
                 raise ValueError("GeoPackage foreign-key check failed")
-        # Hard-link publication is atomic and refuses to replace existing files.
-        output.hardlink_to(stage)
+            export_fields = [r[1] for r in con.execute(f"PRAGMA table_info({quote(layer)})") if r[1] != geom]
+            attributes = pd.read_sql_query(
+                f"SELECT {','.join(map(quote, export_fields))} FROM {quote(layer)} ORDER BY fid", con)
+            with csv_stage.open("x", encoding="utf-8", newline="") as stream:
+                for start in tqdm(range(0, len(attributes), 250), desc="Write county CSV", unit="batch"):
+                    attributes.iloc[start:start + 250].to_csv(stream, index=False, header=start == 0)
+            text_columns = {c: str for c in attributes if pd.api.types.is_string_dtype(attributes[c].dtype)
+                            or pd.api.types.is_object_dtype(attributes[c].dtype)}
+            csv_attributes = pd.read_csv(csv_stage, dtype=text_columns, float_precision="round_trip")
+            pd.testing.assert_frame_equal(attributes, csv_attributes, check_dtype=False)
+        # Publish only validated files, refuse overwrites, and roll back our own
+        # first link if publication of the second file fails.
+        published = []
+        try:
+            for destination, staged in ((output, stage), (csv_output, csv_stage)):
+                destination.hardlink_to(staged)
+                published.append(destination)
+        except Exception:
+            for destination in published:
+                destination.unlink()
+            raise
 
 
 def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
     """Compute one independent service family in a worker process."""
     ids = base.index
     recreation_audit = pd.DataFrame()
+    summary_fields = pd.DataFrame(index=ids)
     originals, statuses, metadata, issues, checks = {}, [], [], [], []
 
     def add(service, values, status, source, source_field, method, audit=None):
@@ -471,9 +573,9 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
         county_add("timber", timber, "fips_padded", "total_annual_rent", "timber", zero_missing=True)
     if task == "air_quality":
         air = pd.read_csv(paths["air_quality"], dtype={"FIPS": str})
-        if air.duplicated(["FIPS", "land", "pollutant"]).any():
-            raise ValueError("Duplicate air-quality county/land/pollutant rows")
         county_add("avoided_air_quality_heath_costs", air, "FIPS", "dollars_annual", "air_quality", aggregate=True)
+        summary_fields = air_quality_summary(
+            air, ids, crosswalk, originals["avoided_air_quality_heath_costs"])
     if task == "urban_heat":
         heat = pd.read_csv(paths["urban_heat"], dtype={"COUNTY_GEOID": str}).dropna(how="all")
         county_add("urban_heat", heat, "COUNTY_GEOID", "Sum of total_dollars_saved", "urban_heat", aggregate=True)
@@ -517,7 +619,8 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
              "coverage_corrected_polygons": int((recreation_audit.raw_allocated_fraction > 1).sum()),
              "max_raw_allocated_fraction": float(recreation_audit.raw_allocated_fraction.max())})
     return {"originals": originals, "statuses": statuses, "metadata": metadata,
-            "issues": issues, "checks": checks, "recreation_audit": recreation_audit}
+            "issues": issues, "checks": checks, "recreation_audit": recreation_audit,
+            "summary_fields": summary_fields}
 
 
 def save_checkpoint(path, signature, result):
@@ -526,6 +629,8 @@ def save_checkpoint(path, signature, result):
         stage = Path(temporary) / path.name
         with closing(sqlite3.connect(stage)) as con:
             pd.DataFrame(result["originals"]).to_sql("valuations", con, index_label="GEOID")
+            if len(result.get("summary_fields", pd.DataFrame()).columns):
+                result["summary_fields"].to_sql("summary_fields", con, index_label="GEOID")
             pd.concat(result["statuses"], ignore_index=True).to_sql("statuses", con, index=False)
             if len(result["recreation_audit"].columns):
                 result["recreation_audit"].to_sql("recreation", con, index=False)
@@ -549,12 +654,38 @@ def load_checkpoint(path, signature):
         result["statuses"] = [pd.read_sql_query("SELECT * FROM statuses", con)]
         has_recreation = con.execute("SELECT 1 FROM sqlite_master WHERE name='recreation'").fetchone()
         result["recreation_audit"] = pd.read_sql_query("SELECT * FROM recreation", con) if has_recreation else pd.DataFrame()
+        has_summary = con.execute("SELECT 1 FROM sqlite_master WHERE name='summary_fields'").fetchone()
+        result["summary_fields"] = (pd.read_sql_query("SELECT * FROM summary_fields", con).set_index("GEOID")
+                                    if has_summary else pd.DataFrame(index=values.index))
     return result
 
 
 def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resume=True):
+    """Build and verify paired county exports using the reviewed CSV configs.
+
+    Args:
+        data_root: Root of the source and analysis data stack.
+        config_dir: Source paths, adjustment factors, and county crosswalk CSVs.
+        output: Optional new GeoPackage path; CSV uses the same basename.
+        workers: Independent ecosystem-service worker processes.
+        geometry_workers: Recreation intersection threads per recreation task.
+        resume: Reuse matching validated checkpoints when available.
+
+    Returns:
+        Completed GeoPackage path, with a matching CSV alongside it.
+
+    Raises:
+        ValueError: Configuration, required raw pollination input, or QA fails.
+        FileExistsError: Either requested output file already exists.
+    """
     if workers < 1 or geometry_workers < 1:
         raise ValueError("Worker counts must be positive")
+    if output is not None:
+        if output.suffix.lower() != ".gpkg":
+            raise ValueError("--output must have a .gpkg extension")
+        for destination in (output, output.with_suffix(".csv")):
+            if destination.exists():
+                raise FileExistsError(destination)
     script_hash = sha256(__file__)
     config_hashes = {name: sha256(config_dir / name) for name in
                      ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv")}
@@ -577,6 +708,13 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         raise ValueError("Duplicate base county FIPS")
     base = base.set_index("GEOID")
     ids = base.index
+    if BASE_FIELDS["pollination"] not in base:
+        raise ValueError(
+            "The county base must contain the unscaled "
+            "sum_pollination_attributed_annual_crop_yield_value field. Use the "
+            "September raw county zonals in sources.csv; a per-pixel VRT aggregate "
+            "must not receive the pollination factor 0.09 a second time."
+        )
     if not (base.STATEFP == ids.str[:2]).all():
         raise ValueError("Base state and county identifiers disagree")
     crosswalk = pd.read_csv(config_dir / "ct_county_crosswalk.csv", dtype={"source_geoid": str, "target_geoid": str})
@@ -638,6 +776,12 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         additions[f"{service}_orig"] = values
         additions[f"{service}_adj_factor"] = factor
         additions[f"{service}_adj"] = values * factor
+    for result in results.values():
+        summary_fields = result.get("summary_fields", pd.DataFrame())
+        if len(summary_fields.columns):
+            if set(summary_fields.columns) & set(additions.columns):
+                raise ValueError("Duplicate county summary fields")
+            additions = additions.join(summary_fields, how="left")
     # Source hashes also make interrupted/rerun inputs identifiable.
     for name, path in tqdm(paths.items(), desc="Verify source hashes", unit="file"):
         if sha256(path) != fingerprints[name]:
@@ -664,16 +808,24 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "integration_recreation_allocation": recreation_audit,
         "integration_ct_crosswalk": crosswalk,
         "integration_checkpoints": pd.DataFrame({"task": list(signatures), "signature": list(signatures.values())}),
+        "integration_summary_fields": pd.DataFrame([
+            {"field": f"{stat}_dollars_annual", "source": "air_quality", "source_field": "dollars_annual",
+             "units": "category count" if stat.endswith("count") else "USD annual; unadjusted",
+             "method": "Target-county land/pollutant categories after CT crosswalk; population stdev (ddof=0); monetary stats null if incomplete"}
+            for stat in ("sum", "mean", "median", "min", "max", "stdev", "valid_count", "total_count")
+        ]),
         "integration_run": pd.DataFrame([{
             "created_utc": datetime.now(timezone.utc).isoformat(), "script": Path(__file__).name,
             "script_sha256": sha256(__file__), "area_crs": AREA_CRS,
             "base_counties": len(ids), "removed_fields": json.dumps(DROP_FIELDS),
             "notes": "Carbon units not reinterpreted as dollars; mangrove signs retained; no cross-service grand total. "
-                     "Unclassified base fields and non-sum crop/pollination diagnostics retained unchanged.",
+                     "Raw pollination sum preserved; pollination_adj applies the configured 0.09 factor once. "
+                     "Air-quality category summaries are unadjusted USD; missing values remain null. "
+                     "CSV and GeoPackage county attributes verified equal; CSV excludes geometry only.",
         }]),
     }
     if output is None:
-        output = data_root / "analysis_results/combined" / f"counties_ecosystem_services_{datetime.now():%Y%m%d_%H%M%S}.gpkg"
+        output = data_root / "analysis_results/combined" / f"snapp_ecosystem_services_counties_{datetime.now():%Y_%m_%d_%H_%M_%S}.gpkg"
     logging.info("Writing %s", output)
     write_output(paths["base"], output, layer, geom, additions, tables)
     logging.info("Verified %s counties, %s valuation fields, geometry and original attributes preserved", len(ids), len(additions.columns))
@@ -681,17 +833,20 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
 
 
 def main():
+    """Build matching timestamped county CSV/GeoPackage exports from CLI options."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=ROOT / "data")
     parser.add_argument("--config-dir", type=Path, default=CONFIG)
-    parser.add_argument("--output", type=Path, help="New GeoPackage path; existing files are never overwritten")
+    parser.add_argument("--output", type=Path, help="New .gpkg path; matching .csv is automatic; neither may already exist")
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1), help="Independent service processes (default: up to 8)")
     parser.add_argument("--geometry-workers", type=int, default=min(8, os.cpu_count() or 1), help="Recreation intersection threads (default: up to 8)")
     parser.add_argument("--no-resume", action="store_true", help="Recompute services and recreation batches instead of reusing checkpoints")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    print(run(args.data_root.resolve(), args.config_dir.resolve(), args.output.resolve() if args.output else None,
-              args.workers, args.geometry_workers, not args.no_resume))
+    output = run(args.data_root.resolve(), args.config_dir.resolve(), args.output.resolve() if args.output else None,
+                 args.workers, args.geometry_workers, not args.no_resume)
+    print(output)
+    print(output.with_suffix(".csv"))
 
 
 if __name__ == "__main__":

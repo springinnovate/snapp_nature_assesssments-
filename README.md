@@ -533,10 +533,20 @@ With the repository's Python environment active, run from the repository folder:
 python build_county_ecosystem_service_valuations_2026.py
 ```
 
-The new `data/analysis_results/combined/counties_ecosystem_services_<timestamp>.gpkg`
-contains the county map, original values, adjustment factors, adjusted values,
-and tables describing sources and missing coverage. Open it in QGIS or read it
-with GeoPandas. The original files are preserved.
+The builder writes matching
+`data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.csv`
+and `.gpkg` files with all county attributes. The GeoPackage also contains the
+county map and tables describing sources and missing coverage. The original
+files are preserved.
+
+Both formats retain `sum_pollination_attributed_annual_crop_yield_value`, add
+`pollination_adj` using the configured `pollination` factor of `0.09`, and include
+`sum_dollars_annual`, `mean_dollars_annual`, `median_dollars_annual`,
+`min_dollars_annual`, `max_dollars_annual`, `stdev_dollars_annual`,
+`valid_count_dollars_annual`, and `total_count_dollars_annual` from the air-quality
+CSV. These air-quality statistics describe land-cover/pollutant categories,
+not raster pixels. See the guide for units, Connecticut allocation, and null
+handling. No raster zonal rerun is needed for these fields.
 
 Before comparing or summing values, read the guide's
 [interpretation notes](docs/county_valuation_integration_2026.md#interpreting-the-values):
