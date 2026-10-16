@@ -1,6 +1,7 @@
 """Conservation, missing coverage, and source-preservation tests for issue #58."""
 from pathlib import Path
 from contextlib import closing
+from copy import deepcopy
 import sqlite3
 import tempfile
 import unittest
@@ -10,14 +11,19 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
+import yaml
 from shapely.geometry import Polygon, box
 
 from build_county_ecosystem_service_valuations_2026 import (
-    AIR_QUALITY_OUTPUT, DROP_FIELDS, NON_SUM_FIELD, adjusted_county_fields,
+    NON_SUM_FIELD, adjusted_county_fields, load_export_rules, plan_county_export,
     air_quality_summary, county_values, fips, numbers, polygon_values,
     read_attributes, sha256, state_values, validate_crosswalk, write_output,
     load_checkpoint, run, save_checkpoint,
 )
+
+RULES_PATH = Path(__file__).parent / "data/workflow_assets/county_integration/export_rules.yaml"
+AIR_QUALITY_OUTPUT = "air_quality_avoided_mortality_annual_value"
+LEGACY_CROP_FIELD = "sum_national_attributed_annual_crop_yield_value_zstd"
 
 
 class CountyIntegrationTests(unittest.TestCase):
@@ -176,7 +182,12 @@ class CountyIntegrationTests(unittest.TestCase):
                      "avoided_air_quality_heath_costs": summaries.sum_dollars_annual.copy(),
                      "timber": pd.Series([20.0, -10.0], index=base.index)}
         factors = pd.DataFrame({"factor": [0.09, 1.135, 1.0]}, index=list(originals))
-        fields, mapping = adjusted_county_fields(base, originals, summaries, factors)
+        rules = load_export_rules(RULES_PATH)
+        rules["exclude_fields"] = []
+        rules["rename_fields"] = {key: value for key, value in rules["rename_fields"].items()
+                                  if key.startswith("avoided_air_quality_")}
+        plan = plan_county_export(base.columns, factors.index, rules)
+        fields, mapping = adjusted_county_fields(base, originals, summaries, factors, plan)
         self.assertEqual(list(fields), [
             f"sum_{stem}_adj", "sum_unconfigured_quantity", AIR_QUALITY_OUTPUT + "_adj",
             "timber_adj", "pollination_adj_factor", AIR_QUALITY_OUTPUT + "_adj_factor", "timber_adj_factor",
@@ -194,7 +205,7 @@ class CountyIntegrationTests(unittest.TestCase):
         self.assertNotIn("avoided_air_quality_heath_costs_adj", fields)
         summaries.loc[base.index[0], "sum_dollars_annual"] = 99
         with self.assertRaisesRegex(ValueError, "canonical sum"):
-            adjusted_county_fields(base, originals, summaries, factors)
+            adjusted_county_fields(base, originals, summaries, factors, plan)
 
     def test_builder_rejects_scaled_pollination_instead_of_applying_point09_twice(self):
         """An already-per-pixel VRT aggregate must not silently be scaled again."""
@@ -210,6 +221,7 @@ class CountyIntegrationTests(unittest.TestCase):
             (config / "sources.csv").write_text("source,path\nbase,base.gpkg\n", encoding="utf-8")
             (config / "adjustment_factors.csv").write_text(
                 "service,factor,reason,source_units\npollination,0.09,conversion,USD\n", encoding="utf-8")
+            (config / "export_rules.yaml").write_bytes(RULES_PATH.read_bytes())
             self.crosswalk.to_csv(config / "ct_county_crosswalk.csv", index=False)
             with self.assertRaisesRegex(ValueError, "must not receive.*second time"):
                 run(root, config, workers=1, geometry_workers=1)
@@ -280,7 +292,7 @@ class CountyIntegrationTests(unittest.TestCase):
                                          "mean", "median", "min", "max", "std", "stdev", "p5", "p50", "p95",
                                          "valid_count", "total_count", "area_ha_valid", "area_ha_total",
                                          "proportion_valid_nonzero")},
-                                     **{field: [1.0, 2.0] for field in DROP_FIELDS}},
+                                     LEGACY_CROP_FIELD: [1.0, 2.0]},
                                     geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)], crs=4326)
             frame.to_file(base, layer="counties", driver="GPKG")
             before = sha256(base)
@@ -298,7 +310,7 @@ class CountyIntegrationTests(unittest.TestCase):
             attrs, _, _ = read_attributes(output)
             self.assertEqual(list(attrs), ["fid", "GEOID", "keep", "ALAND", "AWATER"] + list(additions))
             self.assertEqual(attrs.keep.to_list(), [-12, 0])
-            self.assertFalse(set(DROP_FIELDS) & set(attrs.columns))
+            self.assertNotIn(LEGACY_CROP_FIELD, attrs)
             self.assertNotIn(raw_field, attrs)
             self.assertNotIn("pollination_adj", attrs)
             self.assertFalse(any(field.endswith("_orig") for field in attrs))
@@ -392,6 +404,204 @@ class CountyIntegrationTests(unittest.TestCase):
                 self.assertLess(resumed.call_count, 3)
             self.assertEqual(values["01001"], 60)
             self.assertEqual(audit.unallocated_value.sum(), 0)
+
+
+class CountyExportRuleTests(unittest.TestCase):
+    """Configured field policy preserves values, attribution, and run provenance."""
+
+    def setUp(self):
+        """Build a small county input containing every required rename/exclusion."""
+        self.rules = load_export_rules(RULES_PATH)
+        self.ids = pd.Index(["01001", "01003"], name="GEOID")
+        self.base = pd.DataFrame({
+            "GEOID": self.ids, "ALAND": [1000, 2000], "AWATER": [10, 20],
+            "sum_annual_value_masked_to_wetlands": [10.0, np.nan],
+            "sum_marginal_npv_masked_to_wetlands": [200.0, np.nan],
+            "sum_totalC_tCO2e_pixel_2020": [100.0, np.nan],
+            **{f"sum_Wsw_{kind}": [3.0, 4.0] for kind in ("irr", "pow", "pub", "total")},
+            "sum_Wval_sw_2020usd_total": [7.0, np.nan],
+            "mean_annual_value_masked_to_wetlands": [2.0, np.nan],
+            "area_ha_valid_totalC_tCO2e_pixel_2020": [0.09, 0.0],
+        }, index=self.ids)
+        self.originals = {
+            "flood_annual": self.base.sum_annual_value_masked_to_wetlands,
+            "flood_npv": self.base.sum_marginal_npv_masked_to_wetlands,
+            "carbon_pixel": self.base.sum_totalC_tCO2e_pixel_2020,
+            "avoided_air_quality_heath_costs": pd.Series([50.0, np.nan], index=self.ids),
+            "timber": pd.Series([30.0, np.nan], index=self.ids),
+        }
+        self.factors = pd.read_csv(RULES_PATH.with_name("adjustment_factors.csv"), index_col="service").loc[list(self.originals)]
+        self.summaries = pd.DataFrame({
+            "sum_dollars_annual": self.originals["avoided_air_quality_heath_costs"],
+            "mean_dollars_annual": [50.0 / 9, np.nan],
+            "valid_count_dollars_annual": [9, 0], "total_count_dollars_annual": [9, 0],
+        }, index=self.ids)
+
+    def test_tracked_rules_name_flood_and_carbon_values_and_remove_only_requested_water_sums(self):
+        """Dollar aliases retain actual adjusted totals and distinguish Wsw from Wval."""
+        plan = plan_county_export(self.base.columns, self.factors.index, self.rules)
+        fields, mapping = adjusted_county_fields(self.base, self.originals, self.summaries, self.factors, plan)
+        self.assertEqual(list(fields), [
+            "sum_flood_annual_value_masked_to_wetlands_adj",
+            "sum_flood_marginal_npv_masked_to_wetlands_adj",
+            "sum_CO2e_mitigation_dollar_value_per_pixel_adj",
+            "sum_Wval_sw_2020usd_total",
+            AIR_QUALITY_OUTPUT + "_adj", "timber_adj",
+            "flood_annual_adj_factor", "flood_npv_adj_factor", "carbon_pixel_adj_factor",
+            AIR_QUALITY_OUTPUT + "_adj_factor", "timber_adj_factor",
+        ])
+        self.assertAlmostEqual(fields.loc["01001", mapping["carbon_pixel"]], 100 * 3.66 * 1.182)
+        self.assertEqual(fields.loc["01001", "carbon_pixel_adj_factor"], 4.32612)
+        self.assertIn("per tonne CO2e price", self.factors.loc["carbon_pixel", "reason"])
+        self.assertEqual(fields.loc["01001", mapping["flood_annual"]], 10)
+        self.assertEqual(fields.loc["01001", mapping["flood_npv"]], 200)
+        self.assertAlmostEqual(fields.loc["01001", mapping["avoided_air_quality_heath_costs"]], 56.75)
+        self.assertEqual(fields.loc["01001", "sum_Wval_sw_2020usd_total"], 7)
+        self.assertFalse(any(field.startswith("sum_Wsw_") for field in fields))
+        self.assertFalse(any(NON_SUM_FIELD.match(field) for field in fields))
+        self.assertTrue(fields.loc["01003", [field for field in fields if not field.endswith("_adj_factor")]].isna().all())
+        self.assertEqual(mapping["carbon_pixel"], "sum_CO2e_mitigation_dollar_value_per_pixel_adj")
+        self.assertEqual(mapping["avoided_air_quality_heath_costs"], AIR_QUALITY_OUTPUT + "_adj")
+
+    def test_yaml_only_rename_and_group_order_preserve_semantic_sum_group(self):
+        """A custom alias stays with its source group regardless of its prefix."""
+        self.rules["rename_fields"]["sum_totalC_tCO2e_pixel_2020_adj"] = "carbon_dollar_value_adj"
+        self.rules["column_groups"] = ["base_attributes", "adjustment_factors", "sum_values", "service_totals"]
+        with tempfile.TemporaryDirectory() as directory:
+            custom = Path(directory) / "export_rules.yaml"
+            custom.write_text(yaml.safe_dump(self.rules), encoding="utf-8")
+            loaded = load_export_rules(custom)
+        plan = plan_county_export(self.base.columns, self.factors.index, loaded)
+        fields, mapping = adjusted_county_fields(self.base, self.originals, self.summaries, self.factors, plan)
+        self.assertTrue(all(field.endswith("_adj_factor") for field in list(fields)[:5]))
+        self.assertLess(list(fields).index("carbon_dollar_value_adj"), list(fields).index(AIR_QUALITY_OUTPUT + "_adj"))
+        self.assertEqual(mapping["carbon_pixel"], "carbon_dollar_value_adj")
+        self.assertAlmostEqual(fields.loc["01001", "carbon_dollar_value_adj"], 432.612)
+        self.assertEqual(next(row["group"] for row in plan if row["output_field"] == "carbon_dollar_value_adj"), "sum_values")
+        self.assertEqual(plan, plan_county_export(self.base.columns, self.factors.index, loaded))
+
+    def test_rules_reject_stale_names_and_protect_base_attributes(self):
+        """Misspelled exact rules and county attribute edits fail before calculation."""
+        for setting, value, message in (
+            ("exclude_fields", ["sum_Wsw_typo"], "Unknown required exclusion"),
+            ("rename_fields", {"sum_typo_adj": "better_name"}, "Unknown rename source"),
+            ("exclude_fields", ["ALAND"], "cannot remove or rename county attribute"),
+            ("rename_fields", {"GEOID": "county_id"}, "cannot remove or rename county attribute"),
+            ("exclude_patterns", ["A*"], "cannot remove or rename county attribute"),
+        ):
+            with self.subTest(setting=setting, value=value):
+                rules = deepcopy(self.rules)
+                rules[setting] = value
+                with self.assertRaisesRegex(ValueError, message):
+                    plan_county_export(self.base.columns, self.factors.index, rules)
+        with self.assertRaisesRegex(ValueError, "Missing source sums"):
+            plan_county_export(self.base.drop(columns="sum_totalC_tCO2e_pixel_2020").columns,
+                              self.factors.index, self.rules)
+
+    def test_rules_reject_collisions_and_overlapping_actions(self):
+        """SQLite case-insensitive names and simultaneous policy conflicts are checked."""
+        source = "sum_totalC_tCO2e_pixel_2020_adj"
+        for target in ("geoid", "GEOM", "SUM_FLOOD_ANNUAL_VALUE_MASKED_TO_WETLANDS_ADJ"):
+            with self.subTest(target=target):
+                rules = deepcopy(self.rules)
+                rules["rename_fields"][source] = target
+                with self.assertRaisesRegex(ValueError, "names collide"):
+                    plan_county_export(self.base.columns, self.factors.index, rules)
+        rules = deepcopy(self.rules)
+        rules["exclude_fields"].append(source)
+        with self.assertRaisesRegex(ValueError, "both exclude and rename"):
+            plan_county_export(self.base.columns, self.factors.index, rules)
+
+    def test_excluding_service_total_also_excludes_its_factor(self):
+        """Exported service values retain factors and omitted totals leave no orphan factor."""
+        rules = deepcopy(self.rules)
+        rules["exclude_fields"].append("timber_adj")
+        plan = plan_county_export(self.base.columns, self.factors.index, rules)
+        fields, mapping = adjusted_county_fields(self.base, self.originals, self.summaries, self.factors, plan)
+        self.assertNotIn("timber_adj", fields)
+        self.assertNotIn("timber_adj_factor", fields)
+        self.assertNotIn("timber", mapping)
+        self.assertTrue(all(row["action"] == "exclude" for row in plan if row["service"] == "timber"))
+        rules = deepcopy(self.rules)
+        rules["exclude_fields"].append("timber_adj_factor")
+        with self.assertRaisesRegex(ValueError, "Keep the factor"):
+            plan_county_export(self.base.columns, self.factors.index, rules)
+
+    def test_excluding_every_value_fails_before_output_writing(self):
+        """A county-attributes-only policy fails before producing empty SQL updates."""
+        rules = deepcopy(self.rules)
+        rules["rename_fields"] = {}
+        rules["exclude_patterns"].extend(["sum_*", "*_adj"])
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            plan_county_export(self.base.columns, self.factors.index, rules)
+
+    def test_yaml_rejects_duplicate_unknown_invalid_and_escaping_settings(self):
+        """Malformed presentation settings cannot silently affect a published result."""
+        cases = [
+            ("duplicate top-level key", RULES_PATH.read_text(encoding="utf-8") + "\nschema_version: 1\n"),
+            ("duplicate nested key", RULES_PATH.read_text(encoding="utf-8") + "\n  sum_totalC_tCO2e_pixel_2020_adj: duplicate\n"),
+        ]
+        for label, mutate in (
+            ("unknown setting", lambda rules: rules.update({"typo": True})),
+            ("invalid schema", lambda rules: rules.update({"schema_version": 2})),
+            ("unknown output setting", lambda rules: rules["output"].update({"typo": "x"})),
+            ("duplicate groups", lambda rules: rules["column_groups"].append("sum_values")),
+            ("base not first", lambda rules: rules.update({"column_groups": list(reversed(rules["column_groups"]))})),
+            ("invalid identifier", lambda rules: rules["rename_fields"].update({"timber_adj": "two words"})),
+            ("parent directory", lambda rules: rules["output"].update({"directory": "../elsewhere"})),
+            ("absolute directory", lambda rules: rules["output"].update({"directory": "C:/elsewhere"})),
+            ("rooted forward slash", lambda rules: rules["output"].update({"directory": "/escape"})),
+            ("rooted backslash", lambda rules: rules["output"].update({"directory": "\\escape"})),
+            ("escaping filename", lambda rules: rules["output"].update({"filename_prefix": "../elsewhere"})),
+        ):
+            rules = deepcopy(self.rules)
+            mutate(rules)
+            cases.append((label, yaml.safe_dump(rules)))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "export_rules.yaml"
+            for label, text in cases:
+                with self.subTest(label=label):
+                    path.write_text(text, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        load_export_rules(path)
+
+    def test_policy_round_trip_keeps_geometry_csv_order_and_embedded_rules(self):
+        """A published pair contains the new names and reproducible presentation policy."""
+        with tempfile.TemporaryDirectory() as directory:
+            base_path = Path(directory) / "base.gpkg"
+            output = Path(directory) / "output.gpkg"
+            source = gpd.GeoDataFrame(self.base.reset_index(drop=True),
+                                      geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)], crs=4326)
+            source.to_file(base_path, layer="counties", driver="GPKG")
+            source_hash = sha256(base_path)
+            attributes, layer, geom = read_attributes(base_path)
+            attributes = attributes.set_index("GEOID", drop=False)
+            plan = plan_county_export(attributes.columns, self.factors.index, self.rules, geom)
+            fields, _ = adjusted_county_fields(attributes, self.originals, self.summaries, self.factors, plan)
+            audit = pd.DataFrame(plan)
+            snapshot = pd.DataFrame([{"path": "export_rules.yaml", "sha256": sha256(RULES_PATH),
+                                      "yaml_text": RULES_PATH.read_text(encoding="utf-8")}])
+            removed = [row["source_field"] for row in plan if row["source_field"] and row["group"] != "base_attributes"]
+            write_output(base_path, output, layer, geom, fields,
+                         {"integration_export_rules": snapshot, "integration_export_fields": audit},
+                         removed_fields=removed)
+            saved = read_attributes(output)[0]
+            csv = pd.read_csv(output.with_suffix(".csv"), dtype={"GEOID": str}, float_precision="round_trip")
+            self.assertEqual(list(saved), ["fid", "GEOID", "ALAND", "AWATER"] + list(fields))
+            pd.testing.assert_frame_equal(saved, csv, check_dtype=False)
+            self.assertEqual(sha256(base_path), source_hash)
+            self.assertTrue(gpd.read_file(output, layer=layer).geometry.equals(source.geometry))
+            with closing(sqlite3.connect(output)) as con:
+                persisted = pd.read_sql_query("SELECT path,sha256,yaml_text FROM integration_export_rules", con)
+                pd.testing.assert_frame_equal(persisted, snapshot)
+                mapping = pd.read_sql_query("SELECT source_field,output_field,action FROM integration_export_fields", con)
+                row = mapping.loc[mapping.source_field == "sum_totalC_tCO2e_pixel_2020"].iloc[0]
+                self.assertEqual(row.output_field, "sum_CO2e_mitigation_dollar_value_per_pixel_adj")
+                self.assertEqual(row.action, "rename")
+                omitted = mapping[mapping.source_field.str.startswith("sum_Wsw_")]
+                self.assertEqual(len(omitted), 4)
+                self.assertTrue(omitted.output_field.isna().all())
+                self.assertTrue((omitted.action == "exclude").all())
 
 
 if __name__ == "__main__":

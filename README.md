@@ -25,7 +25,7 @@ conda activate geo
 ```
 
 The environment file includes the major geospatial packages used here, including
-GDAL, GeoPandas, Rasterio, Shapely 2, NumPy, Pandas, and tqdm.
+GDAL, GeoPandas, Rasterio, Shapely 2, NumPy, Pandas, PyYAML, and tqdm.
 
 The zonal statistics step is run with `zonal_stats_toolkit`. See the toolkit
 repository for its current installation instructions and supported execution
@@ -541,13 +541,39 @@ files are preserved.
 
 Both formats put original county identifiers and geographic attributes first,
 including `ALAND` and `AWATER`, followed by all retained `sum_` fields, other
-service totals, and adjustment-factor columns. Configured raster sums use their
-source names plus `_adj`, including
+service totals, and adjustment-factor columns. Configured raster sums default to
+their source names plus `_adj`, including
 `sum_pollination_attributed_annual_crop_yield_value_adj` with
-`pollination_adj_factor` of `0.09`. Source sums without a configured adjustment
-retain their existing names and values. Mean, median, min, max, standard deviation,
-percentiles, generated counts, valid-area fields, and proportions are omitted.
+`pollination_adj_factor` of `0.09`. Retained source sums without a configured
+adjustment keep their existing names and values. Mean, median, min, max, standard
+deviation, percentiles, generated counts, valid-area fields, and proportions are omitted.
 There are no original-value copies or duplicate service-total aliases.
+
+The tracked
+[`export_rules.yaml`](data/workflow_assets/county_integration/export_rules.yaml)
+controls export field names, exclusions, column groups, output directory, and
+filename prefix. This is a YAML file, separate from the toolkit's historical
+INI-style runner configuration. Source selection, multipliers, and Connecticut
+allocation remain in `sources.csv`, `adjustment_factors.csv`, and
+`ct_county_crosswalk.csv`. The rules rename the flood totals to
+`sum_flood_annual_value_masked_to_wetlands_adj` and
+`sum_flood_marginal_npv_masked_to_wetlands_adj`, rename pixel carbon to
+`sum_CO2e_mitigation_dollar_value_per_pixel_adj`, and omit the four `sum_Wsw_*`
+quantity fields. The similarly named `sum_Wval_sw_2020usd_*_adj` monetary
+provisioning values remain.
+
+The carbon multiplier is the assessment-supplied price of USD 3.66 per tonne CO2e
+times the 1.182 inflation adjustment, or 4.32612. The pixel-carbon output is the
+county sum of monetary per-pixel values. The separately retained carbon-per-hectare
+sum is not an area-integrated county dollar total.
+
+Export rules are validated before expensive processing. Each GeoPackage stores
+their full YAML text, hash, and resolved field actions so its schema can be traced
+to the configuration that produced it. Editing only export rules reuses completed
+raw calculation checkpoints. See the
+[export-rules guide](docs/county_valuation_integration_2026.md#export-rules) for
+the supported keys. Existing environments without PyYAML can install it with
+`python -m pip install pyyaml`.
 
 Air quality exports only `air_quality_avoided_mortality_annual_value_adj`, the
 county total across CSV land-cover/pollutant rows, and

@@ -1,7 +1,7 @@
 service,factor,reason,source_units
 pollination,0.09,User requested 30 m pixel area conversion applied once to the unscaled county raster aggregate,USD 2024 per hectare source raster aggregate
-carbon_ha,4.32612,User confirmed 3.66 * 1.182 on both existing carbon aggregates; no additional SCC price specified,source raster aggregate labelled tCO2e/ha
-carbon_pixel,4.32612,User confirmed 3.66 * 1.182 on both existing carbon aggregates; no additional SCC price specified,source raster aggregate labelled tCO2e/pixel
+carbon_ha,4.32612,User supplied USD 3.66 per tonne CO2e price * 1.182 inflation adjustment; sum of per-ha values is not an area-integrated county total,source raster aggregate labelled tCO2e/ha
+carbon_pixel,4.32612,User supplied USD 3.66 per tonne CO2e price * 1.182 inflation adjustment; county sum of per-pixel monetary values,source raster aggregate labelled tCO2e/pixel
 avoided_air_quality_heath_costs,1.135,User supplied inflation adjustment; field spelling requested by user,USD annual
 dredging,1,User supplied,USD
 sdwa,1,User supplied,USD

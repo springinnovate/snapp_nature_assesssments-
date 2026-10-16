@@ -11,6 +11,7 @@ data/workflow_assets/zonal_stats/runs/*
 !data/workflow_assets/zonal_stats/runs/*.yaml
 data/workflow_assets/county_integration/*
 !data/workflow_assets/county_integration/*.csv
+!data/workflow_assets/county_integration/*.yaml
 run_configs/**
 output/**
 data_unorganized/**

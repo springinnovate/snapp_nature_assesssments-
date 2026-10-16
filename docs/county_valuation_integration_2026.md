@@ -25,11 +25,13 @@ The development record is [issue #58](https://github.com/springinnovate/snapp_na
 
 1. Obtain the source releases listed below and place them at the specified paths
    under the repository's `data/` folder. The large data files are not included
-   in Git. The three small configuration CSVs are included.
+   in Git. The three small configuration CSVs and export-rules YAML are included.
 2. Activate the geospatial Python environment described in the
    [README](../README.md#environment). For a new setup, create it with
    `conda env create -f environment.yml`, then run `conda activate geo`.
-   The environment includes `openpyxl`, which reads the Excel inputs.
+   The environment includes `openpyxl`, which reads the Excel inputs, and
+   `PyYAML`, which reads the export rules. Existing environments without PyYAML
+   can install it with `python -m pip install pyyaml`.
 3. From the repository folder, run:
 
    ```powershell
@@ -39,7 +41,8 @@ The development record is [issue #58](https://github.com/springinnovate/snapp_na
 The script displays progress and prints both completed output paths. Source files
 are preserved, and an existing output is never overwritten. If a run fails,
 correct the reported problem and rerun the same command; completed work can be
-reused when its inputs and code are unchanged.
+reused when its calculation inputs and code are unchanged. Changes limited to
+export rules reuse raw calculation checkpoints and produce a new output pair.
 
 If your `data/` folder is elsewhere, supply its location:
 
@@ -95,16 +98,70 @@ and allocation methods are described in the next section.
 | Physical health | `analysis_inputs/ecosystem_services/physical_health/hypertension_linear_us_counties_all.gpkg` |
 | Recreation | `analysis_inputs/recreation/usa_nature_assessment_recreation__snapp_estimates.gpkg` |
 
-The additional configuration files are
+The additional calculation configuration files are
 [`adjustment_factors.csv`](../data/workflow_assets/county_integration/adjustment_factors.csv),
 which records the multipliers and source units, and
 [`ct_county_crosswalk.csv`](../data/workflow_assets/county_integration/ct_county_crosswalk.csv),
 which relates historical Connecticut counties to planning regions.
+The tracked [`export_rules.yaml`](../data/workflow_assets/county_integration/export_rules.yaml)
+controls only the exported schema and default output names, as described below.
 
 The mangrove study-unit file `ucsc_cwon_studyunits.gpkg` is not an input to this
 run. The assessment uses the mangrove values already in the starting county
 GeoPackage. Likewise, the earlier standalone recreation preparation script is
 not needed: this script allocates the listed recreation polygons directly.
+
+## Export rules
+
+Edit `data/workflow_assets/county_integration/export_rules.yaml` to change field
+names, omit fields, reorder column groups, or set the default output directory
+and filename prefix. This file uses YAML syntax. It does not replace
+`sources.csv`, `adjustment_factors.csv`, or `ct_county_crosswalk.csv`, which remain
+the authoritative calculation configuration. All four files are read from the
+existing `--config-dir` directory when that option is supplied. The script's
+source-field mappings and allocation methods remain calculation code; this YAML
+controls how their results are exported.
+
+| Key | Meaning |
+| --- | --- |
+| `rename_fields` | Map a default generated export name to its final exported name. For a configured raster sum, the default is its source name plus `_adj`; other services use the internal service key plus `_adj`. Renames are evaluated together, not chained. |
+| `exclude_fields` | Exact source-statistic or default export names that must exist and must be omitted. A misspelled or absent name stops the run. |
+| `optional_exclude_fields` | Exact field names to omit if present, for known differences between source versions. |
+| `exclude_patterns` | Shell-style `fnmatch` patterns for excluding generated statistics and diagnostics. |
+| `column_groups` | Each of `base_attributes`, `sum_values`, `service_totals`, and `adjustment_factors`, listed once. `base_attributes` must be first; the remaining groups may be reordered. |
+| `output.directory` | Default output directory, relative to the selected data root. |
+| `output.filename_prefix` | Prefix before the timestamp in both output filenames. |
+
+For example, the flood annual rename is recorded explicitly as:
+
+```yaml
+rename_fields:
+  sum_annual_value_masked_to_wetlands_adj: sum_flood_annual_value_masked_to_wetlands_adj
+```
+
+Edit the existing mapping rather than adding a second `rename_fields` section.
+The default configuration also renames the flood NPV and pixel-carbon totals,
+applies the descriptive air-quality names, excludes the four `sum_Wsw_*`
+quantity fields, and omits non-sum statistics and coverage diagnostics.
+The monetary `sum_Wval_sw_2020usd_*_adj` provisioning totals are retained.
+Original `ALAND` and `AWATER` remain county geographic attributes.
+
+The builder validates unknown names, conflicting rules, and final-name
+collisions before expensive calculations start. Exclusions cannot remove
+original county attributes. It applies the same resolved
+schema to the CSV and GeoPackage. Each output GeoPackage records the complete
+YAML text and hash in `integration_export_rules`, and the resolved action and
+final name for each field in `integration_export_fields`. Service metadata uses
+the final exported names. Other input and configuration hashes remain recorded
+with the run, so the output does not depend on a mutable configuration file for
+its provenance.
+
+Rerun the county builder after changing these rules; raster zonal statistics do
+not need to be rerun. An edit limited to export rules reuses the same raw
+calculation checkpoints. Source, calculation-code, or crosswalk changes still
+invalidate the affected cached work. The new export receives a fresh timestamp;
+existing deliverables are not overwritten. `--output` overrides the YAML's
+default directory and filename for a single run.
 
 ## How values are assigned to counties
 
@@ -175,7 +232,8 @@ This correction never redistributes genuinely uncovered source value.
 ### Existing services and assessment decisions
 
 The following county sums are read from the starting GeoPackage, multiplied by
-the configured factor, and renamed with an `_adj` suffix. Factor-1 services
+the configured factor, and given an `_adj` suffix before the export rules apply
+any descriptive rename. Factor-1 services
 still use `_adj`. Other generated statistics and coverage diagnostics are
 omitted: mean, median, min, max, standard deviation, percentiles, valid/total
 counts, valid-area fields, and proportions. Original geographic attributes,
@@ -195,11 +253,20 @@ including county land and water areas (`ALAND` and `AWATER`), are retained.
 | `mangroves` | `sum_mangrove_CONUS` | 1.182 |
 | `mental_health` | `sum_mental_health_national_existing_greenness_cost_90m` | 1 |
 
-The assessment specified `3.66 × 1.182 = 4.32612` for both carbon fields. Their
-source names already include `tCO2e`, and no additional dollar-per-tonne carbon
-price was specified. These adjusted columns therefore must not be interpreted
-as established USD valuations. The per-hectare raster sum is retained as
-supplied; this workflow does not reconstruct it into a physical county total.
+The assessment supplied USD 3.66 per tonne CO2e as the carbon price, followed by
+the 1.182 inflation adjustment: `3.66 × 1.182 = 4.32612`. That multiplier is
+applied once to both existing carbon aggregates. It is a price conversion, not
+a carbon-to-CO2 mass conversion. The pixel-carbon result is named
+`sum_CO2e_mitigation_dollar_value_per_pixel_adj`: it is the county sum of
+monetary per-pixel values, not a per-pixel county average. The per-hectare source
+is still a sum of per-hectare values multiplied by the price; the workflow does
+not multiply those values by area, so that separate field is not an
+area-integrated county dollar total.
+
+The flood annual and NPV exports are respectively
+`sum_flood_annual_value_masked_to_wetlands_adj` and
+`sum_flood_marginal_npv_masked_to_wetlands_adj`. These renames leave the
+calculated values and factors unchanged.
 
 Coral values already include a 2024 dollar adjustment and receive factor 1.
 Existing mangrove values are retained, including their signs, with factor 1.182.
@@ -208,8 +275,11 @@ not estimate new inflation rates or infer unrecorded source years.
 
 The duplicate crop-yield sum `sum_national_attributed_annual_crop_yield_value_zstd`
 is removed as an assessment decision. The adjusted pollination sum is included.
-Unconfigured source sums, including `Wsw` quantities and the two unidentified
-`CONUS_Coastal_2021_CCAP` bands, retain their existing names and values without
+The `sum_Wsw_irr`, `sum_Wsw_pow`, `sum_Wsw_pub`, and `sum_Wsw_total` quantity
+fields are also excluded by the export rules. This does not remove the
+`sum_Wval_sw_2020usd_*_adj` monetary provisioning values. Other retained,
+unconfigured source sums, including the two unidentified
+`CONUS_Coastal_2021_CCAP` bands, keep their existing names and values without
 additional valuation adjustments; their other statistics and diagnostics are
 omitted as well.
 
@@ -239,7 +309,7 @@ codes are reported without an assumed correspondence.
 
 ## Expected output
 
-Each successful run creates:
+With the default export rules, each successful run creates:
 
 ```text
 data/analysis_results/combined/snapp_ecosystem_services_counties_YYYY_MM_DD_HH_MM_SS.csv
@@ -257,7 +327,7 @@ any file published by that attempt.
 Puerto Rico and the U.S. Virgin Islands remain present even when source data for
 a service are unavailable.
 
-County columns appear in this order in both files:
+The default export rules put county columns in this order in both files:
 
 1. Original county identifiers and geographic attributes, in their source order,
    including original land/water areas.
@@ -278,10 +348,11 @@ Each configured service has adjusted values and a visible factor, without raw-va
 | `_adj` | Source sum or allocated county value multiplied by the factor | `sum_pollination_attributed_annual_crop_yield_value_adj`, `grazing_adj` |
 
 For example, a raw county sum of 100 with factor 1.135 becomes an adjusted sum
-of 113.5. No `_orig` columns are emitted. Raster services use the source sum name
-plus `_adj`, not an additional service-total alias. Services without existing
-statistic fields use `<service>_adj`, with the descriptive air-quality export name
-listed above. `integration_services.output_field` identifies
+of 113.5. No `_orig` columns are emitted. Raster services default to the source
+sum name plus `_adj`, with the descriptive flood and pixel-carbon names set in
+the export rules. Services without existing statistic fields default to
+`<service>_adj`, with the descriptive air-quality export name listed above.
+`integration_services.output_field` identifies
 each service's total field; that audit table also records the factor and aggregate
 before/after totals. A value may have been allocated from a state or polygon
 source rather than measured directly at county scale.
@@ -302,6 +373,8 @@ The GeoPackage also contains tables to help evaluate and reproduce the estimates
 | --- | --- |
 | Which source field, units, method, and multiplier produced this service? | `integration_services` |
 | Which exact source files and configuration versions were used? | `integration_sources` |
+| Which complete export-rules YAML and hash produced this schema? | `integration_export_rules` |
+| Which fields were retained, renamed, or excluded, and what are their final names? | `integration_export_fields` |
 | Is this county value observed, allocated, zero-filled, or missing? | `integration_county_status` |
 | Which records could not be assigned, or contributed only to an incomplete estimate? | `integration_source_issues` |
 | Do the county fisheries allocations reproduce the state totals? | `integration_state_checks` |
@@ -326,8 +399,8 @@ the run to stop rather than assign the total arbitrarily.
 
 Do not sum all adjusted columns as a single ecosystem-service total. They
 include different units and time horizons, such as annual values, flood NPV,
-wages, and carbon quantities. Jobs and water provisioning also appear as both
-components and totals. The `_adj` suffix records a multiplication; it does not
+wages, and the non-area-integrated carbon-per-hectare aggregate. Jobs and water
+provisioning also appear as both components and totals. The `_adj` suffix records a multiplication; it does not
 by itself establish that values are economically comparable or non-overlapping.
 
 ### Findings from the October 1, 2026 assessment run

@@ -7,7 +7,8 @@ other adjusted totals before their factors, and omits non-sum statistics.
 
 Run: python build_county_ecosystem_service_valuations_2026.py
 Inputs: data/workflow_assets/county_integration/sources.csv (paths under data/).
-Outputs: data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.{csv,gpkg}.
+Export policy: export_rules.yaml in the same configuration directory.
+Default outputs: data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.{csv,gpkg}.
 Source files are never modified. See docs/county_valuation_integration_2026.md
 for input releases, allocation methods, units, and interpretation limits.
 """
@@ -17,6 +18,7 @@ import argparse
 from contextlib import closing
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import logging
@@ -30,6 +32,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
+import yaml
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent
@@ -37,15 +40,12 @@ CONFIG = ROOT / "data/workflow_assets/county_integration"
 AREA_CRS = "EPSG:6933"  # Equal area, including Alaska, Hawaii and US territories.
 # Cap only numerical/sliver excess; substantial county overlap is still an error.
 RECREATION_COVERAGE_TOLERANCE = 1e-5
-DROP_FIELDS = (
-    "sum_national_attributed_annual_crop_yield_value_zstd",
-)
+# Recognize generated statistics so YAML export rules cannot remove county attributes.
 NON_SUM_FIELD = re.compile(
     r"^(?:mean|median|min|max|stdev|std|variance|var|p\d+(?:\.\d+)?|"
     r"count|valid_count|total_count|nodata_count|nonzero_count|"
     r"area_ha_total|area_ha_valid|area_total|area_valid|proportion_[a-z_]+)_"
 )
-AIR_QUALITY_OUTPUT = "air_quality_avoided_mortality_annual_value"
 BASE_FIELDS = {
     "pollination": "sum_pollination_attributed_annual_crop_yield_value",
     "carbon_ha": "sum_totalC_tCO2e_ha_2020",
@@ -432,18 +432,165 @@ def input_weights(path, ids, prefix):
     return numbers(frame.set_index("GEOID")[fields[0]]).reindex(ids)
 
 
-def adjusted_county_fields(base, originals, summaries, factors):
+def load_export_rules(path):
+    """Load and validate the tracked YAML presentation policy.
+
+    Args:
+        path: Export-rules YAML file under the selected configuration directory.
+
+    Returns:
+        Validated rule dictionary; source/factor CSVs remain authoritative.
+
+    Raises:
+        ValueError: YAML has duplicate keys, unknown settings, or invalid values.
+    """
+    class UniqueKeysLoader(yaml.SafeLoader):
+        """Reject duplicate YAML keys instead of silently discarding a rule."""
+
+        def construct_mapping(self, node, deep=False):
+            """Construct a mapping with unique keys.
+
+            Args:
+                node: YAML mapping node.
+                deep: Whether to construct nested values immediately.
+
+            Returns:
+                Parsed mapping.
+
+            Raises:
+                ValueError: A key appears more than once.
+            """
+            keys = [self.construct_object(key, deep=deep) for key, _ in node.value]
+            if len(keys) != len(set(keys)):
+                raise ValueError("Duplicate key in export rules")
+            return super().construct_mapping(node, deep=deep)
+
+    try:
+        rules = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeysLoader)
+    except (yaml.YAMLError, TypeError) as error:
+        raise ValueError(f"Invalid export rules in {path}: {error}") from error
+    expected = {"schema_version", "output", "column_groups", "exclude_fields",
+                "optional_exclude_fields", "exclude_patterns", "rename_fields"}
+    if not isinstance(rules, dict) or set(rules) != expected or rules["schema_version"] != 1:
+        raise ValueError("Export rules need schema_version 1 and exactly the documented settings")
+    for name in ("column_groups", "exclude_fields", "optional_exclude_fields", "exclude_patterns"):
+        value = rules[name]
+        if (not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value)
+                or len(value) != len(set(value))):
+            raise ValueError(f"Export {name} must be a list of unique nonempty strings")
+    groups = rules["column_groups"]
+    if (set(groups) != {"base_attributes", "sum_values", "service_totals", "adjustment_factors"}
+            or groups[0] != "base_attributes"):
+        raise ValueError("column_groups must list each documented group once, with base_attributes first")
+    renames = rules["rename_fields"]
+    if (not isinstance(renames, dict) or any(not isinstance(key, str) or not key
+            or not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value)
+            for key, value in renames.items())):
+        raise ValueError("rename_fields must map existing names to valid column identifiers")
+    output = rules["output"]
+    if not isinstance(output, dict) or set(output) != {"directory", "filename_prefix"}:
+        raise ValueError("output requires directory and filename_prefix")
+    if (not isinstance(output["directory"], str) or not output["directory"]
+            or Path(output["directory"]).is_absolute() or Path(output["directory"]).drive
+            or Path(output["directory"]).root
+            or ".." in Path(output["directory"]).parts):
+        raise ValueError("output.directory must stay relative to the data root")
+    if (not isinstance(output["filename_prefix"], str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", output["filename_prefix"])):
+        raise ValueError("output.filename_prefix must be a simple filename prefix")
+    return rules
+
+
+def plan_county_export(base_columns, services, rules, geometry_field="geom"):
+    """Resolve names, omissions, and ordering before computing service values.
+
+    Args:
+        base_columns: Original attributes, including county identifiers.
+        services: Configured service keys from adjustment_factors.csv.
+        rules: Validated export policy from load_export_rules.
+        geometry_field: Protected geometry-column name.
+
+    Returns:
+        Ordered records describing every source/generated field and its action.
+
+    Raises:
+        ValueError: A rule is stale, conflicts, removes a county attribute, drops
+            all values, or produces colliding names (case-insensitive, as in SQLite).
+    """
+    source_services = {BASE_FIELDS[s]: s for s in services if s in BASE_FIELDS}
+    missing = set(source_services) - set(base_columns)
+    if missing:
+        raise ValueError(f"Missing source sums: {sorted(missing)}")
+    records = []
+    for source in base_columns:
+        service = source_services.get(source, "")
+        statistic = source.startswith("sum_") or NON_SUM_FIELD.match(source)
+        records.append({"source_field": source, "default_field": source + "_adj" if service else source,
+                        "service": service, "group": "sum_values" if source.startswith("sum_")
+                        else "service_totals" if statistic else "base_attributes"})
+    for service in services:
+        if service not in BASE_FIELDS:
+            records.append({"source_field": "", "default_field": service + "_adj",
+                            "service": service, "group": "service_totals"})
+        records.append({"source_field": "", "default_field": service + "_adj_factor",
+                        "service": service, "group": "adjustment_factors"})
+    defaults = [row["default_field"] for row in records]
+    if len(defaults) != len({field.casefold() for field in defaults}):
+        raise ValueError("Default county output names collide; use the raw base input")
+    available = set(defaults) | set(base_columns)
+    missing = set(rules["exclude_fields"]) - available
+    if missing:
+        raise ValueError(f"Unknown required exclusion fields: {sorted(missing)}")
+    missing = set(rules["rename_fields"]) - set(defaults)
+    if missing:
+        raise ValueError(f"Unknown rename source fields: {sorted(missing)}")
+    excludes = set(rules["exclude_fields"]) | set(rules["optional_exclude_fields"])
+    for row in records:
+        names = [row["default_field"], row["source_field"]]
+        row["action"] = "exclude" if (excludes.intersection(names) or any(
+            fnmatchcase(name, pattern) for name in names if name for pattern in rules["exclude_patterns"])) else "keep"
+    excluded_services = {row["service"] for row in records if row["service"]
+                         and row["group"] != "adjustment_factors" and row["action"] == "exclude"}
+    seen = {geometry_field.casefold()}
+    for row in records:
+        default = row["default_field"]
+        if row["group"] == "adjustment_factors" and row["service"] in excluded_services:
+            row["action"] = "exclude"
+        elif row["group"] == "adjustment_factors" and row["action"] == "exclude":
+            raise ValueError(f"Keep the factor for an exported service total: {default}")
+        target = rules["rename_fields"].get(default, default)
+        if row["group"] == "base_attributes" and (row["action"] == "exclude" or target != default):
+            raise ValueError(f"Export rules cannot remove or rename county attribute {default}")
+        if row["action"] == "exclude":
+            if default in rules["rename_fields"]:
+                raise ValueError(f"Cannot both exclude and rename {default}")
+            row["output_field"] = None
+            continue
+        if target.casefold() in seen:
+            raise ValueError(f"Output field names collide: {target}")
+        seen.add(target.casefold())
+        row["output_field"] = target
+        if target != row["source_field"]:
+            row["action"] = "rename" if row["source_field"] else "create"
+    if not any(row["action"] != "exclude" and row["group"] in {"sum_values", "service_totals"}
+               for row in records):
+        raise ValueError("Export rules must retain at least one service value")
+    return sorted(records, key=lambda row: rules["column_groups"].index(row["group"]))
+
+
+def adjusted_county_fields(base, originals, summaries, factors, export_plan):
     """Build ordered county sums, other adjusted totals, and visible factors.
 
-    Configured raster sums receive an _adj suffix. Unconfigured sums keep their
-    source names and values. Non-sum statistics and coverage diagnostics are
-    omitted; the writer places the original vector attributes before these fields.
+    Configured raster sums receive an _adj suffix before YAML renaming. Retained
+    unconfigured sums keep their values. The default rules omit non-sum statistics
+    and coverage diagnostics; the writer preserves original attributes first.
 
     Args:
         base: Original county attributes indexed by GEOID.
         originals: Raw per-service county Series from the integration tasks.
         summaries: Raw air-quality statistics indexed by GEOID.
         factors: Reviewed adjustment configuration indexed by service.
+        export_plan: Resolved records from plan_county_export.
 
     Returns:
         Ordered value/factor fields and a mapping from each service to its total
@@ -453,16 +600,14 @@ def adjusted_county_fields(base, originals, summaries, factors):
         ValueError: A field is assigned twice or air-quality totals disagree.
     """
     values_by_field = {}
-    factor_fields = {}
     output_fields = {}
     for service, values in tqdm(originals.items(), desc="Apply value adjustments", unit="service"):
         factor = float(factors.loc[service, "factor"])
-        output_name = AIR_QUALITY_OUTPUT if service == "avoided_air_quality_heath_costs" else service
-        factor_fields[f"{output_name}_adj_factor"] = factor
+        values_by_field[f"{service}_adj_factor"] = factor
         if service in BASE_FIELDS:
             total_field = BASE_FIELDS[service]
         elif service == "avoided_air_quality_heath_costs":
-            total_field = AIR_QUALITY_OUTPUT
+            total_field = service
             if not np.allclose(summaries["sum_dollars_annual"].reindex(base.index), values.reindex(base.index),
                                rtol=1e-12, atol=0.001, equal_nan=True):
                 raise ValueError("Air-quality canonical sum differs from the service total")
@@ -471,21 +616,16 @@ def adjusted_county_fields(base, originals, summaries, factors):
         field = total_field + "_adj"
         if field in values_by_field:
             raise ValueError(f"Duplicate adjusted county field: {field}")
-        output_fields[service] = field
         values_by_field[field] = values.reindex(base.index).astype(float) * factor
-    # Retain source sum order, replacing configured sums without raw duplicates.
     fields = pd.DataFrame(index=base.index)
-    for field in base:
-        if field.startswith("sum_") and field not in DROP_FIELDS:
-            adjusted = field + "_adj"
-            if adjusted in values_by_field:
-                fields[adjusted] = values_by_field.pop(adjusted)
-            else:
-                fields[field] = numbers(base[field])
-    for field, values in values_by_field.items():
-        fields[field] = values
-    for field, factor in factor_fields.items():
-        fields[field] = factor
+    for row in export_plan:
+        if row["action"] == "exclude" or row["group"] == "base_attributes":
+            continue
+        default, target = row["default_field"], row["output_field"]
+        fields[target] = (values_by_field[default] if default in values_by_field
+                          else numbers(base[row["source_field"]]))
+        if row["service"] and row["group"] != "adjustment_factors":
+            output_fields[row["service"]] = target
     return fields, output_fields
 
 
@@ -526,11 +666,10 @@ def write_output(base_path, output, layer, geom, additions, tables, removed_fiel
             for name in ("ST_IsEmpty", "ST_MinX", "ST_MaxX", "ST_MinY", "ST_MaxY"):
                 con.create_function(name, 1, unexpected_geometry_edit)
             original_fields = [r[1] for r in con.execute(f"PRAGMA table_info({quote(layer)})")]
-            removed = set(removed_fields) | (set(DROP_FIELDS) & set(original_fields))
+            removed = set(removed_fields)
             if (not removed <= set(original_fields)
                     or removed & {"GEOID", "fid", geom}
-                    or any(not (field.startswith("sum_") or NON_SUM_FIELD.match(field)
-                                or field in DROP_FIELDS) for field in removed)
+                    or any(not (field.startswith("sum_") or NON_SUM_FIELD.match(field)) for field in removed)
                     or set(additions.columns) & (set(original_fields) - removed)):
                 raise ValueError("Only generated statistics may be removed or replaced")
             for field in tqdm([c for c in original_fields if c in removed],
@@ -734,11 +873,11 @@ def load_checkpoint(path, signature):
 
 
 def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resume=True):
-    """Build and verify paired county exports using the reviewed CSV configs.
+    """Build and verify paired county exports using reviewed CSV/YAML configs.
 
     Args:
         data_root: Root of the source and analysis data stack.
-        config_dir: Source paths, adjustment factors, and county crosswalk CSVs.
+        config_dir: Source/factor/crosswalk CSVs and export_rules.yaml.
         output: Optional new GeoPackage path; CSV uses the same basename.
         workers: Independent ecosystem-service worker processes.
         geometry_workers: Recreation intersection threads per recreation task.
@@ -760,8 +899,10 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
             if destination.exists():
                 raise FileExistsError(destination)
     script_hash = sha256(__file__)
-    config_hashes = {name: sha256(config_dir / name) for name in
-                     ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv")}
+    config_names = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv", "export_rules.yaml")
+    config_hashes = {name: sha256(config_dir / name) for name in config_names}
+    rules = load_export_rules(config_dir / "export_rules.yaml")
+    rules_text = (config_dir / "export_rules.yaml").read_text(encoding="utf-8")
     sources = pd.read_csv(config_dir / "sources.csv")
     factors = pd.read_csv(config_dir / "adjustment_factors.csv").set_index("service")
     if sources.source.duplicated().any() or factors.index.duplicated().any():
@@ -779,6 +920,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     if output is not None and output.exists():
         raise FileExistsError(output)
     base, layer, geom = read_attributes(paths["base"])
+    base_columns = list(base.columns)
     base["GEOID"] = base.GEOID.map(fips)
     if base.GEOID.duplicated().any():
         raise ValueError("Duplicate base county FIPS")
@@ -793,6 +935,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         )
     if not (base.STATEFP == ids.str[:2]).all():
         raise ValueError("Base state and county identifiers disagree")
+    export_plan = plan_county_export(base_columns, factors.index, rules, geometry_field=geom)
     crosswalk = pd.read_csv(config_dir / "ct_county_crosswalk.csv", dtype={"source_geoid": str, "target_geoid": str})
     validate_crosswalk(crosswalk, ids)
     cache_root = data_root / "processing_outputs/county_integration_2026"
@@ -852,10 +995,11 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         if len(summary_fields.columns):
             summary_frames.append(summary_fields)
     summaries = pd.concat(summary_frames, axis=1) if summary_frames else pd.DataFrame(index=ids)
-    additions, output_fields = adjusted_county_fields(base, originals, summaries, factors)
-    renamed_fields = {field: field + "_adj" for field in base if field + "_adj" in additions}
-    source_statistics = [field for field in base
-                         if field.startswith("sum_") or NON_SUM_FIELD.match(field) or field in DROP_FIELDS]
+    additions, output_fields = adjusted_county_fields(base, originals, summaries, factors, export_plan)
+    renamed_fields = {row["source_field"]: row["output_field"] for row in export_plan
+                      if row["source_field"] and row["action"] == "rename"}
+    source_statistics = [row["source_field"] for row in export_plan
+                         if row["source_field"] and row["group"] != "base_attributes"]
     # Source hashes also make interrupted/rerun inputs identifiable.
     for name, path in tqdm(paths.items(), desc="Verify source hashes", unit="file"):
         if sha256(path) != fingerprints[name]:
@@ -867,13 +1011,12 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     source_audit["bytes"] = source_audit.source.map({n: p.stat().st_size for n, p in paths.items()})
     source_audit = pd.concat([source_audit, pd.DataFrame([
         {"source": name, "path": name, "sha256": sha256(config_dir / name), "bytes": (config_dir / name).stat().st_size}
-        for name in ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv")
+        for name in config_names
     ])], ignore_index=True)
     meta = pd.DataFrame(metadata)
     meta["output_field"] = meta.service.map(output_fields)
-    meta["factor_field"] = meta.service.map(
-        lambda service: (AIR_QUALITY_OUTPUT if service == "avoided_air_quality_heath_costs"
-                         else service) + "_adj_factor")
+    meta["factor_field"] = meta.service.map({row["service"]: row["output_field"] for row in export_plan
+                                            if row["group"] == "adjustment_factors"})
     for field in ("factor", "reason", "source_units"):
         meta["factor_reason" if field == "reason" else field] = meta.service.map(factors[field])
     meta["adjusted_total"] = meta.original_total * meta.factor
@@ -886,11 +1029,16 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "integration_recreation_allocation": recreation_audit,
         "integration_ct_crosswalk": crosswalk,
         "integration_checkpoints": pd.DataFrame({"task": list(signatures), "signature": list(signatures.values())}),
+        "integration_export_rules": pd.DataFrame([{
+            "path": "export_rules.yaml", "sha256": config_hashes["export_rules.yaml"], "yaml_text": rules_text,
+        }]),
+        "integration_export_fields": pd.DataFrame(export_plan),
         "integration_summary_fields": pd.DataFrame([
-            {"field": AIR_QUALITY_OUTPUT + "_adj", "source": "air_quality", "source_field": "dollars_annual",
+            {"field": output_fields["avoided_air_quality_heath_costs"], "source": "air_quality", "source_field": "dollars_annual",
              "units": "USD annual; configured air-quality factor applied",
              "method": "County sum across land/pollutant categories after CT crosswalk; null if incomplete"}
-        ]),
+        ] if "avoided_air_quality_heath_costs" in output_fields else [],
+            columns=["field", "source", "source_field", "units", "method"]),
         "integration_run": pd.DataFrame([{
             "created_utc": datetime.now(timezone.utc).isoformat(), "script": Path(__file__).name,
             "script_sha256": sha256(__file__), "area_crs": AREA_CRS,
@@ -898,15 +1046,17 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
             "removed_fields": json.dumps([field for field in source_statistics
                                            if field not in additions and field not in renamed_fields]),
             "renamed_value_fields": json.dumps(renamed_fields, sort_keys=True),
-            "notes": "Carbon units not reinterpreted as dollars; mangrove signs retained; no cross-service grand total. "
+            "notes": "Carbon factor is supplied USD 3.66 per tonne CO2e times 1.182 inflation; no mass conversion. "
+                     "Per-hectare carbon sum is not an area-integrated county total; mangrove signs retained; no cross-service grand total. "
                      "Configured sums/totals adjusted once; one visible factor per service; no duplicate raw values. "
-                     "County attributes first, then sum fields, other service totals, and factors. "
-                     "Non-sum statistics and coverage diagnostics omitted; geometry and geographic attributes preserved. "
+                     "Export names, exclusions, order, and default output naming follow the embedded export_rules.yaml. "
+                     "Geometry and geographic attributes preserved. "
                      "CSV and GeoPackage county attributes verified equal; CSV excludes geometry only.",
         }]),
     }
     if output is None:
-        output = data_root / "analysis_results/combined" / f"snapp_ecosystem_services_counties_{datetime.now():%Y_%m_%d_%H_%M_%S}.gpkg"
+        output = data_root / rules["output"]["directory"] / (
+            f"{rules['output']['filename_prefix']}_{datetime.now():%Y_%m_%d_%H_%M_%S}.gpkg")
     logging.info("Writing %s", output)
     write_output(paths["base"], output, layer, geom, additions, tables,
                  removed_fields=source_statistics)
