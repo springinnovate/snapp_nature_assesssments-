@@ -25,7 +25,7 @@ conda activate geo
 ```
 
 The environment file includes the major geospatial packages used here, including
-GDAL, GeoPandas, Rasterio, Shapely 2, NumPy, Pandas, and tqdm.
+GDAL, GeoPandas, Rasterio, Shapely 2, NumPy, Pandas, PyYAML, and tqdm.
 
 The zonal statistics step is run with `zonal_stats_toolkit`. See the toolkit
 repository for its current installation instructions and supported execution
@@ -535,18 +535,55 @@ python build_county_ecosystem_service_valuations_2026.py
 
 The builder writes matching
 `data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.csv`
-and `.gpkg` files with all county attributes. The GeoPackage also contains the
+and `.gpkg` files with matching county attributes. The GeoPackage also contains the
 county map and tables describing sources and missing coverage. The original
 files are preserved.
 
-Both formats retain `sum_pollination_attributed_annual_crop_yield_value`, add
-`pollination_adj` using the configured `pollination` factor of `0.09`, and include
-`sum_dollars_annual`, `mean_dollars_annual`, `median_dollars_annual`,
-`min_dollars_annual`, `max_dollars_annual`, `stdev_dollars_annual`,
-`valid_count_dollars_annual`, and `total_count_dollars_annual` from the air-quality
-CSV. These air-quality statistics describe land-cover/pollutant categories,
-not raster pixels. See the guide for units, Connecticut allocation, and null
-handling. No raster zonal rerun is needed for these fields.
+Both formats put original county identifiers and geographic attributes first,
+including `ALAND` and `AWATER`, followed by all retained `sum_` fields, other
+service totals, and adjustment-factor columns. Configured raster sums default to
+their source names plus `_adj`, including
+`sum_pollination_attributed_annual_crop_yield_value_adj` with
+`pollination_adj_factor` of `0.09`. Retained source sums without a configured
+adjustment keep their existing names and values. Mean, median, min, max, standard
+deviation, percentiles, generated counts, valid-area fields, and proportions are omitted.
+There are no original-value copies or duplicate service-total aliases.
+
+The tracked
+[`export_rules.yaml`](data/workflow_assets/county_integration/export_rules.yaml)
+controls export field names, exclusions, column groups, output directory, and
+filename prefix. This is a YAML file, separate from the toolkit's historical
+INI-style runner configuration. Source selection, multipliers, and Connecticut
+allocation remain in `sources.csv`, `adjustment_factors.csv`, and
+`ct_county_crosswalk.csv`. The rules rename the flood totals to
+`sum_flood_annual_value_masked_to_wetlands_adj` and
+`sum_flood_marginal_npv_masked_to_wetlands_adj`, rename pixel carbon to
+`sum_CO2e_mitigation_dollar_value_per_pixel_adj`, and omit the four `sum_Wsw_*`
+quantity fields. The similarly named `sum_Wval_sw_2020usd_*_adj` monetary
+provisioning values remain.
+
+The carbon multiplier is the assessment-supplied price of USD 3.66 per tonne CO2e
+times the 1.182 inflation adjustment, or 4.32612. The pixel-carbon output is the
+county sum of monetary per-pixel values. The separately retained carbon-per-hectare
+sum is not an area-integrated county dollar total.
+
+Export rules are validated before expensive processing. Each GeoPackage stores
+their full YAML text, hash, and resolved field actions so its schema can be traced
+to the configuration that produced it. Editing only export rules reuses completed
+raw calculation checkpoints. See the
+[export-rules guide](docs/county_valuation_integration_2026.md#export-rules) for
+the supported keys. Existing environments without PyYAML can install it with
+`python -m pip install pyyaml`.
+
+Air quality exports only `air_quality_avoided_mortality_annual_value_adj`, the
+county total across CSV land-cover/pollutant rows, and
+`air_quality_avoided_mortality_annual_value_adj_factor` of `1.135`. See the guide
+for units, Connecticut allocation, and null handling. No raster zonal rerun is
+needed; rerun the county builder to generate both files with this schema:
+
+```powershell
+python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16
+```
 
 Before comparing or summing values, read the guide's
 [interpretation notes](docs/county_valuation_integration_2026.md#interpreting-the-values):

@@ -1,0 +1,60 @@
+# Presentation rules for BOTH the county CSV and GeoPackage. This is standard YAML.
+# Source paths and monetary multipliers remain in sources.csv and adjustment_factors.csv.
+schema_version: 1
+
+output:
+  directory: analysis_results/combined  # Relative to --data-root.
+  filename_prefix: snapp_ecosystem_services_counties
+
+# Preserve source order within each group. County attributes must stay first.
+column_groups:
+  - base_attributes
+  - sum_values
+  - service_totals
+  - adjustment_factors
+
+# Required exact source/generated names: a typo or missing field stops the run.
+exclude_fields:
+  - sum_Wsw_irr
+  - sum_Wsw_pow
+  - sum_Wsw_pub
+  - sum_Wsw_total
+
+# Older inputs may not contain this duplicate crop-yield statistic.
+optional_exclude_fields:
+  - sum_national_attributed_annual_crop_yield_value_zstd
+
+# Shell-style field-name globs, not regular expressions. These remove generated
+# statistics/coverage diagnostics; original county attributes are protected.
+exclude_patterns:
+  - mean_*
+  - median_*
+  - min_*
+  - max_*
+  - stdev_*
+  - std_*
+  - variance_*
+  - var_*
+  - p[0-9]*_*
+  - count_*
+  - valid_count_*
+  - total_count_*
+  - nodata_count_*
+  - nonzero_count_*
+  - area_ha_total_*
+  - area_ha_valid_*
+  - area_total_*
+  - area_valid_*
+  - proportion_*
+
+# OLD GENERATED NAME: FINAL EXPORTED NAME. Renames apply simultaneously, after
+# exclusions. Column letters such as T/AB/AF are intentionally not used.
+# Configured raster sums default to <source sum>_adj; other services default to
+# <service>_adj and each multiplier defaults to <service>_adj_factor.
+rename_fields:
+  sum_annual_value_masked_to_wetlands_adj: sum_flood_annual_value_masked_to_wetlands_adj
+  sum_marginal_npv_masked_to_wetlands_adj: sum_flood_marginal_npv_masked_to_wetlands_adj
+  # User-confirmed $3.66 per tonne CO2e, times 1.182 inflation; no mass conversion.
+  sum_totalC_tCO2e_pixel_2020_adj: sum_CO2e_mitigation_dollar_value_per_pixel_adj
+  avoided_air_quality_heath_costs_adj: air_quality_avoided_mortality_annual_value_adj
+  avoided_air_quality_heath_costs_adj_factor: air_quality_avoided_mortality_annual_value_adj_factor
