@@ -13,7 +13,8 @@ import shapely
 from shapely.geometry import Polygon, box
 
 from build_county_ecosystem_service_valuations_2026 import (
-    DROP_FIELDS, adjusted_county_fields, air_quality_summary, county_values, fips, numbers, polygon_values,
+    AIR_QUALITY_OUTPUT, DROP_FIELDS, NON_SUM_FIELD, adjusted_county_fields,
+    air_quality_summary, county_values, fips, numbers, polygon_values,
     read_attributes, sha256, state_values, validate_crosswalk, write_output,
     load_checkpoint, run, save_checkpoint,
 )
@@ -158,13 +159,14 @@ class CountyIntegrationTests(unittest.TestCase):
             air_quality_summary(source, self.ids, self.crosswalk, totals)
 
     def test_adjusted_fields_use_statistic_names_without_raw_or_duplicate_values(self):
-        """Value statistics get _adj; counts/areas stay raw; factors stay visible."""
+        """Export only sums/totals and factors, with descriptive air-quality names."""
         stem = "pollination_attributed_annual_crop_yield_value"
         base = pd.DataFrame({f"{stat}_{stem}": [100.0, np.nan]
                              for stat in ("sum", "mean", "median", "min", "max", "stdev", "std", "p50")},
                             index=self.ids[:2])
         for stat in ("valid_count", "total_count", "area_valid", "proportion_valid"):
             base[f"{stat}_{stem}"] = [20.0, 30.0]
+        base["sum_unconfigured_quantity"] = [7.0, np.nan]
         summaries = pd.DataFrame({f"{stat}_dollars_annual": [10.0, np.nan]
                                   for stat in ("sum", "mean", "median", "min", "max", "stdev")},
                                  index=base.index)
@@ -175,21 +177,18 @@ class CountyIntegrationTests(unittest.TestCase):
                      "timber": pd.Series([20.0, -10.0], index=base.index)}
         factors = pd.DataFrame({"factor": [0.09, 1.135, 1.0]}, index=list(originals))
         fields, mapping = adjusted_county_fields(base, originals, summaries, factors)
-        for stat in ("sum", "mean", "median", "min", "max", "stdev", "std", "p50"):
-            np.testing.assert_allclose(fields[f"{stat}_{stem}_adj"], [9, np.nan])
-            self.assertNotIn(f"{stat}_{stem}", fields)
-        for stat in ("valid_count", "total_count", "area_valid", "proportion_valid"):
-            self.assertNotIn(f"{stat}_{stem}_adj", fields)
-        for stat in ("sum", "mean", "median", "min", "max", "stdev"):
-            np.testing.assert_allclose(fields[f"{stat}_dollars_annual_adj"], [11.35, np.nan])
-            self.assertNotIn(f"{stat}_dollars_annual", fields)
-        self.assertEqual(fields.valid_count_dollars_annual.to_list(), [9, 0])
-        self.assertEqual(fields.total_count_dollars_annual.to_list(), [9, 0])
+        self.assertEqual(list(fields), [
+            f"sum_{stem}_adj", "sum_unconfigured_quantity", AIR_QUALITY_OUTPUT + "_adj",
+            "timber_adj", "pollination_adj_factor", AIR_QUALITY_OUTPUT + "_adj_factor", "timber_adj_factor",
+        ])
+        np.testing.assert_allclose(fields[f"sum_{stem}_adj"], [9, np.nan])
+        np.testing.assert_allclose(fields.sum_unconfigured_quantity, [7, np.nan])
+        np.testing.assert_allclose(fields[AIR_QUALITY_OUTPUT + "_adj"], [11.35, np.nan])
         self.assertEqual(fields.pollination_adj_factor.to_list(), [0.09, 0.09])
-        self.assertEqual(fields.avoided_air_quality_heath_costs_adj_factor.to_list(), [1.135, 1.135])
+        self.assertEqual(fields[AIR_QUALITY_OUTPUT + "_adj_factor"].to_list(), [1.135, 1.135])
         self.assertEqual(fields.timber_adj.to_list(), [20, -10])
         self.assertEqual(mapping["pollination"], f"sum_{stem}_adj")
-        self.assertEqual(mapping["avoided_air_quality_heath_costs"], "sum_dollars_annual_adj")
+        self.assertEqual(mapping["avoided_air_quality_heath_costs"], AIR_QUALITY_OUTPUT + "_adj")
         self.assertFalse(any(field.endswith("_orig") for field in fields))
         self.assertNotIn("pollination_adj", fields)
         self.assertNotIn("avoided_air_quality_heath_costs_adj", fields)
@@ -275,21 +274,29 @@ class CountyIntegrationTests(unittest.TestCase):
             output = Path(temp) / "output.gpkg"
             frame = gpd.GeoDataFrame({"GEOID": ["01001", "01003"], "keep": [-12.0, 0.0],
                                      "sum_pollination_attributed_annual_crop_yield_value": [100.0, 200.0],
+                                     "ALAND": [1000, 2000], "AWATER": [10, 20],
+                                     "sum_unconfigured_quantity": [7.0, 8.0],
+                                     **{f"{stat}_quantity": [1.0, 2.0] for stat in (
+                                         "mean", "median", "min", "max", "std", "stdev", "p5", "p50", "p95",
+                                         "valid_count", "total_count", "area_ha_valid", "area_ha_total",
+                                         "proportion_valid_nonzero")},
                                      **{field: [1.0, 2.0] for field in DROP_FIELDS}},
                                     geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)], crs=4326)
             frame.to_file(base, layer="counties", driver="GPKG")
             before = sha256(base)
-            additions = pd.DataFrame({"test_adj_factor": [1.5, 1.5], "test_adj": [18.0, np.nan]}, index=frame.GEOID)
-            additions["pollination_adj_factor"] = 0.09
             raw_field = "sum_pollination_attributed_annual_crop_yield_value"
-            additions[raw_field + "_adj"] = [9.0, 18.0]
-            additions["sum_dollars_annual_adj"] = [12.0, np.nan]
-            additions["mean_dollars_annual_adj"] = [4.0, np.nan]
-            renames = {raw_field: raw_field + "_adj"}
+            additions = pd.DataFrame({
+                raw_field + "_adj": [9.0, 18.0], "sum_unconfigured_quantity": [7.0, 8.0],
+                AIR_QUALITY_OUTPUT + "_adj": [12.0, np.nan], "test_adj": [18.0, np.nan],
+                "pollination_adj_factor": [0.09, 0.09], AIR_QUALITY_OUTPUT + "_adj_factor": [1.135, 1.135],
+                "test_adj_factor": [1.5, 1.5],
+            }, index=frame.GEOID)
+            removed = [field for field in frame if field.startswith("sum_") or NON_SUM_FIELD.match(field)]
             table = pd.DataFrame({"service": ["test"], "factor": [1.5]})
-            write_output(base, output, "counties", "geom", additions, {"integration_services": table}, renamed_fields=renames)
+            write_output(base, output, "counties", "geom", additions, {"integration_services": table}, removed_fields=removed)
             self.assertEqual(sha256(base), before)
             attrs, _, _ = read_attributes(output)
+            self.assertEqual(list(attrs), ["fid", "GEOID", "keep", "ALAND", "AWATER"] + list(additions))
             self.assertEqual(attrs.keep.to_list(), [-12, 0])
             self.assertFalse(set(DROP_FIELDS) & set(attrs.columns))
             self.assertNotIn(raw_field, attrs)
@@ -301,7 +308,7 @@ class CountyIntegrationTests(unittest.TestCase):
             csv = pd.read_csv(output.with_suffix(".csv"), dtype={"GEOID": str}, float_precision="round_trip")
             self.assertNotIn("geometry", csv.columns)
             pd.testing.assert_frame_equal(attrs, csv, check_dtype=False)
-            self.assertTrue(np.isnan(csv.mean_dollars_annual_adj.iloc[1]))
+            self.assertTrue(np.isnan(csv[AIR_QUALITY_OUTPUT + "_adj"].iloc[1]))
             with closing(sqlite3.connect(output)) as con:
                 self.assertEqual(con.execute("SELECT data_type FROM gpkg_contents WHERE table_name='integration_services'").fetchone()[0], "attributes")
             self.assertTrue(gpd.read_file(output, layer="counties").geometry.equals(frame.geometry))
@@ -311,17 +318,17 @@ class CountyIntegrationTests(unittest.TestCase):
             invalid = additions.copy()
             invalid.index = ["99999", "01003"]
             with self.assertRaises(KeyError):
-                write_output(base, failed_output, "counties", "geom", invalid, {}, renamed_fields=renames)
+                write_output(base, failed_output, "counties", "geom", invalid, {}, removed_fields=removed)
             self.assertFalse(failed_output.exists())
             self.assertFalse(failed_output.with_suffix(".csv").exists())
             self.assertEqual(sha256(base), before)
-            with self.assertRaisesRegex(ValueError, "raw-to-_adj"):
+            with self.assertRaisesRegex(ValueError, "Only generated statistics"):
                 write_output(base, failed_output, "counties", "geom", additions, {},
-                             renamed_fields={"GEOID": "GEOID_adj"})
+                             removed_fields=[*removed, "GEOID"])
             overlap = additions.copy()
             overlap["keep"] = 1.0
-            with self.assertRaisesRegex(ValueError, "raw-to-_adj"):
-                write_output(base, failed_output, "counties", "geom", overlap, {})
+            with self.assertRaisesRegex(ValueError, "Only generated statistics"):
+                write_output(base, failed_output, "counties", "geom", overlap, {}, removed_fields=removed)
             occupied = Path(temp) / "occupied.gpkg"
             occupied.with_suffix(".csv").touch()
             with self.assertRaises(FileExistsError):
@@ -337,7 +344,7 @@ class CountyIntegrationTests(unittest.TestCase):
 
             with patch.object(Path, "hardlink_to", new=fail_csv_publish):
                 with self.assertRaises(PermissionError):
-                    write_output(base, failed_output, "counties", "geom", additions, {}, renamed_fields=renames)
+                    write_output(base, failed_output, "counties", "geom", additions, {}, removed_fields=removed)
             self.assertFalse(failed_output.exists())
             self.assertFalse(failed_output.with_suffix(".csv").exists())
 

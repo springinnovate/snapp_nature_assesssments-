@@ -2,8 +2,8 @@
 
 Join county estimates, allocate state fisheries values and recreation polygon
 values to counties, and apply the assessment's recorded valuation adjustments.
-The output preserves county boundaries, replaces value statistics with adjusted
-fields suffixed _adj, and retains one adjustment-factor column per service.
+The output preserves county boundaries and identifiers, groups county sums and
+other adjusted totals before their factors, and omits non-sum statistics.
 
 Run: python build_county_ecosystem_service_valuations_2026.py
 Inputs: data/workflow_assets/county_integration/sources.csv (paths under data/).
@@ -40,6 +40,12 @@ RECREATION_COVERAGE_TOLERANCE = 1e-5
 DROP_FIELDS = (
     "sum_national_attributed_annual_crop_yield_value_zstd",
 )
+NON_SUM_FIELD = re.compile(
+    r"^(?:mean|median|min|max|stdev|std|variance|var|p\d+(?:\.\d+)?|"
+    r"count|valid_count|total_count|nodata_count|nonzero_count|"
+    r"area_ha_total|area_ha_valid|area_total|area_valid|proportion_[a-z_]+)_"
+)
+AIR_QUALITY_OUTPUT = "air_quality_avoided_mortality_annual_value"
 BASE_FIELDS = {
     "pollination": "sum_pollination_attributed_annual_crop_yield_value",
     "carbon_ha": "sum_totalC_tCO2e_ha_2020",
@@ -427,11 +433,11 @@ def input_weights(path, ids, prefix):
 
 
 def adjusted_county_fields(base, originals, summaries, factors):
-    """Apply configured factors to canonical county value fields suffixed _adj.
+    """Build ordered county sums, other adjusted totals, and visible factors.
 
-    Raster statistics keep their source-derived names with an _adj suffix.
-    Air-quality monetary summaries are adjusted together; counts, areas, and proportions
-    are unchanged. Services without an existing field use their service name.
+    Configured raster sums receive an _adj suffix. Unconfigured sums keep their
+    source names and values. Non-sum statistics and coverage diagnostics are
+    omitted; the writer places the original vector attributes before these fields.
 
     Args:
         base: Original county attributes indexed by GEOID.
@@ -440,53 +446,50 @@ def adjusted_county_fields(base, originals, summaries, factors):
         factors: Reviewed adjustment configuration indexed by service.
 
     Returns:
-        Adjusted fields with visible per-service factors, and a mapping from
-        each service to its adjusted total field. No raw-value copies are created.
+        Ordered value/factor fields and a mapping from each service to its total
+        field. No raw-value copies or duplicate service totals are created.
 
     Raises:
         ValueError: A field is assigned twice or air-quality totals disagree.
     """
-    fields = pd.DataFrame(index=base.index)
+    values_by_field = {}
+    factor_fields = {}
     output_fields = {}
-    value_stats = {"sum", "mean", "median", "min", "max", "stdev", "std"}
     for service, values in tqdm(originals.items(), desc="Apply value adjustments", unit="service"):
         factor = float(factors.loc[service, "factor"])
-        fields[f"{service}_adj_factor"] = factor
+        output_name = AIR_QUALITY_OUTPUT if service == "avoided_air_quality_heath_costs" else service
+        factor_fields[f"{output_name}_adj_factor"] = factor
         if service in BASE_FIELDS:
             total_field = BASE_FIELDS[service]
-            stem = total_field.removeprefix("sum_")
-            raw_fields = {}
-            for field in base.columns:
-                if not field.endswith("_" + stem):
-                    continue
-                operation = field[:-(len(stem) + 1)]
-                if operation in value_stats or re.fullmatch(r"p\d+(?:\.\d+)?", operation):
-                    raw_fields[field] = numbers(base[field])
-            raw_fields[total_field] = values
         elif service == "avoided_air_quality_heath_costs":
-            total_field = "sum_dollars_annual"
-            if not np.allclose(summaries[total_field].reindex(base.index), values.reindex(base.index),
+            total_field = AIR_QUALITY_OUTPUT
+            if not np.allclose(summaries["sum_dollars_annual"].reindex(base.index), values.reindex(base.index),
                                rtol=1e-12, atol=0.001, equal_nan=True):
                 raise ValueError("Air-quality canonical sum differs from the service total")
-            raw_fields = {f"{stat}_dollars_annual": summaries[f"{stat}_dollars_annual"]
-                          for stat in ("sum", "mean", "median", "min", "max", "stdev")}
-            for stat in ("valid_count", "total_count"):
-                field = f"{stat}_dollars_annual"
-                fields[field] = summaries[field].reindex(base.index)
         else:
             total_field = service
-            raw_fields = {total_field: values}
-        output_fields[service] = total_field + "_adj"
-        for field, raw in raw_fields.items():
-            field += "_adj"
-            if field in fields:
-                raise ValueError(f"Duplicate adjusted county field: {field}")
-            raw = raw.reindex(base.index).astype(float)
-            fields[field] = raw * factor
+        field = total_field + "_adj"
+        if field in values_by_field:
+            raise ValueError(f"Duplicate adjusted county field: {field}")
+        output_fields[service] = field
+        values_by_field[field] = values.reindex(base.index).astype(float) * factor
+    # Retain source sum order, replacing configured sums without raw duplicates.
+    fields = pd.DataFrame(index=base.index)
+    for field in base:
+        if field.startswith("sum_") and field not in DROP_FIELDS:
+            adjusted = field + "_adj"
+            if adjusted in values_by_field:
+                fields[adjusted] = values_by_field.pop(adjusted)
+            else:
+                fields[field] = numbers(base[field])
+    for field, values in values_by_field.items():
+        fields[field] = values
+    for field, factor in factor_fields.items():
+        fields[field] = factor
     return fields, output_fields
 
 
-def write_output(base_path, output, layer, geom, additions, tables, renamed_fields=None):
+def write_output(base_path, output, layer, geom, additions, tables, removed_fields=()):
     """Validate and publish a GeoPackage and matching geometry-free CSV.
 
     Args:
@@ -494,10 +497,10 @@ def write_output(base_path, output, layer, geom, additions, tables, renamed_fiel
         output: New .gpkg path; its .csv sibling is written in the same run.
         layer: Original county feature layer name.
         geom: Original geometry column name, excluded only from the CSV.
-        additions: County-indexed numeric values and summaries to create/update.
+        additions: County-indexed sums, other totals, then factors in export order.
         tables: Supporting provenance and reconciliation tables.
-        renamed_fields: Mapping of raw value fields to their adjusted field names.
-            Renamed raw fields are updated, not retained as duplicate columns.
+        removed_fields: Source statistics to remove before appending ordered values.
+            May include sums that are reinserted, with adjusted names if configured.
 
     Raises:
         FileExistsError: Either destination already exists.
@@ -523,21 +526,17 @@ def write_output(base_path, output, layer, geom, additions, tables, renamed_fiel
             for name in ("ST_IsEmpty", "ST_MinX", "ST_MaxX", "ST_MinY", "ST_MaxY"):
                 con.create_function(name, 1, unexpected_geometry_edit)
             original_fields = [r[1] for r in con.execute(f"PRAGMA table_info({quote(layer)})")]
-            renames = dict(renamed_fields or {})
-            if (set(additions.columns) & set(original_fields)
-                    or not set(renames) <= set(original_fields)
-                    or set(renames) & {"GEOID", "fid", geom}
-                    or not set(renames.values()) <= set(additions.columns)
-                    or any(target != source + "_adj" for source, target in renames.items())):
-                raise ValueError("Only explicit raw-to-_adj value field renames are allowed")
-            for field in DROP_FIELDS:
-                if field in original_fields:
-                    con.execute(f"ALTER TABLE {quote(layer)} DROP COLUMN {quote(field)}")
-            for source, target in tqdm(renames.items(), desc="Rename adjusted statistics", unit="field"):
-                con.execute(f"ALTER TABLE {quote(layer)} RENAME COLUMN {quote(source)} TO {quote(target)}")
+            removed = set(removed_fields) | (set(DROP_FIELDS) & set(original_fields))
+            if (not removed <= set(original_fields)
+                    or removed & {"GEOID", "fid", geom}
+                    or any(not (field.startswith("sum_") or NON_SUM_FIELD.match(field)
+                                or field in DROP_FIELDS) for field in removed)
+                    or set(additions.columns) & (set(original_fields) - removed)):
+                raise ValueError("Only generated statistics may be removed or replaced")
+            for field in tqdm([c for c in original_fields if c in removed],
+                              desc="Remove old statistics", unit="field"):
+                con.execute(f"ALTER TABLE {quote(layer)} DROP COLUMN {quote(field)}")
             for field in tqdm(additions.columns, desc="Prepare value fields", unit="field"):
-                if field in renames.values():
-                    continue
                 sqltype = "INTEGER" if pd.api.types.is_integer_dtype(additions[field]) else "REAL"
                 con.execute(f"ALTER TABLE {quote(layer)} ADD COLUMN {quote(field)} {sqltype}")
             # Use the existing integer primary key, avoiding a full geometry-table
@@ -562,7 +561,7 @@ def write_output(base_path, output, layer, geom, additions, tables, renamed_fiel
                 con.execute("INSERT INTO gpkg_contents(table_name,data_type,identifier,description,last_change) VALUES (?, 'attributes', ?, ?, ?)",
                             (name, name, "October 2026 county valuation integration audit", now))
             con.commit()
-            keep = [c for c in original_fields if c not in DROP_FIELDS and c not in renames]
+            keep = [c for c in original_fields if c not in removed]
             query = f"SELECT {','.join(map(quote, keep))} FROM {quote(layer)} ORDER BY fid"
             before, after = original.execute(query), con.execute(query)
             with tqdm(total=len(additions), desc="Verify preserved counties", unit="county") as progress:
@@ -580,6 +579,8 @@ def write_output(base_path, output, layer, geom, additions, tables, renamed_fiel
             if con.execute("PRAGMA foreign_key_check").fetchall():
                 raise ValueError("GeoPackage foreign-key check failed")
             export_fields = [r[1] for r in con.execute(f"PRAGMA table_info({quote(layer)})") if r[1] != geom]
+            if export_fields != [c for c in keep if c != geom] + list(additions.columns):
+                raise ValueError("County field order differs from the planned export")
             attributes = pd.read_sql_query(
                 f"SELECT {','.join(map(quote, export_fields))} FROM {quote(layer)} ORDER BY fid", con)
             with csv_stage.open("x", encoding="utf-8", newline="") as stream:
@@ -853,6 +854,8 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     summaries = pd.concat(summary_frames, axis=1) if summary_frames else pd.DataFrame(index=ids)
     additions, output_fields = adjusted_county_fields(base, originals, summaries, factors)
     renamed_fields = {field: field + "_adj" for field in base if field + "_adj" in additions}
+    source_statistics = [field for field in base
+                         if field.startswith("sum_") or NON_SUM_FIELD.match(field) or field in DROP_FIELDS]
     # Source hashes also make interrupted/rerun inputs identifiable.
     for name, path in tqdm(paths.items(), desc="Verify source hashes", unit="file"):
         if sha256(path) != fingerprints[name]:
@@ -868,6 +871,9 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     ])], ignore_index=True)
     meta = pd.DataFrame(metadata)
     meta["output_field"] = meta.service.map(output_fields)
+    meta["factor_field"] = meta.service.map(
+        lambda service: (AIR_QUALITY_OUTPUT if service == "avoided_air_quality_heath_costs"
+                         else service) + "_adj_factor")
     for field in ("factor", "reason", "source_units"):
         meta["factor_reason" if field == "reason" else field] = meta.service.map(factors[field])
     meta["adjusted_total"] = meta.original_total * meta.factor
@@ -881,19 +887,21 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "integration_ct_crosswalk": crosswalk,
         "integration_checkpoints": pd.DataFrame({"task": list(signatures), "signature": list(signatures.values())}),
         "integration_summary_fields": pd.DataFrame([
-            {"field": f"{stat}_dollars_annual" + ("" if stat.endswith("count") else "_adj"), "source": "air_quality", "source_field": "dollars_annual",
-             "units": "category count" if stat.endswith("count") else "USD annual; configured air-quality factor applied",
-             "method": "Target-county categories after CT crosswalk; population stdev (ddof=0); adjusted monetary fields suffixed _adj; counts unchanged; null if incomplete"}
-            for stat in ("sum", "mean", "median", "min", "max", "stdev", "valid_count", "total_count")
+            {"field": AIR_QUALITY_OUTPUT + "_adj", "source": "air_quality", "source_field": "dollars_annual",
+             "units": "USD annual; configured air-quality factor applied",
+             "method": "County sum across land/pollutant categories after CT crosswalk; null if incomplete"}
         ]),
         "integration_run": pd.DataFrame([{
             "created_utc": datetime.now(timezone.utc).isoformat(), "script": Path(__file__).name,
             "script_sha256": sha256(__file__), "area_crs": AREA_CRS,
-            "base_counties": len(ids), "removed_fields": json.dumps(DROP_FIELDS),
+            "base_counties": len(ids),
+            "removed_fields": json.dumps([field for field in source_statistics
+                                           if field not in additions and field not in renamed_fields]),
             "renamed_value_fields": json.dumps(renamed_fields, sort_keys=True),
             "notes": "Carbon units not reinterpreted as dollars; mangrove signs retained; no cross-service grand total. "
-                     "Configured factors applied to value statistics suffixed _adj; one service_adj_factor column retained; raw value columns omitted. "
-                     "Geometry, counts, areas, and proportions unchanged. "
+                     "Configured sums/totals adjusted once; one visible factor per service; no duplicate raw values. "
+                     "County attributes first, then sum fields, other service totals, and factors. "
+                     "Non-sum statistics and coverage diagnostics omitted; geometry and geographic attributes preserved. "
                      "CSV and GeoPackage county attributes verified equal; CSV excludes geometry only.",
         }]),
     }
@@ -901,8 +909,8 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         output = data_root / "analysis_results/combined" / f"snapp_ecosystem_services_counties_{datetime.now():%Y_%m_%d_%H_%M_%S}.gpkg"
     logging.info("Writing %s", output)
     write_output(paths["base"], output, layer, geom, additions, tables,
-                 renamed_fields=renamed_fields)
-    logging.info("Verified %s counties and %s adjusted/summary fields; geometry and non-value attributes preserved", len(ids), len(additions.columns))
+                 removed_fields=source_statistics)
+    logging.info("Verified %s counties and %s value/factor fields; geometry and county attributes preserved", len(ids), len(additions.columns))
     return output
 
 

@@ -535,24 +535,29 @@ python build_county_ecosystem_service_valuations_2026.py
 
 The builder writes matching
 `data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.csv`
-and `.gpkg` files with all county attributes. The GeoPackage also contains the
+and `.gpkg` files with matching county attributes. The GeoPackage also contains the
 county map and tables describing sources and missing coverage. The original
 files are preserved.
 
-Both formats include `sum_pollination_attributed_annual_crop_yield_value_adj`
-and the other adjusted pollination value statistics using `pollination_adj_factor`
-of `0.09`. Air quality includes
-`sum_dollars_annual_adj`, `mean_dollars_annual_adj`, `median_dollars_annual_adj`,
-`min_dollars_annual_adj`, `max_dollars_annual_adj`, `stdev_dollars_annual_adj`,
-`valid_count_dollars_annual`, and `total_count_dollars_annual` from the air-quality
-CSV, with monetary statistics multiplied by the visible
-`avoided_air_quality_heath_costs_adj_factor` of `1.135`.
-For every configured service, value statistics use their source names plus `_adj`;
-raw values and duplicate service-value aliases are omitted. Adjustment factors
-remain visible; counts, areas, and proportions remain unchanged.
-These air-quality statistics describe land-cover/pollutant categories,
-not raster pixels. See the guide for units, Connecticut allocation, and null
-handling. No raster zonal rerun is needed for these fields.
+Both formats put original county identifiers and geographic attributes first,
+including `ALAND` and `AWATER`, followed by all retained `sum_` fields, other
+service totals, and adjustment-factor columns. Configured raster sums use their
+source names plus `_adj`, including
+`sum_pollination_attributed_annual_crop_yield_value_adj` with
+`pollination_adj_factor` of `0.09`. Source sums without a configured adjustment
+retain their existing names and values. Mean, median, min, max, standard deviation,
+percentiles, generated counts, valid-area fields, and proportions are omitted.
+There are no original-value copies or duplicate service-total aliases.
+
+Air quality exports only `air_quality_avoided_mortality_annual_value_adj`, the
+county total across CSV land-cover/pollutant rows, and
+`air_quality_avoided_mortality_annual_value_adj_factor` of `1.135`. See the guide
+for units, Connecticut allocation, and null handling. No raster zonal rerun is
+needed; rerun the county builder to generate both files with this schema:
+
+```powershell
+python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16
+```
 
 Before comparing or summing values, read the guide's
 [interpretation notes](docs/county_valuation_integration_2026.md#interpreting-the-values):
