@@ -1,6 +1,6 @@
 """Build paired CSV/GeoPackage county ecosystem-service valuation exports.
 
-Join county estimates, allocate state fisheries values and recreation polygon
+Join county estimates, allocate state fisheries and recreation/mangrove polygon
 values to counties, and apply the assessment's recorded valuation adjustments.
 The output preserves county boundaries and identifiers, groups county sums and
 other adjusted totals before their factors, and omits non-sum statistics.
@@ -35,9 +35,14 @@ import shapely
 import yaml
 from tqdm import tqdm
 
+from mangrove_county_allocation import allocate_mangrove_values
+
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "data/workflow_assets/county_integration"
 AREA_CRS = "EPSG:6933"  # Equal area, including Alaska, Hawaii and US territories.
+# Assessment scope: do not assign neighboring countries' study-unit totals
+# merely because their offshore geometry also intersects a U.S. county.
+MANGROVE_COUNTRIES = ("USA", "PRI", "VIR")
 # Cap only numerical/sliver excess; substantial county overlap is still an error.
 RECREATION_COVERAGE_TOLERANCE = 1e-5
 # Recognize generated statistics so YAML export rules cannot remove county attributes.
@@ -60,7 +65,6 @@ BASE_FIELDS = {
     "flood_npv": "sum_marginal_npv_masked_to_wetlands",
     "flood_annual": "sum_annual_value_masked_to_wetlands",
     "corals": "sum_Coral_Reefs_2024adj_CPI",
-    "mangroves": "sum_mangrove_CONUS",
     "mental_health": "sum_mental_health_national_existing_greenness_cost_90m",
 }
 JOB_FIELDS = {
@@ -531,7 +535,8 @@ def plan_county_export(base_columns, services, rules, geometry_field="geom"):
     for service in services:
         if service not in BASE_FIELDS:
             records.append({"source_field": "", "default_field": service + "_adj",
-                            "service": service, "group": "service_totals"})
+                            "service": service,
+                            "group": "sum_values" if service == "mangroves" else "service_totals"})
         records.append({"source_field": "", "default_field": service + "_adj_factor",
                         "service": service, "group": "adjustment_factors"})
     defaults = [row["default_field"] for row in records]
@@ -743,13 +748,37 @@ def write_output(base_path, output, layer, geom, additions, tables, removed_fiel
 
 
 def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
-    """Compute one independent service family in a worker process."""
+    """Compute one independent service family in a worker process.
+
+    Args:
+        task: Service family to compute.
+        paths: Source keys mapped to resolved local input paths.
+        base: Raw county attributes indexed by GEOID.
+        crosswalk: Historical Connecticut county allocation weights.
+        geometry_workers: Threads for polygon intersection batches.
+        chunk_dir: Optional resumable recreation batch directory.
+
+    Returns:
+        Unadjusted county values, statuses, source metadata and allocation audits.
+    """
     ids = base.index
     recreation_audit = pd.DataFrame()
+    mangrove_audit = pd.DataFrame()
     summary_fields = pd.DataFrame(index=ids)
     originals, statuses, metadata, issues, checks = {}, [], [], [], []
 
     def add(service, values, status, source, source_field, method, audit=None):
+        """Record a service's county values and reconciliation metadata.
+
+        Args:
+            service: Adjustment-factor service key.
+            values: Unadjusted county estimates indexed by GEOID.
+            status: County coverage or allocation status.
+            source: Input key in sources.csv.
+            source_field: Original valuation column.
+            method: Description of the integration method.
+            audit: Optional additional reconciliation metrics.
+        """
         values = values.reindex(ids).astype(float)
         if np.isinf(values).any():
             raise ValueError(f"Non-finite aggregate: {service}")
@@ -764,14 +793,45 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
         logging.info("%s: %s populated counties; original total %.3f", service, row["populated_counties"], row["original_total"])
 
     def county_add(service, frame, key, field, source, **options):
+        """Join tabular county values with service-specific source policies.
+
+        Args:
+            service: Adjustment-factor service key.
+            frame: Source records; never modified in place.
+            key: Source county identifier column.
+            field: Source valuation column.
+            source: Input key in sources.csv.
+            **options: Aggregation and missing-value options for county_values.
+        """
+        method = "FIPS join; historical CT allocated by land area"
+        if service == "timber":
+            # Clamp individual source county rents BEFORE the CT crosswalk:
+            # negative source rents must not cancel another county's positive rent.
+            raw_rent = numbers(frame[field])
+            negative = raw_rent < 0
+            frame = frame.copy()
+            frame[field] = raw_rent.clip(lower=0)
+            negative_ids = set(frame.loc[negative, key].map(fips))
+            issues.extend({"service": service, "source_key": fips(county_id),
+                           "reason": "negative_source_clamped_zero", "value": float(value)}
+                          for county_id, value in zip(frame.loc[negative, key], raw_rent[negative]))
+            method += "; negative source rents clamped to zero before allocation"
         values, status, problems, audit = county_values(frame, key, field, ids, crosswalk, **options)
         if service == "timber":
+            audit.update({"raw_input_known_total": float(raw_rent.sum()),
+                          "negative_source_count": int(negative.sum()),
+                          "negative_source_total": float(raw_rent[negative].sum()),
+                          "clamp_increase_total": float(-raw_rent[negative].sum())})
+            close(audit["input_known_total"], audit["raw_input_known_total"] + audit["clamp_increase_total"],
+                  "Timber source clamp")
             timber_status = frame.assign(_key=frame[key].map(fips)).set_index("_key").coverage_status
             for county_id in ids.intersection(timber_status.index):
-                if timber_status[county_id] != "valued":
+                if county_id in negative_ids:
+                    status[county_id] = "negative_source_clamped_zero"
+                elif timber_status[county_id] != "valued":
                     status[county_id] = str(timber_status[county_id]) + "_zero"
         issues.extend(dict(service=service, **p) for p in problems)
-        add(service, values, status, source, field, "FIPS join; historical CT allocated by land area", audit)
+        add(service, values, status, source, field, method, audit)
 
     for service, field in (BASE_FIELDS.items() if task == "base" else []):
         values = numbers(base[field])
@@ -817,6 +877,41 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
         values, status, state_checks = state_values(frame, field, base.STATEFP, weights)
         checks.extend(dict(service=service, **c) for c in state_checks)
         add(service, values, status, service, field, f"state total allocated by county {weight_source} share")
+    if task == "mangroves":
+        with tqdm(total=2, desc="Load mangrove allocation inputs", unit="layer") as progress:
+            counties = gpd.read_file(paths["base"], columns=["GEOID"])
+            counties.GEOID = counties.GEOID.map(fips)
+            progress.update(1)
+            polygons = gpd.read_file(
+                paths["mangroves"], layer="UCSC_CWON_studyunits", engine="pyogrio",
+                columns=["ISO3", "Country", "Ben_Stock_2020"], fid_as_index=True,
+            ).rename_axis("source_id").reset_index()
+            progress.update(1)
+        source_unit_count = len(polygons)
+        polygons = polygons.loc[polygons.ISO3.isin(MANGROVE_COUNTRIES)].copy()
+        logging.info("Mangrove country filter %s: retained %s of %s study units",
+                     ",".join(MANGROVE_COUNTRIES), len(polygons), source_unit_count)
+        values, status, mangrove_audit = allocate_mangrove_values(
+            counties, polygons, workers=geometry_workers)
+        known_allocated = float(mangrove_audit.allocated_value.sum())
+        unallocated = float(mangrove_audit.unallocated_value.sum())
+        input_total = float(mangrove_audit.input_value.sum())
+        withheld = known_allocated - float(values.sum())
+        close(known_allocated + unallocated, input_total, "Mangrove source allocation")
+        add("mangroves", values, status, "mangroves", "Ben_Stock_2020",
+            "Study-unit total allocated by EPSG:6933 county intersection area / sum of positive county intersection areas; "
+            "uncovered ocean excluded from denominator; null contributions make county value unknown",
+            {"input_known_total": input_total, "allocated_known_total": known_allocated,
+             "unmatched_total": unallocated, "withheld_partial_total": withheld,
+             "source_unit_count": len(polygons), "missing_source_values": int(mangrove_audit.input_value.isna().sum()),
+             "source_country_filter": ",".join(MANGROVE_COUNTRIES),
+             "excluded_country_source_units": source_unit_count - len(polygons),
+             "unintersected_source_units": int((mangrove_audit.intersecting_counties == 0).sum())})
+        for row in mangrove_audit.itertuples():
+            if pd.isna(row.input_value) or row.intersecting_counties == 0:
+                issues.append({"service": "mangroves", "source_key": str(row.source_key),
+                               "reason": "missing_source_value" if pd.isna(row.input_value) else "no_county_intersection",
+                               "value": None if pd.isna(row.input_value) else float(row.input_value)})
     if task == "recreation":
         logging.info("Reading county and recreation geometry")
         counties = gpd.read_file(paths["base"], columns=["GEOID"])
@@ -832,11 +927,17 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
              "max_raw_allocated_fraction": float(recreation_audit.raw_allocated_fraction.max())})
     return {"originals": originals, "statuses": statuses, "metadata": metadata,
             "issues": issues, "checks": checks, "recreation_audit": recreation_audit,
-            "summary_fields": summary_fields}
+            "mangrove_audit": mangrove_audit, "summary_fields": summary_fields}
 
 
 def save_checkpoint(path, signature, result):
-    """Publish a complete SQLite checkpoint atomically; never load Python pickle."""
+    """Publish a complete SQLite checkpoint atomically; never load Python pickle.
+
+    Args:
+        path: Destination checkpoint file.
+        signature: Hash identifying code, inputs and allocation dependencies.
+        result: Completed service result, including any polygon allocation audit.
+    """
     with tempfile.TemporaryDirectory(prefix="checkpoint-", dir=path.parent) as temporary:
         stage = Path(temporary) / path.name
         with closing(sqlite3.connect(stage)) as con:
@@ -846,6 +947,8 @@ def save_checkpoint(path, signature, result):
             pd.concat(result["statuses"], ignore_index=True).to_sql("statuses", con, index=False)
             if len(result["recreation_audit"].columns):
                 result["recreation_audit"].to_sql("recreation", con, index=False)
+            if len(result.get("mangrove_audit", pd.DataFrame()).columns):
+                result["mangrove_audit"].to_sql("mangroves", con, index=False)
             payload = {k: result[k] for k in ("metadata", "issues", "checks")}
             con.execute("CREATE TABLE completed (signature TEXT, payload TEXT)")
             con.execute("INSERT INTO completed VALUES (?, ?)", (signature, json.dumps(payload, allow_nan=False)))
@@ -854,6 +957,18 @@ def save_checkpoint(path, signature, result):
 
 
 def load_checkpoint(path, signature):
+    """Restore a verified service result and its allocation audits.
+
+    Args:
+        path: Existing SQLite checkpoint file.
+        signature: Required code/input signature.
+
+    Returns:
+        Completed service result in the same format as compute_task.
+
+    Raises:
+        ValueError: SQLite integrity or the stored signature is invalid.
+    """
     with closing(read_db(path)) as con:
         if con.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise ValueError(f"Invalid checkpoint: {path}; rerun with --no-resume")
@@ -866,6 +981,8 @@ def load_checkpoint(path, signature):
         result["statuses"] = [pd.read_sql_query("SELECT * FROM statuses", con)]
         has_recreation = con.execute("SELECT 1 FROM sqlite_master WHERE name='recreation'").fetchone()
         result["recreation_audit"] = pd.read_sql_query("SELECT * FROM recreation", con) if has_recreation else pd.DataFrame()
+        has_mangroves = con.execute("SELECT 1 FROM sqlite_master WHERE name='mangroves'").fetchone()
+        result["mangrove_audit"] = pd.read_sql_query("SELECT * FROM mangroves", con) if has_mangroves else pd.DataFrame()
         has_summary = con.execute("SELECT 1 FROM sqlite_master WHERE name='summary_fields'").fetchone()
         result["summary_fields"] = (pd.read_sql_query("SELECT * FROM summary_fields", con).set_index("GEOID")
                                     if has_summary else pd.DataFrame(index=values.index))
@@ -880,7 +997,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         config_dir: Source/factor/crosswalk CSVs and export_rules.yaml.
         output: Optional new GeoPackage path; CSV uses the same basename.
         workers: Independent ecosystem-service worker processes.
-        geometry_workers: Recreation intersection threads per recreation task.
+        geometry_workers: Intersection threads per recreation or mangrove task.
         resume: Reuse matching validated checkpoints when available.
 
     Returns:
@@ -899,6 +1016,10 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
             if destination.exists():
                 raise FileExistsError(destination)
     script_hash = sha256(__file__)
+    allocator_path = ROOT / "mangrove_county_allocation.py"
+    allocator_hash = sha256(allocator_path)
+    geometry_utils_path = ROOT / "geometry_utils.py"
+    geometry_utils_hash = sha256(geometry_utils_path)
     config_names = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv", "export_rules.yaml")
     config_hashes = {name: sha256(config_dir / name) for name in config_names}
     rules = load_export_rules(config_dir / "export_rules.yaml")
@@ -947,6 +1068,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "marine_fisheries": ["base", "marine_fisheries", "coastline"],
         "inland_fisheries": ["base", "inland_fisheries", "freshwater"],
         "recreation": ["base", "recreation"],
+        "mangroves": ["base", "mangroves"],
     }
     crosswalk_hash = config_hashes["ct_county_crosswalk.csv"]
     results = {}
@@ -955,6 +1077,8 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     with ProcessPoolExecutor(max_workers=workers) as pool:
         for task, names in dependencies.items():
             signature = hashlib.sha256(json.dumps({"script": script_hash, "crosswalk": crosswalk_hash,
+                "mangrove_allocator": allocator_hash if task == "mangroves" else None,
+                "geometry_utils": geometry_utils_hash if task == "mangroves" else None,
                 "versions": [pd.__version__, np.__version__, shapely.__version__, gpd.__version__],
                 "inputs": {n: fingerprints[n] for n in names}}, sort_keys=True).encode()).hexdigest()
             signatures[task] = signature
@@ -1004,7 +1128,9 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     for name, path in tqdm(paths.items(), desc="Verify source hashes", unit="file"):
         if sha256(path) != fingerprints[name]:
             raise ValueError(f"Source changed during integration: {path}")
-    if sha256(__file__) != script_hash or any(sha256(config_dir / name) != digest for name, digest in config_hashes.items()):
+    if (sha256(__file__) != script_hash or sha256(allocator_path) != allocator_hash
+            or sha256(geometry_utils_path) != geometry_utils_hash
+            or any(sha256(config_dir / name) != digest for name, digest in config_hashes.items())):
         raise ValueError("Script or configuration changed during integration; rerun")
     source_audit = sources.copy()
     source_audit["sha256"] = source_audit.source.map(fingerprints)
@@ -1027,6 +1153,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "integration_source_issues": pd.DataFrame(issues, columns=["service", "source_key", "reason", "value"]),
         "integration_state_checks": pd.DataFrame(checks),
         "integration_recreation_allocation": recreation_audit,
+        "integration_mangrove_allocation": results["mangroves"]["mangrove_audit"],
         "integration_ct_crosswalk": crosswalk,
         "integration_checkpoints": pd.DataFrame({"task": list(signatures), "signature": list(signatures.values())}),
         "integration_export_rules": pd.DataFrame([{
@@ -1042,12 +1169,17 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "integration_run": pd.DataFrame([{
             "created_utc": datetime.now(timezone.utc).isoformat(), "script": Path(__file__).name,
             "script_sha256": sha256(__file__), "area_crs": AREA_CRS,
+            "mangrove_allocator_sha256": allocator_hash,
+            "geometry_utils_sha256": geometry_utils_hash,
             "base_counties": len(ids),
             "removed_fields": json.dumps([field for field in source_statistics
                                            if field not in additions and field not in renamed_fields]),
             "renamed_value_fields": json.dumps(renamed_fields, sort_keys=True),
             "notes": "Carbon factor is supplied USD 3.66 per tonne CO2e times 1.182 inflation; no mass conversion. "
-                     "Per-hectare carbon sum is not an area-integrated county total; mangrove signs retained; no cross-service grand total. "
+                     "Per-hectare carbon sum is not an area-integrated county total; no cross-service grand total. "
+                     "Mangrove ISO3 limited to USA,PRI,VIR; Ben_Stock_2020 treated as study-unit USD 2020 total; "
+                     "allocated over county intersections only, excluding uncovered ocean. "
+                     "Negative timber source rents clamped to zero before county allocation. "
                      "Configured sums/totals adjusted once; one visible factor per service; no duplicate raw values. "
                      "Export names, exclusions, order, and default output naming follow the embedded export_rules.yaml. "
                      "Geometry and geographic attributes preserved. "
@@ -1071,7 +1203,7 @@ def main():
     parser.add_argument("--config-dir", type=Path, default=CONFIG)
     parser.add_argument("--output", type=Path, help="New .gpkg path; matching .csv is automatic; neither may already exist")
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1), help="Independent service processes (default: up to 8)")
-    parser.add_argument("--geometry-workers", type=int, default=min(8, os.cpu_count() or 1), help="Recreation intersection threads (default: up to 8)")
+    parser.add_argument("--geometry-workers", type=int, default=min(8, os.cpu_count() or 1), help="Intersection threads per recreation or mangrove task (default: up to 8)")
     parser.add_argument("--no-resume", action="store_true", help="Recompute services and recreation batches instead of reusing checkpoints")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

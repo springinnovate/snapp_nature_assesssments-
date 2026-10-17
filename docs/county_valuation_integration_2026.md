@@ -44,6 +44,7 @@ Paths in the table are relative to the repository's `data/` directory.
 | Urban heat | `analysis_inputs/ecosystem_services/urban_heat/HEAT_all_tracts_2021.csv` |
 | Physical health | `analysis_inputs/ecosystem_services/physical_health/hypertension_linear_us_counties_all.gpkg` |
 | Recreation | `analysis_inputs/recreation/usa_nature_assessment_recreation__snapp_estimates.gpkg` |
+| Mangrove coastal flood protection | `analysis_inputs/ecosystem_services/mangroves/ucsc_cwon_studyunits.gpkg` |
 
 Three additional files record the assessment decisions:
 
@@ -106,7 +107,7 @@ factor, and final output field for each measure.
 | Grazing | Join `CountyGrazingValueYear` by `CountyCode` from the `SNAPPGrazingCalculations` sheet | Annual USD, 2024 | 1 |
 | Air-quality avoided mortality | Sum `dollars_annual` across land-cover and pollutant rows by `FIPS` | Annual USD | 1.135 |
 | Nature-related wages | Join the four Total Wages columns from the `totals by county` sheet by `County FIPS`; sum them for the combined wage total | USD wages, 2022 | 1.065 |
-| Timber | Join `total_annual_rent` by `fips_padded` | Annual USD, 2024 | 1 |
+| Timber | Clamp negative `total_annual_rent` to zero, then join by `fips_padded` | Annual USD, 2024 | 1 |
 | Urban heat | Sum `Sum of total_dollars_saved` by `COUNTY_GEOID` | USD, 2021 | 1.135 |
 | Physical health | Join `total_value_usd` by `GEOID` | USD, 2023 | 1.027 |
 
@@ -115,6 +116,16 @@ multiplication is applied. The wage fields measure money, not numbers of jobs.
 They use the raw Total Wages columns for cultural activities, raw materials,
 processing, and harvesting. State, national, metropolitan, and unallocated
 summary rows are excluded.
+
+Negative timber `total_annual_rent` values are set to zero at the source-county
+level, before Connecticut crosswalk allocation or any county aggregation.
+Thus a negative source county cannot offset a positive source county when both
+contribute to a planning region. This is an assessment convention, not a change
+to the source CSV. `integration_source_issues` records each original negative
+value with reason `negative_source_clamped_zero`; `integration_services`
+records the affected count, original negative total, increase from clamping,
+and source totals before and after clamping. The existing timber missing-value
+zero-filling convention and adjustment factor of 1 are unchanged.
 
 The air-quality output,
 `air_quality_avoided_mortality_annual_value_adj`, is the county sum of
@@ -186,6 +197,63 @@ A county with no intersecting recreation polygon receives zero. This is a
 consequence of the polygon coverage and aggregation method, not evidence of
 measured zero recreational value.
 
+### Mangrove study-unit allocation
+
+Mangrove estimates use `Ben_Stock_2020` in the `UCSC_CWON_studyunits` layer of
+`ucsc_cwon_studyunits.gpkg`. The assessment's
+[Final datasets links spreadsheet, row 16](https://docs.google.com/spreadsheets/d/15Oqu4Vq2WWPRaleW8F0kxfZUBU3Bg6YDBbc9QZ7I9jk/edit#gid=0&range=A16:P16)
+selects `ISO3`, `Country`, and `Ben_Stock_2020`, identifies the source currency
+as USD 2020, and specifies factor 1.182. Its units cell still says "average
+per-hectare"; for this integration, the assessment explicitly interprets
+`Ben_Stock_2020` as a **total per study unit**, not a per-hectare rate. The
+workflow does not independently establish an annual or net-present-value
+interpretation for this field.
+
+Only study units with `ISO3` equal to `USA`, `PRI`, or `VIR` are included.
+This explicit country filter prevents offshore polygons assigned to neighboring
+countries from contributing their values merely because they intersect a U.S.
+county. It is applied before the spatial allocation; study-unit counts, source
+totals, and the per-source allocation audit describe the selected units only.
+`integration_services` records the country filter and the number of excluded
+units. The source hash in `integration_sources` still identifies the complete
+input GeoPackage, not a separately saved subset.
+
+Each study unit's value is distributed over only its positive-area county
+intersections, calculated in the equal-area projection EPSG:6933:
+
+```text
+county contribution = Ben_Stock_2020 × area(study unit ∩ county)
+                      / sum of all positive county-intersection areas for that study unit
+county mangrove value = sum of its study-unit contributions
+```
+
+Area outside all counties, including ocean, is excluded from the denominator.
+For example, a $1,000 study unit intersecting 30 ha in one county and 10 ha in
+another contributes $750 and $250, even if an additional 60 ha lies outside
+the county footprint. If exactly one county intersects a study unit, that
+county receives its entire value. Each county's contributions from exclusive
+and shared study units are added together. This assumes uniform value per
+unit of intersected county area; it does not locate flood-protection benefits
+or beneficiaries within a study unit.
+
+Boundary-only touches have zero area and receive no allocation. Study units
+without any positive-area county intersection remain unallocated and are
+reported in the audit. A county intersecting a study unit with a null value
+has a null mangrove total, rather than a misleading partial sum of its known
+contributions. Counties without positive-area study-unit intersections receive
+zero under this allocation convention.
+
+The county total is multiplied by 1.182 and exported as
+`sum_mangrove_coastal_flood_protection_value_adj`, with
+`mangroves_adj_factor` retained separately. No hectare multiplication is
+applied. Unlike recreation, this method allocates the entire known study-unit
+value whenever at least one positive-area county intersection exists;
+recreation continues to use the full source-polygon area as its denominator.
+
+This vector estimate replaces the categorical `mangrove_CONUS.tif` aggregate.
+The historical `sum_mangrove_CONUS` field and its adjusted variant are omitted
+from the county deliverables, even when present in the starting zonal results.
+
 ### Raster-derived county estimates and adjustments
 
 The raster estimates are read from the supplied county zonal-results
@@ -212,7 +280,6 @@ adjusted county estimate = source county estimate × adjustment factor
 | Flood mitigation NPV | `sum_marginal_npv_masked_to_wetlands` | 1 |
 | Flood mitigation annual value | `sum_annual_value_masked_to_wetlands` | 1 |
 | Corals | `sum_Coral_Reefs_2024adj_CPI` | 1 |
-| Mangroves | `sum_mangrove_CONUS` | 1.182 |
 | Mental health | `sum_mental_health_national_existing_greenness_cost_90m` | 1 |
 
 Pollination is supplied as dollars per hectare on a 30 m grid. Each pixel
@@ -235,9 +302,8 @@ The flood outputs are
 `sum_flood_marginal_npv_masked_to_wetlands_adj`. Annual value and net present
 value have different time interpretations and are not additive.
 
-Coral inputs include a 2024 dollar adjustment and receive factor 1. Mangrove
-values are multiplied by 1.182 with their signs preserved. A multiplier alone
-does not validate the source values or establish comparability with other
+Coral inputs include a 2024 dollar adjustment and receive factor 1. A multiplier
+alone does not validate source values or establish comparability with other
 services.
 
 ## Output fields and interpretation
@@ -289,13 +355,16 @@ There are specific zero conventions:
 
 - Timber missing rows and missing values are assigned zero. Coverage statuses
   distinguish `no_timberland`, `no_species_coverage`, and absent data.
+- Negative timber source-county values are clamped to zero before geographic
+  allocation; the audit distinguishes this treatment from missing-value filling.
 - Urban-heat accounting-format `$ -` cells are interpreted as zero.
 - Fisheries counties with zero allocation weight receive zero within states
   that have numeric source values.
 - Recreation counties without intersecting source polygons receive zero.
+- Mangrove counties without positive-area study-unit intersections receive zero;
+  intersections with null-valued study units instead propagate null totals.
 
-Negative timber and mangrove values are retained, not truncated. Unmatched
-county records, including historical Alaska codes, are listed in the source
+Unmatched county records, including historical Alaska codes, are listed in the source
 issues table. Connecticut coverage depends on whether the contributing
 historical county estimates are available; a land-area crosswalk does not
 supply missing service data.
@@ -311,7 +380,7 @@ or independence.
 ## Quality checks and provenance
 
 The workflow checks identifiers and allocation support, reconciles state
-fisheries and recreation source totals, and verifies that the output preserves
+fisheries, recreation, and mangrove source totals, and verifies that the output preserves
 county geometries and retained attributes. Source-file hashes are checked
 before publication. CSV and GeoPackage attributes are compared for matching
 fields, order, and values.
@@ -326,6 +395,9 @@ The GeoPackage includes supporting tables for evaluating the estimates:
 | Which records were unmatched or contributed only to an incomplete estimate? | `integration_source_issues` |
 | Do county fisheries allocations reproduce their state totals? | `integration_state_checks` |
 | How much recreation value is allocated, corrected, or outside the county footprint? | `integration_recreation_allocation` |
+| Which mangrove study units were allocated, and which had no county-intersection support? | `integration_mangrove_allocation` |
+| Which countries' mangrove study units were selected, and how many were excluded? | `integration_services` |
+| Which timber source values were clamped, and how much did clamping change the total? | `integration_source_issues`, `integration_services` |
 | Which Connecticut allocation weights were used? | `integration_ct_crosswalk` |
 | Which naming and exclusion rules produced the exported fields? | `integration_export_rules`, `integration_export_fields` |
 | What does the air-quality annual total represent? | `integration_summary_fields` |
@@ -348,7 +420,9 @@ python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry
 ```
 
 The integration uses the configured county aggregates, so this step does not
-require a raster zonal-statistics run. The default output pair is:
+require a raster zonal-statistics run. Rerunning this builder is sufficient to
+replace the old categorical mangrove aggregate with the study-unit allocation
+and to apply the timber clamp. The default output pair is:
 
 ```text
 data/analysis_results/combined/snapp_ecosystem_services_counties_YYYY_MM_DD_HH_MM_SS.csv

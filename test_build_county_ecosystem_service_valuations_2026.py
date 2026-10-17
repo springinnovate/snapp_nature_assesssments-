@@ -180,7 +180,7 @@ class CountyIntegrationTests(unittest.TestCase):
         summaries["total_count_dollars_annual"] = [9, 0]
         originals = {"pollination": base[f"sum_{stem}"],
                      "avoided_air_quality_heath_costs": summaries.sum_dollars_annual.copy(),
-                     "timber": pd.Series([20.0, -10.0], index=base.index)}
+                     "timber": pd.Series([20.0, 0.0], index=base.index)}
         factors = pd.DataFrame({"factor": [0.09, 1.135, 1.0]}, index=list(originals))
         rules = load_export_rules(RULES_PATH)
         rules["exclude_fields"] = []
@@ -197,7 +197,7 @@ class CountyIntegrationTests(unittest.TestCase):
         np.testing.assert_allclose(fields[AIR_QUALITY_OUTPUT + "_adj"], [11.35, np.nan])
         self.assertEqual(fields.pollination_adj_factor.to_list(), [0.09, 0.09])
         self.assertEqual(fields[AIR_QUALITY_OUTPUT + "_adj_factor"].to_list(), [1.135, 1.135])
-        self.assertEqual(fields.timber_adj.to_list(), [20, -10])
+        self.assertEqual(fields.timber_adj.to_list(), [20, 0])
         self.assertEqual(mapping["pollination"], f"sum_{stem}_adj")
         self.assertEqual(mapping["avoided_air_quality_heath_costs"], AIR_QUALITY_OUTPUT + "_adj")
         self.assertFalse(any(field.endswith("_orig") for field in fields))
@@ -412,6 +412,9 @@ class CountyExportRuleTests(unittest.TestCase):
     def setUp(self):
         """Build a small county input containing every required rename/exclusion."""
         self.rules = load_export_rules(RULES_PATH)
+        # This presentation fixture exercises the pre-existing service subset.
+        # Mangrove source allocation and its rename have their own integration tests.
+        self.rules["rename_fields"].pop("mangroves_adj")
         self.ids = pd.Index(["01001", "01003"], name="GEOID")
         self.base = pd.DataFrame({
             "GEOID": self.ids, "ALAND": [1000, 2000], "AWATER": [10, 20],
