@@ -13,6 +13,7 @@ import pandas as pd
 import shapely
 import yaml
 from shapely.geometry import Polygon, box
+from osgeo import ogr
 
 from build_county_ecosystem_service_valuations_2026 import (
     NON_SUM_FIELD, adjusted_county_fields, load_export_rules, plan_county_export,
@@ -556,6 +557,11 @@ class CountyExportRuleTests(unittest.TestCase):
             ("rooted forward slash", lambda rules: rules["output"].update({"directory": "/escape"})),
             ("rooted backslash", lambda rules: rules["output"].update({"directory": "\\escape"})),
             ("escaping filename", lambda rules: rules["output"].update({"filename_prefix": "../elsewhere"})),
+            ("invalid layer", lambda rules: rules["output"].update({"layer_name": "two words"})),
+            ("empty layer", lambda rules: rules["output"].update({"layer_name": ""})),
+            ("null layer", lambda rules: rules["output"].update({"layer_name": None})),
+            ("reserved layer", lambda rules: rules["output"].update({"layer_name": "gpkg_contents"})),
+            ("audit layer", lambda rules: rules["output"].update({"layer_name": "integration_run"})),
         ):
             rules = deepcopy(self.rules)
             mutate(rules)
@@ -587,13 +593,14 @@ class CountyExportRuleTests(unittest.TestCase):
             removed = [row["source_field"] for row in plan if row["source_field"] and row["group"] != "base_attributes"]
             write_output(base_path, output, layer, geom, fields,
                          {"integration_export_rules": snapshot, "integration_export_fields": audit},
-                         removed_fields=removed)
+                         removed_fields=removed, output_layer=self.rules["output"]["layer_name"])
             saved = read_attributes(output)[0]
             csv = pd.read_csv(output.with_suffix(".csv"), dtype={"GEOID": str}, float_precision="round_trip")
             self.assertEqual(list(saved), ["fid", "GEOID", "ALAND", "AWATER"] + list(fields))
             pd.testing.assert_frame_equal(saved, csv, check_dtype=False)
             self.assertEqual(sha256(base_path), source_hash)
-            self.assertTrue(gpd.read_file(output, layer=layer).geometry.equals(source.geometry))
+            self.assertEqual(read_attributes(output)[1], self.rules["output"]["layer_name"])
+            self.assertTrue(gpd.read_file(output, layer=self.rules["output"]["layer_name"]).geometry.equals(source.geometry))
             with closing(sqlite3.connect(output)) as con:
                 persisted = pd.read_sql_query("SELECT path,sha256,yaml_text FROM integration_export_rules", con)
                 pd.testing.assert_frame_equal(persisted, snapshot)
@@ -605,6 +612,105 @@ class CountyExportRuleTests(unittest.TestCase):
                 self.assertEqual(len(omitted), 4)
                 self.assertTrue(omitted.output_field.isna().all())
                 self.assertTrue((omitted.action == "exclude").all())
+
+
+class CountyLayerNameTests(unittest.TestCase):
+    """Renaming a feature layer preserves data, coverage and GeoPackage behavior."""
+
+    def test_legacy_layer_renamed_without_changing_csv_geometry_or_spatial_index(self):
+        """The 50_states label changes neither territories nor any feature value."""
+        old = "tl_2024_us_county_60_states"
+        new = load_export_rules(RULES_PATH)["output"]["layer_name"]
+        self.assertEqual(new, "tl_2024_us_county_50_states")
+        source = gpd.GeoDataFrame(
+            {"GEOID": ["01001", "11001", "72001", "78010"],
+             "STATEFP": ["01", "11", "72", "78"]},
+            geometry=[box(i * 2, 0, i * 2 + 1, 1) for i in range(4)], crs=6933)
+        fields = pd.DataFrame({"timber_adj": [0.0, 10.0, 20.0, np.nan]},
+                              index=pd.Index(source.GEOID, name="GEOID"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, legacy, renamed = root / "base.gpkg", root / "legacy.gpkg", root / "renamed.gpkg"
+            source.to_file(base, layer=old, driver="GPKG")
+            original_hash = sha256(base)
+            _, _, geom = read_attributes(base)
+            write_output(base, legacy, old, geom, fields, {})
+            write_output(base, renamed, old, geom, fields, {}, output_layer=new)
+            self.assertEqual(sha256(base), original_hash)
+            self.assertEqual(legacy.with_suffix(".csv").read_bytes(), renamed.with_suffix(".csv").read_bytes())
+            attributes, layer, saved_geom = read_attributes(renamed)
+            self.assertEqual((layer, saved_geom), (new, geom))
+            self.assertEqual(attributes.GEOID.to_list(), source.GEOID.to_list())
+            self.assertTrue(gpd.read_file(renamed, layer=new).geometry.equals(source.geometry))
+            with closing(sqlite3.connect(base)) as original, closing(sqlite3.connect(renamed)) as saved:
+                self.assertEqual(saved.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(saved.execute("PRAGMA foreign_key_check").fetchall(), [])
+                self.assertEqual(saved.execute(
+                    "SELECT table_name,identifier FROM gpkg_contents WHERE data_type='features'"
+                ).fetchall(), [(new, new)])
+                self.assertEqual(saved.execute(
+                    "SELECT table_name FROM gpkg_extensions WHERE extension_name='gpkg_rtree_index'"
+                ).fetchall(), [(new,)])
+                self.assertEqual(original.execute(f'SELECT fid,"{geom}" FROM "{old}" ORDER BY fid').fetchall(),
+                                 saved.execute(f'SELECT fid,"{geom}" FROM "{new}" ORDER BY fid').fetchall())
+                self.assertEqual(saved.execute(
+                    "SELECT name FROM sqlite_master WHERE name LIKE ?", (f"%{old}%",)).fetchall(), [])
+                self.assertEqual(saved.execute(f'SELECT COUNT(*) FROM "rtree_{new}_{geom}"').fetchone()[0], 4)
+            # Check that renamed spatial-index triggers still work, not just that
+            # the copied index has the right row count. Edit this temporary test
+            # deliverable only, after checking exact CSV/GeoPackage parity.
+            dataset = ogr.Open(str(renamed), update=1)
+            try:
+                layer = dataset.GetLayerByName(new)
+                feature = ogr.Feature(layer.GetLayerDefn())
+                feature.SetField("GEOID", "01003")
+                feature.SetField("STATEFP", "01")
+                feature.SetGeometry(ogr.CreateGeometryFromWkt(box(20, 0, 21, 1).wkt))
+                self.assertEqual(layer.CreateFeature(feature), 0)
+                feature = None
+                layer.SetSpatialFilterRect(19, -1, 22, 2)
+                self.assertEqual(layer.GetFeatureCount(), 1)
+                layer = None
+            finally:
+                dataset = None
+            with closing(sqlite3.connect(renamed)) as saved:
+                self.assertEqual(saved.execute(f'SELECT COUNT(*) FROM "rtree_{new}_{geom}"').fetchone()[0], 5)
+
+    def test_already_correct_layer_and_legacy_config_are_supported(self):
+        """Correct input names need no rename; older YAML can omit layer_name."""
+        rules = load_export_rules(RULES_PATH)
+        new = rules["output"]["layer_name"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, base, output = root / "export_rules.yaml", root / "base.gpkg", root / "output.gpkg"
+            rules["output"].pop("layer_name")
+            config.write_text(yaml.safe_dump(rules), encoding="utf-8")
+            self.assertNotIn("layer_name", load_export_rules(config)["output"])
+            gpd.GeoDataFrame({"GEOID": ["72001"]}, geometry=[box(0, 0, 1, 1)], crs=6933).to_file(
+                base, layer=new, driver="GPKG")
+            fields = pd.DataFrame({"timber_adj": [1.0]}, index=pd.Index(["72001"], name="GEOID"))
+            _, _, geom = read_attributes(base)
+            with patch("build_county_ecosystem_service_valuations_2026.ogr.Open",
+                       side_effect=AssertionError("No rename is necessary")):
+                write_output(base, output, new, geom, fields, {}, output_layer=new)
+            self.assertEqual(read_attributes(output)[1], new)
+
+    def test_layer_collision_does_not_publish_or_modify_source(self):
+        """An occupied target name fails safely before publishing either file."""
+        old, new = "tl_2024_us_county_60_states", "tl_2024_us_county_50_states"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, output = root / "base.gpkg", root / "output.gpkg"
+            source = gpd.GeoDataFrame({"GEOID": ["01001"]}, geometry=[box(0, 0, 1, 1)], crs=6933)
+            source.to_file(base, layer=old, driver="GPKG")
+            source.to_file(base, layer=new, driver="GPKG")
+            original_hash = sha256(base)
+            fields = pd.DataFrame({"timber_adj": [1.0]}, index=pd.Index(["01001"], name="GEOID"))
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                write_output(base, output, old, "geom", fields, {}, output_layer=new)
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_suffix(".csv").exists())
+            self.assertEqual(sha256(base), original_hash)
 
 
 if __name__ == "__main__":

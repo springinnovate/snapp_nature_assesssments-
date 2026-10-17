@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 import shapely
 import yaml
+from osgeo import gdal, ogr
 from tqdm import tqdm
 
 from mangrove_county_allocation import allocate_mangrove_values
@@ -492,8 +493,9 @@ def load_export_rules(path):
             for key, value in renames.items())):
         raise ValueError("rename_fields must map existing names to valid column identifiers")
     output = rules["output"]
-    if not isinstance(output, dict) or set(output) != {"directory", "filename_prefix"}:
-        raise ValueError("output requires directory and filename_prefix")
+    if (not isinstance(output, dict) or not {"directory", "filename_prefix"} <= set(output)
+            or set(output) - {"directory", "filename_prefix", "layer_name"}):
+        raise ValueError("output requires directory and filename_prefix; layer_name is optional")
     if (not isinstance(output["directory"], str) or not output["directory"]
             or Path(output["directory"]).is_absolute() or Path(output["directory"]).drive
             or Path(output["directory"]).root
@@ -502,6 +504,11 @@ def load_export_rules(path):
     if (not isinstance(output["filename_prefix"], str)
             or not re.fullmatch(r"[A-Za-z0-9_-]+", output["filename_prefix"])):
         raise ValueError("output.filename_prefix must be a simple filename prefix")
+    if "layer_name" in output and (
+            not isinstance(output["layer_name"], str)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", output["layer_name"])
+            or output["layer_name"].lower().startswith(("gpkg_", "sqlite_", "rtree_", "integration_"))):
+        raise ValueError("output.layer_name must be a non-reserved simple layer identifier")
     return rules
 
 
@@ -634,7 +641,7 @@ def adjusted_county_fields(base, originals, summaries, factors, export_plan):
     return fields, output_fields
 
 
-def write_output(base_path, output, layer, geom, additions, tables, removed_fields=()):
+def write_output(base_path, output, layer, geom, additions, tables, removed_fields=(), *, output_layer=None):
     """Validate and publish a GeoPackage and matching geometry-free CSV.
 
     Args:
@@ -646,6 +653,8 @@ def write_output(base_path, output, layer, geom, additions, tables, removed_fiel
         tables: Supporting provenance and reconciliation tables.
         removed_fields: Source statistics to remove before appending ordered values.
             May include sums that are reinserted, with adjusted names if configured.
+        output_layer: Optional feature-layer name for the new GeoPackage only.
+            Omission preserves the input name. Geometry and values are unchanged.
 
     Raises:
         FileExistsError: Either destination already exists.
@@ -658,11 +667,35 @@ def write_output(base_path, output, layer, geom, additions, tables, removed_fiel
         if destination.exists():
             raise FileExistsError(destination)
     output.parent.mkdir(parents=True, exist_ok=True)
+    source_layer = layer
     with tempfile.TemporaryDirectory(prefix="county-integration-", dir=output.parent) as temporary:
         stage = Path(temporary) / output.name
         csv_stage = stage.with_suffix(".csv")
         with closing(read_db(base_path)) as original, closing(sqlite3.connect(stage)) as con:
             original.backup(con)
+        if output_layer is not None and output_layer != source_layer:
+            # Use the GeoPackage driver, not bare SQLite ALTER TABLE: it also
+            # renames the spatial index, triggers, and GeoPackage registrations.
+            # https://gdal.org/en/stable/drivers/vector/gpkg.html#sql
+            with tqdm(total=1, desc="Rename output county layer", unit="layer") as progress:
+                dataset = ogr.Open(str(stage), update=1)
+                if dataset is None:
+                    raise ValueError(f"Cannot open staged GeoPackage for layer rename: {stage}")
+                try:
+                    if dataset.GetLayerByName(output_layer) is not None:
+                        raise ValueError(f"Output layer already exists: {output_layer}")
+                    gdal.ErrorReset()
+                    result = dataset.ExecuteSQL(
+                        f"ALTER TABLE {quote(source_layer)} RENAME TO {quote(output_layer)}")
+                    if result is not None:
+                        dataset.ReleaseResultSet(result)
+                    if gdal.GetLastErrorType() >= gdal.CE_Failure or dataset.GetLayerByName(output_layer) is None:
+                        raise ValueError(f"Cannot rename county layer: {gdal.GetLastErrorMsg()}")
+                    layer = output_layer
+                finally:
+                    dataset = None
+                progress.update(1)
+        with closing(read_db(base_path)) as original, closing(sqlite3.connect(stage)) as con:
             # GDAL's FID-update triggers reference these functions even when their
             # WHEN condition is false. Any actual invocation is a programming error:
             # this integration must never modify FIDs or geometries.
@@ -693,6 +726,8 @@ def write_output(base_path, output, layer, geom, additions, tables, removed_fiel
                 con.executemany(sql, rows[start:start + 250])
             now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             con.execute("UPDATE gpkg_contents SET last_change=? WHERE table_name=?", (now, layer))
+            if output_layer is not None:
+                con.execute("UPDATE gpkg_contents SET identifier=? WHERE table_name=?", (layer, layer))
             con.commit()
             for name, frame in tqdm(tables.items(), desc="Write audit tables", unit="table"):
                 definitions = []
@@ -707,7 +742,8 @@ def write_output(base_path, output, layer, geom, additions, tables, removed_fiel
             con.commit()
             keep = [c for c in original_fields if c not in removed]
             query = f"SELECT {','.join(map(quote, keep))} FROM {quote(layer)} ORDER BY fid"
-            before, after = original.execute(query), con.execute(query)
+            source_query = f"SELECT {','.join(map(quote, keep))} FROM {quote(source_layer)} ORDER BY fid"
+            before, after = original.execute(source_query), con.execute(query)
             with tqdm(total=len(additions), desc="Verify preserved counties", unit="county") as progress:
                 while True:
                     old_rows, new_rows = before.fetchmany(100), after.fetchmany(100)
@@ -1172,6 +1208,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
             "mangrove_allocator_sha256": allocator_hash,
             "geometry_utils_sha256": geometry_utils_hash,
             "base_counties": len(ids),
+            "source_layer": layer, "output_layer": rules["output"].get("layer_name", layer),
             "removed_fields": json.dumps([field for field in source_statistics
                                            if field not in additions and field not in renamed_fields]),
             "renamed_value_fields": json.dumps(renamed_fields, sort_keys=True),
@@ -1191,7 +1228,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
             f"{rules['output']['filename_prefix']}_{datetime.now():%Y_%m_%d_%H_%M_%S}.gpkg")
     logging.info("Writing %s", output)
     write_output(paths["base"], output, layer, geom, additions, tables,
-                 removed_fields=source_statistics)
+                 removed_fields=source_statistics, output_layer=rules["output"].get("layer_name"))
     logging.info("Verified %s counties and %s value/factor fields; geometry and county attributes preserved", len(ids), len(additions.columns))
     return output
 

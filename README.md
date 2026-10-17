@@ -541,6 +541,12 @@ and `.gpkg` files with matching county attributes. The GeoPackage also contains 
 county map and tables describing sources and missing coverage. The original
 files are preserved.
 
+The county feature layer is named `tl_2024_us_county_50_states`, controlled by
+`output.layer_name` in `export_rules.yaml`. This corrects the historical
+`60_states` label without filtering geography: DC, Puerto Rico and the U.S.
+Virgin Islands remain included. Existing source-layer references retain the
+legacy name because those input files are unchanged.
+
 Both formats put original county identifiers and geographic attributes first,
 including `ALAND` and `AWATER`, followed by all retained `sum_` fields, other
 service totals, and adjustment-factor columns. Configured raster sums default to

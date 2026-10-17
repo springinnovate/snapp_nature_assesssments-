@@ -5,6 +5,9 @@ schema_version: 1
 output:
   directory: analysis_results/combined  # Relative to --data-root.
   filename_prefix: snapp_ecosystem_services_counties
+  # Output label only; retain every county, including DC, Puerto Rico and USVI.
+  # The builder can still read historical inputs named ..._60_states.
+  layer_name: tl_2024_us_county_50_states
 
 # Preserve source order within each group. County attributes must stay first.
 column_groups:
