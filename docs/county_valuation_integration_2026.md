@@ -309,9 +309,17 @@ services.
 ## Output fields and interpretation
 
 The CSV and GeoPackage contain matching county attributes. The county feature
-layer is `tl_2024_us_county_60_states`; geometry is present only in the
+layer is `tl_2024_us_county_50_states`; geometry is present only in the
 GeoPackage. Import `GEOID` as text when using spreadsheet software so that
 leading zeroes are preserved.
+
+The layer name is an output label, not a geographic filter: all 3,225 counties
+and county equivalents remain, including DC, Puerto Rico, and the U.S. Virgin
+Islands. Historical inputs use the mislabeled `tl_2024_us_county_60_states`
+layer. The builder reads that name as-is and renames only the new output,
+including its GeoPackage registrations and spatial index. Source files and
+older deliverables are not modified. `integration_run` records both the
+source and output layer names.
 
 Columns are ordered as follows:
 
@@ -448,6 +456,7 @@ adjustment factors, and county crosswalk. It contains:
 | `exclude_patterns` | Identifies groups of generated statistics and diagnostics to omit |
 | `column_groups` | Orders county attributes, sums, other totals, and factors |
 | `output.directory`, `output.filename_prefix` | Define the output location relative to the data root and the filename prefix |
+| `output.layer_name` | Sets the new GeoPackage feature-layer name without changing data or coverage; omission retains the source name |
 
 For example, the annual flood field is identified by:
 
