@@ -396,9 +396,10 @@ TIFF. Each run's VRT is stored in its own subdirectory under
 factors cannot overwrite an earlier run's conversion. Air quality and mental
 health remain disabled in this handoff until validated value TIFFs are selected;
 the county air-quality CSV is handled by the separate county valuation builder.
-Mangroves remain disabled because the local
+Mangroves remain disabled in this raster inventory because
 `mangrove_CONUS.tif` contains categorical CCAP values (`-128`, `0`, `16`, and
-`17`), not monetary values.
+`17`), not monetary values. The county valuation builder instead uses the
+`ucsc_cwon_studyunits.gpkg` vector source described below.
 
 The coral row also needs a metadata decision before publication: the spreadsheet
 labels it USD 2010, while the local filename is `Coral_Reefs_2024adj_CPI.tif`.
@@ -521,9 +522,10 @@ Each contains `proportional_recreation_val_2024` joined by `GEOID`.
 [`build_county_ecosystem_service_valuations_2026.py`](build_county_ecosystem_service_valuations_2026.py)
 builds a county dataset for comparing ecosystem-service values in the October
 2026 SNAPP assessment. It adds grazing, air quality, wages, timber, fisheries,
-urban heat, recreation, and physical-health estimates to the September 10 county
-results. County estimates are joined by FIPS; state fisheries and recreation
-polygon values are distributed to counties using the documented allocation rules.
+urban heat, recreation, mangrove coastal flood protection, and physical-health
+estimates to the September 10 county results. County estimates are joined by
+FIPS; state fisheries, recreation polygons, and mangrove study units are
+distributed to counties using the documented allocation rules.
 
 Place the source files under `data/` as listed in the
 [input and methods guide](docs/county_valuation_integration_2026.md#input-data).
@@ -562,6 +564,26 @@ allocation remain in `sources.csv`, `adjustment_factors.csv`, and
 quantity fields. The similarly named `sum_Wval_sw_2020usd_*_adj` monetary
 provisioning values remain.
 
+Mangroves use `Ben_Stock_2020` from the `UCSC_CWON_studyunits` layer in
+`data/analysis_inputs/ecosystem_services/mangroves/ucsc_cwon_studyunits.gpkg`.
+Only `ISO3` values `USA`, `PRI`, and `VIR` are included; neighboring countries'
+offshore study units cannot contribute merely by intersecting a U.S. county.
+Each selected study-unit total is allocated in proportion to its positive-area county
+intersections; ocean or other area outside all counties is excluded from the
+denominator. A unit intersecting only one county contributes its entire value
+there. Contributions are summed by county and multiplied by 1.182 to produce
+`sum_mangrove_coastal_flood_protection_value_adj`, with `mangroves_adj_factor`
+shown separately. The old categorical `sum_mangrove_CONUS` fields are omitted.
+This denominator differs deliberately from recreation's full-polygon-area
+denominator. See the [mangrove allocation method](docs/county_valuation_integration_2026.md#mangrove-study-unit-allocation)
+for the source-units caveat, null handling, and unallocated study units.
+
+Negative timber `total_annual_rent` is clamped to zero at the source-county
+level, before Connecticut redistribution or aggregation. The source CSV is
+unchanged; the output retains `timber_adj_factor` of 1 and records the clamp in
+its audit tables. Missing timber values continue to follow the documented
+zero-filling convention.
+
 The carbon multiplier is the assessment-supplied price of USD 3.66 per tonne CO2e
 times the 1.182 inflation adjustment, or 4.32612. The pixel-carbon output is the
 county sum of monetary per-pixel values. The separately retained carbon-per-hectare
@@ -579,7 +601,8 @@ Air quality exports only `air_quality_avoided_mortality_annual_value_adj`, the
 county total across CSV land-cover/pollutant rows, and
 `air_quality_avoided_mortality_annual_value_adj_factor` of `1.135`. See the guide
 for units, Connecticut allocation, and null handling. No raster zonal rerun is
-needed; rerun the county builder to generate both files with this schema:
+needed for these county integration changes, including the mangrove replacement
+and timber clamp; rerun the county builder to generate a new timestamped pair:
 
 ```powershell
 python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16

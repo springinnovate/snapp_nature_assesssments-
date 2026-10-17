@@ -16,11 +16,11 @@ jobs_raw_materials,1.065,User supplied inflation adjustment,USD 2022 wages
 jobs_processing,1.065,User supplied inflation adjustment,USD 2022 wages
 jobs_harvesting,1.065,User supplied inflation adjustment,USD 2022 wages
 jobs,1.065,Sum of four raw wage categories; user supplied inflation adjustment,USD 2022 wages
-timber,1,User supplied; total_annual_rent is already a county total,USD 2024 annual
+timber,1,User supplied; negative source total_annual_rent clamped to zero before county allocation,USD 2024 annual
 flood_npv,1,User supplied,USD NPV
 flood_annual,1,User supplied,USD annual
 corals,1,User confirmed existing Coral_Reefs_2024adj_CPI is already adjusted,USD 2024
-mangroves,1.182,User requested existing county values; retain source signs,USD source aggregate
+mangroves,1.182,Assessment spreadsheet row 16; user-directed allocation of Ben_Stock_2020 totals over county-intersected area only,USD 2020 per study-unit total
 marine_fisheries,1.027,User supplied inflation adjustment,USD 2023
 inland_fisheries,1.065,User supplied inflation adjustment,USD 2022
 urban_heat,1.135,User supplied inflation adjustment,USD 2021
