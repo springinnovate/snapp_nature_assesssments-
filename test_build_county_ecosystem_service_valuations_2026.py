@@ -457,8 +457,12 @@ class CountyExportRuleTests(unittest.TestCase):
         self.assertAlmostEqual(fields.loc["01001", mapping["carbon_pixel"]], 100 * 3.66 * 1.182)
         self.assertEqual(fields.loc["01001", "carbon_pixel_adj_factor"], 4.32612)
         self.assertIn("per tonne CO2e price", self.factors.loc["carbon_pixel", "reason"])
-        self.assertEqual(fields.loc["01001", mapping["flood_annual"]], 10)
-        self.assertEqual(fields.loc["01001", mapping["flood_npv"]], 200)
+        self.assertAlmostEqual(fields.loc["01001", mapping["flood_annual"]], 0.9)
+        self.assertAlmostEqual(fields.loc["01001", mapping["flood_npv"]], 18)
+        for service in ("flood_annual", "flood_npv"):
+            self.assertEqual(fields[service + "_adj_factor"].to_list(), [0.09, 0.09])
+            self.assertIn("per hectare", self.factors.loc[service, "source_units"])
+            self.assertIn("no inflation adjustment", self.factors.loc[service, "reason"])
         self.assertAlmostEqual(fields.loc["01001", mapping["avoided_air_quality_heath_costs"]], 56.75)
         self.assertEqual(fields.loc["01001", "sum_Wval_sw_2020usd_total"], 7)
         self.assertFalse(any(field.startswith("sum_Wsw_") for field in fields))
@@ -598,6 +602,13 @@ class CountyExportRuleTests(unittest.TestCase):
             csv = pd.read_csv(output.with_suffix(".csv"), dtype={"GEOID": str}, float_precision="round_trip")
             self.assertEqual(list(saved), ["fid", "GEOID", "ALAND", "AWATER"] + list(fields))
             pd.testing.assert_frame_equal(saved, csv, check_dtype=False)
+            for field, expected in (
+                ("sum_flood_annual_value_masked_to_wetlands_adj", 0.9),
+                ("sum_flood_marginal_npv_masked_to_wetlands_adj", 18),
+                ("flood_annual_adj_factor", 0.09),
+                ("flood_npv_adj_factor", 0.09),
+            ):
+                self.assertAlmostEqual(saved.loc[0, field], expected)
             self.assertEqual(sha256(base_path), source_hash)
             self.assertEqual(read_attributes(output)[1], self.rules["output"]["layer_name"])
             self.assertTrue(gpd.read_file(output, layer=self.rules["output"]["layer_name"]).geometry.equals(source.geometry))

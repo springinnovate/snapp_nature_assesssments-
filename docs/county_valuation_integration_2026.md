@@ -277,8 +277,8 @@ adjusted county estimate = source county estimate × adjustment factor
 | Water treatment | `sum_avoided_treatment_costs_raster` | 1 |
 | Water provisioning total | `sum_Wval_sw_2020usd_total` | 1.182 |
 | Water provisioning components | `sum_Wval_sw_2020usd_irr`, `sum_Wval_sw_2020usd_pow`, `sum_Wval_sw_2020usd_pub` | 1.182 |
-| Flood mitigation NPV | `sum_marginal_npv_masked_to_wetlands` | 1 |
-| Flood mitigation annual value | `sum_annual_value_masked_to_wetlands` | 1 |
+| Flood mitigation NPV | `sum_marginal_npv_masked_to_wetlands` | 0.09 |
+| Flood mitigation annual value | `sum_annual_value_masked_to_wetlands` | 0.09 |
 | Corals | `sum_Coral_Reefs_2024adj_CPI` | 1 |
 | Mental health | `sum_mental_health_national_existing_greenness_cost_90m` | 1 |
 
@@ -301,6 +301,15 @@ The flood outputs are
 `sum_flood_annual_value_masked_to_wetlands_adj` and
 `sum_flood_marginal_npv_masked_to_wetlands_adj`. Annual value and net present
 value have different time interpretations and are not additive.
+
+Both flood rasters retain per-hectare values on a 30 m grid. The county builder
+multiplies each raw zonal sum by `30 × 30 / 10,000 = 0.09` hectares, once, to
+produce dollar totals. `flood_annual_adj_factor` and `flood_npv_adj_factor`
+record this area conversion; it is not an inflation adjustment. Source TIFFs
+and raw zonal outputs remain unscaled, and the zonal inventory must not apply
+the same conversion upstream. To update existing combined county results,
+rerun only `build_county_ecosystem_service_valuations_2026.py`; no raster
+regeneration or zonal-statistics rerun is needed. Historical outputs are unchanged.
 
 Coral inputs include a 2024 dollar adjustment and receive factor 1. A multiplier
 alone does not validate source values or establish comparability with other

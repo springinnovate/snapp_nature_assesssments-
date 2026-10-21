@@ -26,6 +26,18 @@ from prepare_tif_zonal_stats_config import (
 class TifZonalStatsConfigTest(unittest.TestCase):
     """Verify scaling, newest-vector discovery, and config rendering."""
 
+    def test_tracked_flood_inventory_leaves_area_conversion_to_county_export(self) -> None:
+        """Keep flood inputs per hectare to avoid applying the area factor twice."""
+        config = load_run_config(DEFAULT_CONFIG)
+        inventory = {item["filename"]: item for item in json.loads(config["project"]["raster_inventory"])}
+        for filename in ("annual_value_masked_to_wetlands.tif", "marginal_npv_masked_to_wetlands.tif"):
+            with self.subTest(filename=filename):
+                item = inventory[filename]
+                self.assertTrue(item["include"])
+                self.assertIn("per ha;", item["units"])
+                self.assertEqual(item.get("scale", 1.0), 1.0)
+                self.assertNotIn("derived_filename", item)
+
     def test_scaled_raster_is_a_lazy_vrt(self) -> None:
         """Verify an included per-hectare raster is scaled without TIFF copying."""
         with TemporaryDirectory() as temporary_directory:
