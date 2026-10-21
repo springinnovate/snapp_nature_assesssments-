@@ -19,7 +19,7 @@ jobs,1.065,Sum of four raw wage categories; user supplied inflation adjustment,U
 timber,1,User supplied; negative source total_annual_rent clamped to zero before county allocation,USD 2024 annual
 flood_npv,0.09,30 m pixel area conversion (0.09 ha) applied once to the unscaled county raster aggregate; no inflation adjustment,USD NPV per hectare source raster aggregate
 flood_annual,0.09,30 m pixel area conversion (0.09 ha) applied once to the unscaled county raster aggregate; no inflation adjustment,USD annual per hectare source raster aggregate
-corals,1,User confirmed existing Coral_Reefs_2024adj_CPI is already adjusted,USD 2024
+corals,1.368,User confirmed multiplier applied once to nearest-county sums of BC_USD11 point totals,USD 2011 per point total
 mangroves,1.182,Assessment spreadsheet row 16; user-directed allocation of Ben_Stock_2020 totals over county-intersected area only,USD 2020 per study-unit total
 marine_fisheries,1.027,User supplied inflation adjustment,USD 2023
 inland_fisheries,1.065,User supplied inflation adjustment,USD 2022

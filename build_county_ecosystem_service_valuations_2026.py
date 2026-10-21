@@ -1,7 +1,7 @@
 """Build paired CSV/GeoPackage county ecosystem-service valuation exports.
 
-Join county estimates, allocate state fisheries and recreation/mangrove polygon
-values to counties, and apply the assessment's recorded valuation adjustments.
+Join county estimates, allocate state fisheries, recreation/mangrove polygons,
+and coral points to counties, and apply the recorded valuation adjustments.
 The output preserves county boundaries and identifiers, groups county sums and
 other adjusted totals before their factors, and omits non-sum statistics.
 
@@ -36,6 +36,7 @@ import yaml
 from osgeo import gdal, ogr
 from tqdm import tqdm
 
+from coral_county_allocation import allocate_coral_values
 from mangrove_county_allocation import allocate_mangrove_values
 
 ROOT = Path(__file__).resolve().parent
@@ -65,7 +66,6 @@ BASE_FIELDS = {
     "provisioning_pub": "sum_Wval_sw_2020usd_pub",
     "flood_npv": "sum_marginal_npv_masked_to_wetlands",
     "flood_annual": "sum_annual_value_masked_to_wetlands",
-    "corals": "sum_Coral_Reefs_2024adj_CPI",
     "mental_health": "sum_mental_health_national_existing_greenness_cost_90m",
 }
 JOB_FIELDS = {
@@ -543,7 +543,7 @@ def plan_county_export(base_columns, services, rules, geometry_field="geom"):
         if service not in BASE_FIELDS:
             records.append({"source_field": "", "default_field": service + "_adj",
                             "service": service,
-                            "group": "sum_values" if service == "mangroves" else "service_totals"})
+                            "group": "sum_values" if service in {"mangroves", "corals"} else "service_totals"})
         records.append({"source_field": "", "default_field": service + "_adj_factor",
                         "service": service, "group": "adjustment_factors"})
     defaults = [row["default_field"] for row in records]
@@ -800,6 +800,7 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
     ids = base.index
     recreation_audit = pd.DataFrame()
     mangrove_audit = pd.DataFrame()
+    coral_audit = pd.DataFrame()
     summary_fields = pd.DataFrame(index=ids)
     originals, statuses, metadata, issues, checks = {}, [], [], [], []
 
@@ -913,6 +914,28 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
         values, status, state_checks = state_values(frame, field, base.STATEFP, weights)
         checks.extend(dict(service=service, **c) for c in state_checks)
         add(service, values, status, service, field, f"state total allocated by county {weight_source} share")
+    if task == "corals":
+        with tqdm(total=2, desc="Load coral allocation inputs", unit="layer") as progress:
+            counties = gpd.read_file(paths["base"], columns=["GEOID"])
+            counties.GEOID = counties.GEOID.map(fips)
+            progress.update(1)
+            points = gpd.read_file(paths["corals"], layer="aeb_coral", columns=["OBJECTID", "BC_USD11"])
+            progress.update(1)
+        values, status, coral_audit = allocate_coral_values(counties, points)
+        input_total = float(coral_audit.input_value.sum())
+        withheld = float(coral_audit.loc[coral_audit.GEOID.isin(values.index[values.isna()]), "input_value"].sum())
+        close(float(values.sum()) + withheld, input_total, "Coral source allocation")
+        add("corals", values, status, "corals", "BC_USD11",
+            "Entire point total assigned once to nearest county polygon in point-centered WGS84 AEQD metres; "
+            "ties within 1e-6 m choose lowest GEOID; null contributions make county value unknown",
+            {"input_known_total": input_total, "allocated_known_total": input_total,
+             "withheld_partial_total": withheld, "unmatched_total": 0.0,
+             "source_point_count": len(points), "assigned_point_count": len(coral_audit),
+             "missing_source_values": int(coral_audit.input_value.isna().sum()),
+             "tied_source_points": int((coral_audit.tie_count > 1).sum())})
+        issues.extend({"service": "corals", "source_key": row.source_key,
+                       "reason": "missing_source_value", "value": None}
+                      for row in coral_audit.itertuples() if pd.isna(row.input_value))
     if task == "mangroves":
         with tqdm(total=2, desc="Load mangrove allocation inputs", unit="layer") as progress:
             counties = gpd.read_file(paths["base"], columns=["GEOID"])
@@ -963,7 +986,8 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
              "max_raw_allocated_fraction": float(recreation_audit.raw_allocated_fraction.max())})
     return {"originals": originals, "statuses": statuses, "metadata": metadata,
             "issues": issues, "checks": checks, "recreation_audit": recreation_audit,
-            "mangrove_audit": mangrove_audit, "summary_fields": summary_fields}
+            "mangrove_audit": mangrove_audit, "coral_audit": coral_audit,
+            "summary_fields": summary_fields}
 
 
 def save_checkpoint(path, signature, result):
@@ -972,7 +996,7 @@ def save_checkpoint(path, signature, result):
     Args:
         path: Destination checkpoint file.
         signature: Hash identifying code, inputs and allocation dependencies.
-        result: Completed service result, including any polygon allocation audit.
+        result: Completed service result, including any spatial allocation audit.
     """
     with tempfile.TemporaryDirectory(prefix="checkpoint-", dir=path.parent) as temporary:
         stage = Path(temporary) / path.name
@@ -985,6 +1009,8 @@ def save_checkpoint(path, signature, result):
                 result["recreation_audit"].to_sql("recreation", con, index=False)
             if len(result.get("mangrove_audit", pd.DataFrame()).columns):
                 result["mangrove_audit"].to_sql("mangroves", con, index=False)
+            if len(result.get("coral_audit", pd.DataFrame()).columns):
+                result["coral_audit"].to_sql("corals", con, index=False)
             payload = {k: result[k] for k in ("metadata", "issues", "checks")}
             con.execute("CREATE TABLE completed (signature TEXT, payload TEXT)")
             con.execute("INSERT INTO completed VALUES (?, ?)", (signature, json.dumps(payload, allow_nan=False)))
@@ -1019,6 +1045,8 @@ def load_checkpoint(path, signature):
         result["recreation_audit"] = pd.read_sql_query("SELECT * FROM recreation", con) if has_recreation else pd.DataFrame()
         has_mangroves = con.execute("SELECT 1 FROM sqlite_master WHERE name='mangroves'").fetchone()
         result["mangrove_audit"] = pd.read_sql_query("SELECT * FROM mangroves", con) if has_mangroves else pd.DataFrame()
+        has_corals = con.execute("SELECT 1 FROM sqlite_master WHERE name='corals'").fetchone()
+        result["coral_audit"] = pd.read_sql_query("SELECT * FROM corals", con) if has_corals else pd.DataFrame()
         has_summary = con.execute("SELECT 1 FROM sqlite_master WHERE name='summary_fields'").fetchone()
         result["summary_fields"] = (pd.read_sql_query("SELECT * FROM summary_fields", con).set_index("GEOID")
                                     if has_summary else pd.DataFrame(index=values.index))
@@ -1054,6 +1082,8 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     script_hash = sha256(__file__)
     allocator_path = ROOT / "mangrove_county_allocation.py"
     allocator_hash = sha256(allocator_path)
+    coral_allocator_path = ROOT / "coral_county_allocation.py"
+    coral_allocator_hash = sha256(coral_allocator_path)
     geometry_utils_path = ROOT / "geometry_utils.py"
     geometry_utils_hash = sha256(geometry_utils_path)
     config_names = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv", "export_rules.yaml")
@@ -1105,6 +1135,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "inland_fisheries": ["base", "inland_fisheries", "freshwater"],
         "recreation": ["base", "recreation"],
         "mangroves": ["base", "mangroves"],
+        "corals": ["base", "corals"],
     }
     crosswalk_hash = config_hashes["ct_county_crosswalk.csv"]
     results = {}
@@ -1114,7 +1145,8 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         for task, names in dependencies.items():
             signature = hashlib.sha256(json.dumps({"script": script_hash, "crosswalk": crosswalk_hash,
                 "mangrove_allocator": allocator_hash if task == "mangroves" else None,
-                "geometry_utils": geometry_utils_hash if task == "mangroves" else None,
+                "coral_allocator": coral_allocator_hash if task == "corals" else None,
+                "geometry_utils": geometry_utils_hash if task in {"mangroves", "corals"} else None,
                 "versions": [pd.__version__, np.__version__, shapely.__version__, gpd.__version__],
                 "inputs": {n: fingerprints[n] for n in names}}, sort_keys=True).encode()).hexdigest()
             signatures[task] = signature
@@ -1165,6 +1197,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         if sha256(path) != fingerprints[name]:
             raise ValueError(f"Source changed during integration: {path}")
     if (sha256(__file__) != script_hash or sha256(allocator_path) != allocator_hash
+            or sha256(coral_allocator_path) != coral_allocator_hash
             or sha256(geometry_utils_path) != geometry_utils_hash
             or any(sha256(config_dir / name) != digest for name, digest in config_hashes.items())):
         raise ValueError("Script or configuration changed during integration; rerun")
@@ -1190,6 +1223,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "integration_state_checks": pd.DataFrame(checks),
         "integration_recreation_allocation": recreation_audit,
         "integration_mangrove_allocation": results["mangroves"]["mangrove_audit"],
+        "integration_coral_allocation": results["corals"]["coral_audit"],
         "integration_ct_crosswalk": crosswalk,
         "integration_checkpoints": pd.DataFrame({"task": list(signatures), "signature": list(signatures.values())}),
         "integration_export_rules": pd.DataFrame([{
@@ -1206,6 +1240,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
             "created_utc": datetime.now(timezone.utc).isoformat(), "script": Path(__file__).name,
             "script_sha256": sha256(__file__), "area_crs": AREA_CRS,
             "mangrove_allocator_sha256": allocator_hash,
+            "coral_allocator_sha256": coral_allocator_hash,
             "geometry_utils_sha256": geometry_utils_hash,
             "base_counties": len(ids),
             "source_layer": layer, "output_layer": rules["output"].get("layer_name", layer),
@@ -1217,6 +1252,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
                      "Mangrove ISO3 limited to USA,PRI,VIR; Ben_Stock_2020 treated as study-unit USD 2020 total; "
                      "allocated over county intersections only, excluding uncovered ocean. "
                      "Negative timber source rents clamped to zero before county allocation. "
+                     "Coral BC_USD11 point totals assigned once to nearest county polygons in point-centered WGS84 AEQD metres. "
                      "Configured sums/totals adjusted once; one visible factor per service; no duplicate raw values. "
                      "Export names, exclusions, order, and default output naming follow the embedded export_rules.yaml. "
                      "Geometry and geographic attributes preserved. "

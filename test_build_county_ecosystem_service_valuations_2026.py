@@ -416,6 +416,7 @@ class CountyExportRuleTests(unittest.TestCase):
         # This presentation fixture exercises the pre-existing service subset.
         # Mangrove source allocation and its rename have their own integration tests.
         self.rules["rename_fields"].pop("mangroves_adj")
+        self.rules["rename_fields"].pop("corals_adj")
         self.ids = pd.Index(["01001", "01003"], name="GEOID")
         self.base = pd.DataFrame({
             "GEOID": self.ids, "ALAND": [1000, 2000], "AWATER": [10, 20],
