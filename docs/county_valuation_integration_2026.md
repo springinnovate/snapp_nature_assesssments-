@@ -24,6 +24,18 @@ This guide describes its inputs, allocation assumptions, adjustments, and
 interpretation limits. The [README](../README.md) describes the separate
 raster zonal-statistics and PAD-US workflows.
 
+County NLCD areas can be appended **after** this valuation integration without
+resampling any ecosystem-service raster or reapplying a monetary factor. See
+the [mask-only update command](../README.md#fix-county-mask-areas-without-rerunning-ecosystem-service-zonals).
+It writes a new matching CSV/GeoPackage, preserving all existing service fields,
+and appends `area_ha_valid_nlcd`, five `area_ha_nlcd_<class>` values,
+`area_ha_all_natural`, and five `proportion_nlcd_<class>_of_valid` values.
+These observed areas are not the full county polygon area. Source NLCD NoData
+has zero observed coverage and undefined (null) class proportions.
+The area fields are nonmonetary: no adjustment factor is applied. The valuation
+builder itself does not automatically find or consume mask runs; append a
+specific completed mask run again if a newer valuation export is produced.
+
 ## Input data
 
 The analysis uses the releases listed in
