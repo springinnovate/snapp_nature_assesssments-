@@ -461,7 +461,7 @@ jobs. Its configured metrics are:
 | Input family | Operations |
 | --- | --- |
 | Ecosystem service rasters | `sum`, `mean`, `area_ha_valid`, `proportion_valid_nonzero` |
-| NLCD reclassification masks | `area_ha_valid`, `proportion_valid_nonzero` |
+| NLCD reclassification masks | `sum`, `valid_count`, `total_count`, `area_ha_valid`, `area_ha_total`, `min`, `max` |
 | Zonal unit area | `intersect_area_ha` |
 | NHD freshwater polygons | `intersect_area_ha` |
 | Coastline | `intersect_length_km` |
@@ -489,7 +489,70 @@ area fields:
 - `area_ha_nlcd_water_snow`
 - `area_ha_nlcd_wetlands`
 
-The final outputs keep the corresponding `proportion_valid_nonzero_*` fields.
+The corrected outputs also include one `area_ha_valid_nlcd` coverage field,
+`area_ha_all_natural`, and five `proportion_nlcd_<class>_of_valid` fields.
+The old raw proportions and repeated coverage fields are removed. Class area
+is the number of **1-valued pixels times pixel hectares**, not valid area times
+the toolkit's nonzero proportion (which includes NoData in its denominator).
+Historical mask outputs lack the necessary counts: the combiner now asks for a
+mask-only rerun instead of guessing. Ecosystem-service zonals remain reusable.
+
+### Fix county mask areas without rerunning ecosystem-service zonals
+
+Use the same Python environment as the zonal toolkit. From this repository:
+
+```powershell
+python update_nlcd_mask_areas.py --runner "D:\repositories\zonal_stats_toolkit\runner.py" --county-results "D:\repositories\snapp_nature_assesssments-\data\analysis_results\combined\snapp_ecosystem_services_counties_2026_10_21_15_07_56.gpkg" --raster-workers 2
+```
+
+This **single command** freezes the tracked
+[`snapp_assessment_nlcd_masks.yaml`](data/workflow_assets/zonal_stats/snapp_assessment_nlcd_masks.yaml),
+runs only its five existing NLCD masks, validates the raw results, and writes:
+
+- `data/analysis_results/nlcd_mask_areas/<timestamp>/counties_nlcd_mask_areas_<timestamp>.{csv,gpkg}`:
+  county attributes, one valid-coverage area, five class areas and proportions,
+  and the sum of the five class areas.
+- `data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.{csv,gpkg}`:
+  the explicitly selected existing county valuations with those same twelve
+  fields appended. Service values, adjustment factors, geometry, and existing
+  provenance tables are preserved, not recalculated.
+
+The script prints the exact paths. It never overwrites old outputs. Omit
+`--county-results` if only the mask-area pair is needed. Choose a different
+existing final county GeoPackage explicitly if it is newer than the example;
+do not feed an already mask-augmented result back into this append-only command.
+Neither `generate_nlcd_reclass_masks.py`, the ecosystem-service zonal config,
+`build_county_ecosystem_service_valuations_2026.py`, nor the legacy combiner needs
+to be rerun for this update. The existing masks are correct; their summaries
+were not. No `es_total`, GDP/population fields, or ratios are added by this fix.
+
+`area_ha_valid_nlcd` is the observed NLCD footprint, **not** the county's full
+polygon area. The five class areas cover forests, grasslands, shrubland,
+water/snow, and wetlands; their sum cannot exceed that footprint. A valid zero
+pixel contributes to coverage but not class area. NoData contributes to neither.
+Zero coverage produces zero observed hectares and null proportions; it does not
+mean a county outside NLCD coverage has no natural land. These are pixel-centre
+areas with the reviewed 15 m simplification cap, not fractional boundary areas.
+
+The reviewed profile is version-controlled. Each invocation creates a new
+immutable config under `data/workflow_assets/zonal_stats/runs/` and isolated raw
+results/cache directories. Keep that config with the results. GeoPackages embed
+the frozen config, field definitions, source/config/code hashes, and raster grid,
+size and modification-time records. Raster contents are not fully hashed.
+
+To append the **same completed mask run to a later county valuation export**,
+no zonals need to run again. Use the paths printed by the original mask run:
+
+```powershell
+python update_nlcd_mask_areas.py --mask-results "<exact raw counties_masks_TIMESTAMP.gpkg>" --run-config "<its frozen mask .yaml>" --county-results "<new pre-mask county valuations.gpkg>" --output "<new output path.gpkg>"
+```
+
+This verifies county keys/boundaries and refuses mismatched inputs. CSV/GPKG
+parity and preservation of every retained base attribute and geometry are checked
+before publication. The raw mask run remains in its timestamped `raw/counties/`
+directory; use that raw GeoPackage, not the already renamed mask-area export.
+
+### Legacy combined results
 
 Run:
 
