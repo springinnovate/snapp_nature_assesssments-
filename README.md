@@ -514,7 +514,8 @@ runs only its five existing NLCD masks, validates the raw results, and writes:
   and the sum of the five class areas.
 - `data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.{csv,gpkg}`:
   the explicitly selected existing county valuations with those same twelve
-  fields appended. Service values, adjustment factors, geometry, and existing
+  fields appended, plus the [county totals and ratios](#add-county-totals-and-ratios-without-rerunning-zonals).
+  Service values, adjustment factors, geometry, and existing
   provenance tables are preserved, not recalculated.
 
 The script prints the exact paths. It never overwrites old outputs. Omit
@@ -524,7 +525,8 @@ do not feed an already mask-augmented result back into this append-only command.
 Neither `generate_nlcd_reclass_masks.py`, the ecosystem-service zonal config,
 `build_county_ecosystem_service_valuations_2026.py`, nor the legacy combiner needs
 to be rerun for this update. The existing masks are correct; their summaries
-were not. No `es_total`, GDP/population fields, or ratios are added by this fix.
+were not. Mask-only outputs remain area-only; augmented county outputs now also
+include `es_total`, GDP/population denominators and ratios using the current masks.
 
 `area_ha_valid_nlcd` is the observed NLCD footprint, **not** the county's full
 polygon area. The five class areas cover forests, grasslands, shrubland,
@@ -617,7 +619,9 @@ their source names plus `_adj`, including
 `sum_pollination_attributed_annual_crop_yield_value_adj` with
 `pollination_adj_factor` of `0.09`. Retained source sums without a configured
 adjustment keep their existing names and values. Mean, median, min, max, standard
-deviation, percentiles, generated counts, valid-area fields, and proportions are omitted.
+deviation, percentiles and old raw raster coverage diagnostics are omitted.
+The post-calculation stage then appends the twelve corrected NLCD area/share
+fields and the county denominators, total and ratios described below.
 There are no original-value copies or duplicate service-total aliases.
 
 The tracked
@@ -681,6 +685,70 @@ Before comparing or summing values, read the guide's
 [interpretation notes](docs/county_valuation_integration_2026.md#interpreting-the-values):
 missing values differ from zero, some estimates are allocated across boundaries,
 and the services include different units and time horizons.
+
+### Add county totals and ratios without rerunning zonals
+
+For the completed October 26 county file, run this lightweight finalization:
+
+```powershell
+python finalize_county_ecosystem_services.py --county-results "D:\repositories\snapp_nature_assesssments-\data\analysis_results\combined\snapp_ecosystem_services_counties_2026_10_26_15_03_29_853049.gpkg"
+```
+
+It writes a **new timestamped CSV and GeoPackage** under
+`data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.*`.
+It preserves the source's service values, factors, county geometry and audit
+tables. Do not rerun the ecosystem-service zonals, mask zonals, or valuation
+builder just to add these fields. Use the explicit pre-derived input again for
+subsequent rule changes; already finalized inputs are rejected to avoid stale
+metrics and conflicting provenance. `--output <new.gpkg>` optionally names the pair.
+
+[`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml)
+contains the component allowlist, explicit denominator sources/columns, unit
+conversion and ratio definitions. No latest-file discovery is used.
+
+| Field | Calculation |
+| --- | --- |
+| `es_total` | Sum of the 20 explicitly listed, already adjusted service values; blank values contribute 0 |
+| `es_per_ha` | `es_total / area_ha_county` (full county polygon hectares) |
+| `es_per_ha_natural` | `es_total / area_ha_all_natural` (sum of five corrected NLCD class areas, not valid coverage) |
+| `es_per_gdp` | `es_total / GDP_2024` (ratio, not percentage) |
+| `es_per_capita` | `es_total / Pop_2024` |
+
+`area_ha_county`, `area_ha_all_natural`, `GDP_2024`, and `Pop_2024` are retained so
+the calculations can be inspected. GDP's `2024` column is in **thousands of
+dollars**, so the recorded conversion is ×1,000. Population uses county rows
+(`SUMLEV=050`) and `POPESTIMATE2024`, joined by `GEOFIPS`.
+
+Missing/zero denominators produce **null ratios**, never infinity or fabricated
+zeroes. In this release, 134 counties lack exact GDP matches (territories and
+counties represented only by combined BEA regions), 81 lack population matches,
+and 116 have no observed NLCD coverage. Combined regional GDP is not copied or
+allocated to constituent counties. Zero NLCD coverage does not mean no natural
+land exists. Per-county reasons are in `derived_metric_county_status`.
+
+**Interpretation:** this preserves the requested 20-component sum, including
+annual flood value and flood NPV. It mixes time bases (annual flows, stocks,
+wages and NPV) and is **not an annual ES valuation or an estimate of GDP
+contribution**. The explicit allowlist avoids known subtotal/total duplication,
+but does not establish independence among services or remove economic overlap.
+Change the reviewed component list if a different interpretation is needed.
+
+Future primary county builds automatically run this stage after adjustments,
+using the corrected mask release selected in the YAML. Mask updates with
+`--county-results` also calculate these metrics using **their own freshly
+computed areas**, not a previous mask release. Mask-only exports remain area-only.
+The standalone finalizer uses corrected areas already in its input when present;
+otherwise it verifies and joins the configured corrected mask GeoPackage.
+
+Full builds require the corrected coral-point implementation from **PR #69**,
+because the total requires `sum_aeb_coral_BC_USD11_adj`. The October 26 completed
+file already has this field and can be finalized immediately after this PR is
+checked out/merged. Missing component columns are errors, not zeroes or silent
+substitutions with the legacy coral raster.
+
+Each new GeoPackage includes the full rules snapshot, source paths/hashes,
+component totals/blank counts and join diagnostics in `derived_metric_*` tables.
+See the [derived-metrics guide](docs/county_valuation_integration_2026.md#county-totals-and-ratios).
 
 ## Runtime Notes
 

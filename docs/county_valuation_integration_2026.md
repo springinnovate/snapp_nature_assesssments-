@@ -33,8 +33,9 @@ and appends `area_ha_valid_nlcd`, five `area_ha_nlcd_<class>` values,
 These observed areas are not the full county polygon area. Source NLCD NoData
 has zero observed coverage and undefined (null) class proportions.
 The area fields are nonmonetary: no adjustment factor is applied. The valuation
-builder itself does not automatically find or consume mask runs; append a
-specific completed mask run again if a newer valuation export is produced.
+builder now consumes the explicit corrected mask release in `derived_metrics.yaml`.
+It does not discover a latest run. Mask updates use their own freshly computed
+areas for the additional totals/ratios described below.
 
 ## Input data
 
@@ -58,7 +59,7 @@ Paths in the table are relative to the repository's `data/` directory.
 | Recreation | `analysis_inputs/recreation/usa_nature_assessment_recreation__snapp_estimates.gpkg` |
 | Mangrove coastal flood protection | `analysis_inputs/ecosystem_services/mangroves/ucsc_cwon_studyunits.gpkg` |
 
-Three additional files record the assessment decisions:
+Four additional files record the assessment decisions:
 
 - [`adjustment_factors.csv`](../data/workflow_assets/county_integration/adjustment_factors.csv):
   multipliers, their stated reasons, and source units.
@@ -66,6 +67,8 @@ Three additional files record the assessment decisions:
   land-area weights relating historical Connecticut counties to planning regions.
 - [`export_rules.yaml`](../data/workflow_assets/county_integration/export_rules.yaml):
   field names, exclusions, ordering, and output naming.
+- [`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml):
+  explicit adjusted-value components, denominator releases/columns/units and ratios.
 
 The source files determine the estimates' spatial and temporal coverage.
 Adjustment factors are assessment-supplied constants; the workflow does not
@@ -406,6 +409,76 @@ carbon-per-hectare field cannot be combined as a single monetary total.
 The `_adj` suffix records an adjustment, not proof of economic comparability
 or independence.
 
+## County totals and ratios
+
+This post-calculation stage operates on current adjusted values, not on a fixed
+historical valuation CSV. It runs automatically in the primary builder and in
+county-augmented mask exports. For an already completed output, use
+`finalize_county_ecosystem_services.py --county-results <explicit.gpkg>`;
+this runs neither zonals nor service allocation/adjustment again. The exact
+current command is in the [README](../README.md#add-county-totals-and-ratios-without-rerunning-zonals).
+
+`es_total` sums only the reviewed `es_total.components` allowlist. Empty service
+cells contribute zero for this arithmetic, while their original null values
+remain unchanged and their counts are audited. A missing **column** stops the
+run. The original 20-component list includes both annual flood value and flood
+NPV, as well as stock values and wages. This is a requested mixed-basis sum,
+**not an annual economic valuation or GDP contribution estimate**. It excludes
+individual water-provisioning/job subtotals already included in totals, per-ha
+carbon sums, adjustment factors and categorical land-cover sums. This does not
+guarantee absence of economic overlap among the included services.
+
+Denominator paths are explicit and relative to `--data-root`:
+
+| Exported denominator | Source and method |
+| --- | --- |
+| `area_ha_county` | `counties_area_20260910_130816.csv`, `intersect_area_ha_tl_2024_us_county_50_states`, exact `GEOID` join |
+| `area_ha_all_natural` | Corrected NLCD forests + grasslands + shrubland + water/snow + wetlands; not `area_ha_valid_nlcd` |
+| `GDP_2024` | `analysis_inputs/CAGDP1_LineCode3_All_States.csv`, `LineCode=3`, `2024` ×1,000, `GeoFIPS` join; require units `Thousands of dollars`, exclude state totals |
+| `Pop_2024` | `analysis_inputs/co-est2025-alldata.csv` (cp1252), `SUMLEV=050`, `POPESTIMATE2024`, exact `GEOFIPS` join |
+
+The ratios are respectively `es_per_ha`, `es_per_ha_natural`, `es_per_gdp`, and
+`es_per_capita`: numerator `es_total` divided by the corresponding denominator.
+GDP is a dimensionless arithmetic ratio, not multiplied by 100. All denominator
+fields remain in both outputs. Missing/zero denominators give null; negative or
+malformed values fail validation. No population/GDP crosswalk is inferred.
+
+In the supplied 3,225-county release, 3,091 have exact GDP matches and 3,144 have
+population estimates. The 134 missing GDP matches include 81 territory rows and
+53 Hawaii/Virginia counties/cities represented only through combined BEA regions.
+Those regional values are recorded as unmatched source rows, never replicated
+across counties or allocated without a reviewed method. The 81 missing population
+matches are territories. The 116 counties with no observed NLCD coverage have
+null natural-area ratios, not evidence of zero natural land. The original service
+fields retain their existing missing-coverage policies.
+
+Current corrected areas already in the input take precedence in the finalizer.
+Otherwise the configured mask release must have matching county keys, CRS and
+boundaries. A mask-update uses its own current areas and records the override's
+source/hash. The five class areas must sum to natural area within valid coverage;
+each share must agree, and zero coverage requires null shares.
+
+Primary builds require coral PR #69 for `sum_aeb_coral_BC_USD11_adj`; the October 26
+completed input already includes this corrected field. The workflow will not
+substitute the old raster-derived coral value. Use a pre-derived input to rerun
+finalization after editing rules; outputs are append-only new timestamped pairs.
+
+### Derived-metric provenance
+
+All `derived_metric_*` tables are auxiliary GeoPackage tables, not county layers:
+
+- `derived_metric_rules`: full YAML snapshot and hash.
+- `derived_metric_sources`: selected source paths, hashes, sizes, and overrides.
+- `derived_metric_components`: exact component order, blank counts and totals.
+- `derived_metric_county_status`: denominator matches and reasons for null ratios.
+- `derived_metric_source_issues`: unmatched source rows not allocated to counties.
+- `derived_metric_run`: interpretation, join/missing-value policies and timestamp.
+- `derived_metric_publication`: standalone finalizer's input GeoPackage, exporter,
+  writer and naming-config hashes, plus naming YAML snapshot.
+
+All original values, factors, FIDs and geometry are preserved by the standalone
+export; both formats are checked for attribute parity before publication.
+
 ## Quality checks and provenance
 
 The workflow checks identifiers and allocation support, reconciles state
@@ -438,7 +511,7 @@ record for interpreting a particular deliverable.
 
 ## Reproducing the dataset
 
-The large input datasets are stored at the paths listed above. The four
+The large input datasets are stored at the paths listed above. The five
 configuration files are included under
 `data/workflow_assets/county_integration/`. Activate the geospatial environment
 described in the [README](../README.md#environment), then run from the repository
@@ -460,7 +533,7 @@ data/analysis_results/combined/snapp_ecosystem_services_counties_YYYY_MM_DD_HH_M
 
 The script prints both paths. Source files and existing deliverables are
 preserved. `--data-root` selects the input data root, `--config-dir` selects the
-four configuration files, and `--output <name>.gpkg` specifies a new output path
+five configuration files, and `--output <name>.gpkg` specifies a new output path
 with a matching CSV. See `--help` for execution options.
 
 ### Export rules

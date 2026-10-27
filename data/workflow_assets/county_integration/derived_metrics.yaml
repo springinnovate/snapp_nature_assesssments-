@@ -1,0 +1,81 @@
+# Post-calculation rules for BOTH county CSV and GeoPackage exports.
+# Paths are relative to --data-root. No wildcard/latest-run discovery.
+schema_version: 1
+
+es_total:
+  # Explicit allowlist: do not include irrigation/power/public subtotals again,
+  # individual job categories, carbon per-ha sums, factors, or classification codes.
+  components:
+    - sum_flood_annual_value_masked_to_wetlands_adj
+    - sum_avoided_dredging_costs_raster_adj
+    - sum_avoided_sdwa_health_costs_raster_adj
+    - sum_avoided_treatment_costs_raster_adj
+    - sum_flood_marginal_npv_masked_to_wetlands_adj
+    - sum_mental_health_national_existing_greenness_cost_90m_adj
+    - sum_pollination_attributed_annual_crop_yield_value_adj
+    - sum_CO2e_mitigation_dollar_value_per_pixel_adj
+    - sum_Wval_sw_2020usd_total_adj
+    - sum_aeb_coral_BC_USD11_adj
+    - sum_mangrove_coastal_flood_protection_value_adj
+    - air_quality_avoided_mortality_annual_value_adj
+    - grazing_adj
+    - jobs_adj
+    - timber_adj
+    - marine_fisheries_adj
+    - inland_fisheries_adj
+    - recreation_adj
+    - urban_heat_adj
+    - physical_health_adj
+  blank_value: 0.0
+  interpretation: >-
+    User-requested sum of selected adjusted values with mixed time bases,
+    including annual flows, wages, stock values and flood NPV. Not an annual
+    ecosystem-service valuation or a GDP contribution estimate; potential
+    overlap between components is not removed by this arithmetic sum.
+
+sources:
+  county_area:
+    path: analysis_results/zonal_statistics/counties/counties_area_20260910_130816.csv
+    encoding: utf-8-sig
+    key: GEOID
+    field: intersect_area_ha_tl_2024_us_county_50_states
+    output: area_ha_county
+    scale: 1.0
+    require_all_counties: true
+  natural_areas:
+    # Used by a primary build or finalization without existing corrected areas.
+    # A current mask-update passes its freshly calculated areas instead; its exact
+    # source path/hash is then recorded as an explicit override in the audit.
+    path: analysis_results/nlcd_mask_areas/2026_10_26_15_03_29_853049/counties_nlcd_mask_areas_2026_10_26_15_03_29_853049.gpkg
+    layer: tl_2024_us_county_50_states
+    key: GEOID
+  gdp:
+    path: analysis_inputs/CAGDP1_LineCode3_All_States.csv
+    encoding: utf-8-sig
+    key: GeoFIPS
+    field: '2024'
+    output: GDP_2024
+    where: {LineCode: '3'}
+    expected_units: {column: Unit, value: Thousands of dollars}
+    scale: 1000.0
+    missing_tokens: ['(NA)', '(D)']
+    exclude_state_totals: true
+    require_all_counties: false
+  population:
+    path: analysis_inputs/co-est2025-alldata.csv
+    encoding: cp1252
+    key: GEOFIPS
+    field: POPESTIMATE2024
+    output: Pop_2024
+    where: {SUMLEV: '050'}
+    scale: 1.0
+    require_all_counties: false
+
+# These are ratios, not percentages. Missing or nonpositive denominators give
+# null, NEVER infinity or an invented value. Unmatched BEA combined regions are
+# audited, not copied to each constituent county or allocated without approval.
+ratios:
+  es_per_ha: area_ha_county
+  es_per_ha_natural: area_ha_all_natural
+  es_per_gdp: GDP_2024
+  es_per_capita: Pop_2024
