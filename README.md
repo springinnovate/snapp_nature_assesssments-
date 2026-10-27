@@ -161,8 +161,8 @@ The resulting by-county PAD-US products are written under
 `data/analysis_inputs/zonal_units`. Public-access outputs are routed to
 `padus_public_access_lands_by_county`, protected-area-filtered BLM outputs to
 `blm_lands_excluding_federally_protected_areas_by_county`, and final BBB
-outputs to `bbb_candidate_blm_lands_by_county`. This change does not add these
-products as jobs in the zonal-statistics configuration.
+outputs to `bbb_candidate_blm_lands_by_county`. Select the products to analyze
+in the zonal-statistics configuration.
 
 #### 2a. Screen BBB PAD-US Candidate Lands
 
@@ -333,14 +333,14 @@ unless the rule is changed explicitly in the script.
 
 #### TIFF handoff workflow
 
-For the current ecosystem-service TIFF handoff, place source rasters in
+For ecosystem-service TIFF analysis, place source rasters in
 `data/analysis_inputs/ecosystem_services`, then review
 `data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml`.
 This version-controlled definition contains the raster inventory, units,
 include/exclude decisions, scale factors, zone patterns, metrics, output roots,
-and simplification tolerance. There is no separate TOML raster manifest.
+and simplification tolerance.
 
-The toolkit historically uses INI sections in files named `.yaml`; the inline
+The toolkit uses INI sections in files named `.yaml`; the inline
 `[project].raster_inventory` is a JSON list inside that existing format. Only
 entries with `"include": true` are analyzed. Paths in `[project]` are relative
 to the definition; zone patterns are relative to `zonal_units_dir`. Use
@@ -366,18 +366,15 @@ the complete source definition (including blocked raster reasons), its SHA-256,
 the generator SHA-256, source and analysis raster paths, units and scale factors,
 selected concrete vector versions, skipped-zone reasons, metrics, and outputs.
 Keep that snapshot with any exported results so the analysis can be traced back
-to its exact inputs and policy. Historical configs in ignored
-`data/processing_outputs/zonal_stats_config` are preserved, but preparation no
-longer overwrites that old fixed filename. `--output` can name a new snapshot;
+to its exact inputs and policy. `--output` can name a snapshot;
 existing configs are never overwritten.
 
 The reviewed `[project]` section defaults to
 `max_simplify_tolerance_meters = 15`; preparation copies its configured value
 into the snapshot. The zonal-statistics toolkit uses this
 explicit physical tolerance when simplifying aggregation geometry; it does not
-derive the tolerance from each raster's pixel size. This avoids the previous
-2 km simplification applied to the 4 km water-provisioning raster while retaining
-geometry simplification for PAD-US performance.
+derive the tolerance from each raster's pixel size. The cap limits boundary
+displacement while retaining geometry simplification for PAD-US performance.
 
 By default the generated config covers counties, PAD-US all lands, PAD-US
 public lands, PAD-US public-access lands, and BBB candidate BLM lands. It also
@@ -407,12 +404,12 @@ It is enabled for the requested zonal run, and the discrepancy is recorded in
 the inline inventory and every frozen run snapshot.
 
 Run the exact path printed by preparation. Do not use a wildcard that would
-execute several historical runs. With the toolkit clone used on the original
-workstation, replace `<UTC-timestamp>` below with that printed filename:
+execute several runs. Replace `<zonal_stats_toolkit_repo>` with your toolkit
+clone and `<UTC-timestamp>` with the printed filename:
 
 ```powershell
 conda activate zonal-stats-toolkit
-python D:\repositories\zonal_stats_toolkit\runner.py .\data\workflow_assets\zonal_stats\runs\snapp_assessment_tif_zonal_stats_<UTC-timestamp>.yaml --job-workers 4 --raster-workers 2
+python "<zonal_stats_toolkit_repo>\runner.py" ".\data\workflow_assets\zonal_stats\runs\snapp_assessment_tif_zonal_stats_<UTC-timestamp>.yaml" --job-workers 4 --raster-workers 2
 ```
 
 The TIFF jobs write timestamped CSV and GeoPackage results under
@@ -428,7 +425,7 @@ The resulting combined filenames identify the zonal product directly, including
 `padus_public_access_lands_combined_*` and
 `bbb_candidate_blm_lands_combined_*`.
 
-#### Full legacy assessment configuration
+#### Combined raster and vector configuration
 
 The zonal statistics configuration is:
 
@@ -452,10 +449,10 @@ From this repository root, run the toolkit runner. Replace
 [`zonal_stats_toolkit`](https://github.com/springinnovate/zonal_stats_toolkit):
 
 ```powershell
-python <zonal_stats_toolkit_repo>\runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
+python "<zonal_stats_toolkit_repo>\runner.py" .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
 ```
 
-The legacy configuration combines raster, mask, area, freshwater, and coastline
+This configuration combines raster, mask, area, freshwater, and coastline
 jobs. Its configured metrics are:
 
 | Input family | Operations |
@@ -489,20 +486,24 @@ area fields:
 - `area_ha_nlcd_water_snow`
 - `area_ha_nlcd_wetlands`
 
-The corrected outputs also include one `area_ha_valid_nlcd` coverage field,
+The outputs also include one `area_ha_valid_nlcd` coverage field,
 `area_ha_all_natural`, and five `proportion_nlcd_<class>_of_valid` fields.
-The old raw proportions and repeated coverage fields are removed. Class area
+Raw proportions and repeated coverage fields are omitted. Class area
 is the number of **1-valued pixels times pixel hectares**, not valid area times
 the toolkit's nonzero proportion (which includes NoData in its denominator).
-Historical mask outputs lack the necessary counts: the combiner now asks for a
-mask-only rerun instead of guessing. Ecosystem-service zonals remain reusable.
+The mask inputs must contain `sum`, `valid_count`, and `total_count`. If those
+metrics are missing, run the mask-only command below; ecosystem-service zonals
+remain reusable.
 
-### Fix county mask areas without rerunning ecosystem-service zonals
+### Calculate county NLCD areas without rerunning ecosystem-service zonals
 
-Use the same Python environment as the zonal toolkit. From this repository:
+Use the same Python environment as the zonal toolkit. Replace
+`<zonal_stats_toolkit_repo>` with your toolkit clone and `<county-values.gpkg>`
+with a completed county valuation file that does not contain NLCD area fields
+or ES totals and ratios. Run from the repository:
 
 ```powershell
-python update_nlcd_mask_areas.py --runner "D:\repositories\zonal_stats_toolkit\runner.py" --county-results "D:\repositories\snapp_nature_assesssments-\data\analysis_results\combined\snapp_ecosystem_services_counties_2026_10_21_15_07_56.gpkg" --raster-workers 2
+python update_nlcd_mask_areas.py --runner "<zonal_stats_toolkit_repo>\runner.py" --county-results "<county-values.gpkg>" --raster-workers 2
 ```
 
 This **single command** freezes the tracked
@@ -518,15 +519,14 @@ runs only its five existing NLCD masks, validates the raw results, and writes:
   Service values, adjustment factors, geometry, and existing
   provenance tables are preserved, not recalculated.
 
-The script prints the exact paths. It never overwrites old outputs. Omit
-`--county-results` if only the mask-area pair is needed. Choose a different
-existing final county GeoPackage explicitly if it is newer than the example;
-do not feed an already mask-augmented result back into this append-only command.
-Neither `generate_nlcd_reclass_masks.py`, the ecosystem-service zonal config,
-`build_county_ecosystem_service_valuations_2026.py`, nor the legacy combiner needs
-to be rerun for this update. The existing masks are correct; their summaries
-were not. Mask-only outputs remain area-only; augmented county outputs now also
-include `es_total`, GDP/population denominators and ratios using the current masks.
+The script prints the exact paths and preserves existing outputs. Omit
+`--county-results` to produce only the mask-area pair, for example before running
+the full county valuation builder. Set `sources.natural_areas` in
+[`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml)
+to that mask-area GeoPackage and its feature layer before building valuations.
+With `--county-results`, the command also calculates `es_total`, denominators
+and ratios using the mask areas from this run. It does not regenerate the masks
+or rerun ecosystem-service zonals and valuations.
 
 `area_ha_valid_nlcd` is the observed NLCD footprint, **not** the county's full
 polygon area. The five class areas cover forests, grasslands, shrubland,
@@ -554,7 +554,7 @@ parity and preservation of every retained base attribute and geometry are checke
 before publication. The raw mask run remains in its timestamped `raw/counties/`
 directory; use that raw GeoPackage, not the already renamed mask-area export.
 
-### Legacy combined results
+### Combined zonal results
 
 Run:
 
@@ -585,16 +585,20 @@ Each contains `proportional_recreation_val_2024` joined by `GEOID`.
 ## Build County Ecosystem-Service Valuations for the 2026 Assessment
 
 [`build_county_ecosystem_service_valuations_2026.py`](build_county_ecosystem_service_valuations_2026.py)
-builds a county dataset for comparing ecosystem-service values in the October
-2026 SNAPP assessment. It adds grazing, air quality, wages, timber, fisheries,
+builds a county dataset for comparing ecosystem-service values in the 2026
+SNAPP assessment. It combines grazing, air quality, wages, timber, fisheries,
 urban heat, recreation, mangrove coastal flood protection, and physical-health
-estimates to the September 10 county results. County estimates are joined by
-FIPS; state fisheries, recreation polygons, and mangrove study units are
-distributed to counties using the documented allocation rules.
+estimates with the county zonal results selected in `sources.csv`. County
+estimates are joined by FIPS; state fisheries, recreation polygons, and mangrove
+study units are distributed to counties using the documented allocation rules.
 
 Place the source files under `data/` as listed in the
 [input and methods guide](docs/county_valuation_integration_2026.md#input-data).
-With the repository's Python environment active, run from the repository folder:
+Review the paths in `sources.csv` and `derived_metrics.yaml` under
+`data/workflow_assets/county_integration/`. The latter selects the county-area,
+NLCD mask-area, GDP and population inputs. If you need to calculate NLCD areas,
+run the [mask-only step](#calculate-county-nlcd-areas-without-rerunning-ecosystem-service-zonals)
+first. With the repository's Python environment active, run from the repository folder:
 
 ```powershell
 python build_county_ecosystem_service_valuations_2026.py
@@ -607,10 +611,9 @@ county map and tables describing sources and missing coverage. The original
 files are preserved.
 
 The county feature layer is named `tl_2024_us_county_50_states`, controlled by
-`output.layer_name` in `export_rules.yaml`. This corrects the historical
-`60_states` label without filtering geography: DC, Puerto Rico and the U.S.
-Virgin Islands remain included. Existing source-layer references retain the
-legacy name because those input files are unchanged.
+`output.layer_name` in `export_rules.yaml`. The name is a label, not a geographic
+filter: DC, Puerto Rico and the U.S. Virgin Islands are included. Use the actual
+feature-layer name from each input file in `sources.csv`.
 
 Both formats put original county identifiers and geographic attributes first,
 including `ALAND` and `AWATER`, followed by all retained `sum_` fields, other
@@ -619,15 +622,15 @@ their source names plus `_adj`, including
 `sum_pollination_attributed_annual_crop_yield_value_adj` with
 `pollination_adj_factor` of `0.09`. Retained source sums without a configured
 adjustment keep their existing names and values. Mean, median, min, max, standard
-deviation, percentiles and old raw raster coverage diagnostics are omitted.
-The post-calculation stage then appends the twelve corrected NLCD area/share
+deviation, percentiles and raw raster coverage diagnostics are omitted.
+The post-calculation stage then appends the twelve NLCD area/share
 fields and the county denominators, total and ratios described below.
 There are no original-value copies or duplicate service-total aliases.
 
 The tracked
 [`export_rules.yaml`](data/workflow_assets/county_integration/export_rules.yaml)
 controls export field names, exclusions, column groups, output directory, and
-filename prefix. This is a YAML file, separate from the toolkit's historical
+filename prefix. This is a YAML file, separate from the toolkit's
 INI-style runner configuration. Source selection, multipliers, and Connecticut
 allocation remain in `sources.csv`, `adjustment_factors.csv`, and
 `ct_county_crosswalk.csv`. The rules rename the flood totals to
@@ -646,7 +649,8 @@ intersections; ocean or other area outside all counties is excluded from the
 denominator. A unit intersecting only one county contributes its entire value
 there. Contributions are summed by county and multiplied by 1.182 to produce
 `sum_mangrove_coastal_flood_protection_value_adj`, with `mangroves_adj_factor`
-shown separately. The old categorical `sum_mangrove_CONUS` fields are omitted.
+shown separately. Categorical `sum_mangrove_CONUS` fields are excluded from
+the valuation export.
 This denominator differs deliberately from recreation's full-polygon-area
 denominator. See the [mangrove allocation method](docs/county_valuation_integration_2026.md#mangrove-study-unit-allocation)
 for the source-units caveat, null handling, and unallocated study units.
@@ -654,7 +658,7 @@ for the source-units caveat, null handling, and unallocated study units.
 Negative timber `total_annual_rent` is clamped to zero at the source-county
 level, before Connecticut redistribution or aggregation. The source CSV is
 unchanged; the output retains `timber_adj_factor` of 1 and records the clamp in
-its audit tables. Missing timber values continue to follow the documented
+its audit tables. Missing timber values follow the documented
 zero-filling convention.
 
 The carbon multiplier is the assessment-supplied price of USD 3.66 per tonne CO2e
@@ -667,56 +671,57 @@ their full YAML text, hash, and resolved field actions so its schema can be trac
 to the configuration that produced it. Editing only export rules reuses completed
 raw calculation checkpoints. See the
 [export-rules guide](docs/county_valuation_integration_2026.md#export-rules) for
-the supported keys. Existing environments without PyYAML can install it with
-`python -m pip install pyyaml`.
+the supported keys.
 
 Air quality exports only `air_quality_avoided_mortality_annual_value_adj`, the
 county total across CSV land-cover/pollutant rows, and
 `air_quality_avoided_mortality_annual_value_adj_factor` of `1.135`. See the guide
-for units, Connecticut allocation, and null handling. No raster zonal rerun is
-needed for these county integration changes, including the mangrove replacement
-and timber clamp; rerun the county builder to generate a new timestamped pair:
+for units, Connecticut allocation, and null handling. To run county integration
+with parallel workers:
 
 ```powershell
 python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16
 ```
 
 Before comparing or summing values, read the guide's
-[interpretation notes](docs/county_valuation_integration_2026.md#interpreting-the-values):
+[interpretation notes](docs/county_valuation_integration_2026.md#missing-values-zeroes-and-comparison-limits):
 missing values differ from zero, some estimates are allocated across boundaries,
 and the services include different units and time horizons.
 
 ### Add county totals and ratios without rerunning zonals
 
-#### Run the update
+#### Run the finalizer
 
 Use this when the county service values are already calculated and you want to
-add `es_total` and its four ratios. Activate the geospatial Python environment
-and run from the repository:
+add `es_total` and its four ratios. The full county builder includes these
+automatically, so it does not need a separate finalization step.
+
+Activate the geospatial Python environment. Replace `<county-values.gpkg>`
+with a completed, adjusted county valuation file that does not already contain
+the ES totals and ratios, then run from the repository:
 
 ```powershell
-python finalize_county_ecosystem_services.py --county-results "D:\repositories\snapp_nature_assesssments-\data\analysis_results\combined\snapp_ecosystem_services_counties_2026_10_26_15_03_29_853049.gpkg"
+python finalize_county_ecosystem_services.py --county-results "<county-values.gpkg>"
 ```
 
-The October 26 input above contains the adjusted service values and corrected
-NLCD areas. The script copies those results and adds the summary columns. It
-prints the paths to a new CSV and GeoPackage in `data/analysis_results/combined/`,
-named `snapp_ecosystem_services_counties_<timestamp>`. This step takes seconds
-on the current dataset; the zonal calculations are already done.
+The script copies the service values, factors, county boundaries and supporting
+tables, then appends the summaries. It prints the paths to a CSV and GeoPackage
+in `data/analysis_results/combined/`, named
+`snapp_ecosystem_services_counties_<timestamp>`. It does not rerun zonals or
+service valuations.
 
-To use a newer county result, change `--county-results` to that GeoPackage.
-To choose the output name, add `--output "<new filename>.gpkg"`; the CSV gets
+To choose the output name, add `--output "<output.gpkg>"`; the CSV gets
 the same name. When changing the calculation settings, rerun using the same
 input you used the first time, rather than the file that already has totals.
 
 The settings are in
 [`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml):
 the service fields to sum, the county-area/GDP/population files, and the ratio
-denominators. Source paths are relative to `data/`. If the input has no corrected
-NLCD areas yet, the script joins the mask-area release selected in this file.
+denominators. Source paths are relative to `data/`. The input may contain all
+twelve NLCD area/share fields. If it has none, the script joins the mask-area
+GeoPackage selected in this file; the masks must use the same county geography.
 
-The full county builder and the mask updater with `--county-results` also add
-these summaries automatically.
+The mask updater with `--county-results` also includes these summaries.
 
 #### Read the result
 

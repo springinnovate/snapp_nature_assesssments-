@@ -1,15 +1,15 @@
-# County ecosystem-service valuations for the October 2026 SNAPP assessment
+# County ecosystem-service valuations for the 2026 SNAPP assessment
 
 ## Purpose and scope
 
 This dataset brings ecosystem-service estimates onto a common county geography
-for the October 2026 SNAPP nature assessment. It combines raster-derived county
+for the 2026 SNAPP nature assessment. It combines raster-derived county
 sums with tabular, state-level, and polygon estimates, then applies the
 assessment's recorded unit conversions and valuation adjustments.
 
 The output has one record for each of 3,225 counties or county equivalents,
 including Puerto Rico and the U.S. Virgin Islands. County boundaries and
-identifiers come from the supplied September 10, 2026 county GeoPackage.
+identifiers come from the county zonal-results GeoPackage selected in `sources.csv`.
 Coverage varies by service: retaining a county in the output does not imply
 that every service has an estimate there.
 
@@ -24,18 +24,16 @@ This guide describes its inputs, allocation assumptions, adjustments, and
 interpretation limits. The [README](../README.md) describes the separate
 raster zonal-statistics and PAD-US workflows.
 
-County NLCD areas can be appended **after** this valuation integration without
-resampling any ecosystem-service raster or reapplying a monetary factor. See
-the [mask-only update command](../README.md#fix-county-mask-areas-without-rerunning-ecosystem-service-zonals).
-It writes a new matching CSV/GeoPackage, preserving all existing service fields,
-and appends `area_ha_valid_nlcd`, five `area_ha_nlcd_<class>` values,
-`area_ha_all_natural`, and five `proportion_nlcd_<class>_of_valid` values.
+The valuation builder includes county NLCD areas from the mask-area GeoPackage
+selected in `derived_metrics.yaml`: `area_ha_valid_nlcd`, five
+`area_ha_nlcd_<class>` values, `area_ha_all_natural`, and five
+`proportion_nlcd_<class>_of_valid` values.
 These observed areas are not the full county polygon area. Source NLCD NoData
 has zero observed coverage and undefined (null) class proportions.
-The area fields are nonmonetary: no adjustment factor is applied. The valuation
-builder now consumes the explicit corrected mask release in `derived_metrics.yaml`.
-It does not discover a latest run. Mask updates use their own freshly computed
-areas for the additional totals/ratios described below.
+The area fields are nonmonetary: no adjustment factor is applied. Use the
+[mask-only command](../README.md#calculate-county-nlcd-areas-without-rerunning-ecosystem-service-zonals)
+to calculate those areas independently of the service zonals. That command can
+also append the areas, totals and ratios to completed valuations that lack them.
 
 ## Input data
 
@@ -265,9 +263,8 @@ applied. Unlike recreation, this method allocates the entire known study-unit
 value whenever at least one positive-area county intersection exists;
 recreation continues to use the full source-polygon area as its denominator.
 
-This vector estimate replaces the categorical `mangrove_CONUS.tif` aggregate.
-The historical `sum_mangrove_CONUS` field and its adjusted variant are omitted
-from the county deliverables, even when present in the starting zonal results.
+The valuation export excludes `sum_mangrove_CONUS` and its adjusted variant:
+they represent categorical land cover, not monetary values.
 
 ### Raster-derived county estimates and adjustments
 
@@ -324,7 +321,7 @@ record this area conversion; it is not an inflation adjustment. Source TIFFs
 and raw zonal outputs remain unscaled, and the zonal inventory must not apply
 the same conversion upstream. To update existing combined county results,
 rerun only `build_county_ecosystem_service_valuations_2026.py`; no raster
-regeneration or zonal-statistics rerun is needed. Historical outputs are unchanged.
+regeneration or zonal-statistics rerun is needed.
 
 Coral inputs include a 2024 dollar adjustment and receive factor 1. A multiplier
 alone does not validate source values or establish comparability with other
@@ -339,11 +336,8 @@ leading zeroes are preserved.
 
 The layer name is an output label, not a geographic filter: all 3,225 counties
 and county equivalents remain, including DC, Puerto Rico, and the U.S. Virgin
-Islands. Historical inputs use the mislabeled `tl_2024_us_county_60_states`
-layer. The builder reads that name as-is and renames only the new output,
-including its GeoPackage registrations and spatial index. Source files and
-older deliverables are not modified. `integration_run` records both the
-source and output layer names.
+Islands. `sources.csv` specifies the input feature-layer name;
+`export_rules.yaml` specifies the output name. `integration_run` records both.
 
 Columns are ordered as follows:
 
@@ -432,7 +426,7 @@ Treat `es_total` as an assessment summary. Its components include annual
 benefits, wages and carbon-stock valuation, so their time periods and economic
 meanings differ. In particular, `es_per_gdp` is a size comparison, not a measure
 of how much these services contribute to annual GDP. The
-[interpretation notes](#interpreting-the-values) describe these limits.
+[interpretation notes](#missing-values-zeroes-and-comparison-limits) describe these limits.
 
 A blank service value contributes zero to the sum. Its original service column
 stays blank, so you can distinguish missing coverage from an estimated zero.
@@ -445,14 +439,14 @@ county FIPS, preserving leading zeroes.
 | Column | Source |
 | --- | --- |
 | `area_ha_county` | `intersect_area_ha_tl_2024_us_county_50_states` in `counties_area_20260910_130816.csv`, matched by `GEOID` |
-| `area_ha_all_natural` | Sum of the corrected NLCD forest, grassland, shrubland, water/snow and wetland areas |
+| `area_ha_all_natural` | Sum of the NLCD forest, grassland, shrubland, water/snow and wetland areas |
 | `GDP_2024` | `2024` in `CAGDP1_LineCode3_All_States.csv`, LineCode 3, matched by `GeoFIPS`. Values are in thousands of dollars and are multiplied by 1,000 |
 | `Pop_2024` | `POPESTIMATE2024` in `co-est2025-alldata.csv`, county rows (`SUMLEV=050`), matched by `GEOFIPS` |
 
 Full source paths are in
 [`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml).
 The GDP and population files are under `data/analysis_inputs/`; the county-area
-and corrected NLCD files are earlier analysis results.
+and NLCD mask-area files are outputs of their respective analysis steps.
 
 Natural-land area is the area of the five selected NLCD classes.
 `area_ha_valid_nlcd` measures the larger footprint with usable NLCD observations.
@@ -462,14 +456,11 @@ county has no natural land.
 
 ### Why a ratio may be blank
 
-A ratio is blank when its denominator is missing or nonpositive. In the
-October 26 release:
-
-- 134 counties lack a matching GDP row: 81 territory rows and 53 Hawaii/Virginia
-  counties or cities represented only by combined BEA regions. Those combined
-  amounts remain in the source records rather than being assigned to each county.
-- 81 territory rows lack population estimates.
-- 116 counties have no observed NLCD coverage, so their natural-land ratios are blank.
+A ratio is blank when its denominator is missing or nonpositive. Common causes
+are an absent county row in the GDP or population table, or a county outside
+NLCD coverage. GDP records for combined BEA regions are not distributed to their
+constituent counties; a county without its own matching GDP row has a blank
+`es_per_gdp`.
 
 To investigate a particular county, find its `GEOID` in the GeoPackage's
 `derived_metric_county_status` table. This records the denominator match and the
@@ -533,10 +524,8 @@ directory:
 python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16
 ```
 
-The integration uses the configured county aggregates, so this step does not
-require a raster zonal-statistics run. Rerunning this builder is sufficient to
-replace the old categorical mangrove aggregate with the study-unit allocation
-and to apply the timber clamp. The default output pair is:
+The integration uses the configured county aggregates and NLCD mask areas,
+so this step does not run raster zonal statistics. The default output pair is:
 
 ```text
 data/analysis_results/combined/snapp_ecosystem_services_counties_YYYY_MM_DD_HH_MM_SS.csv
