@@ -708,7 +708,7 @@ conversion and ratio definitions. No latest-file discovery is used.
 
 | Field | Calculation |
 | --- | --- |
-| `es_total` | Sum of the 20 explicitly listed, already adjusted service values; blank values contribute 0 |
+| `es_total` | Sum of the 19 explicitly listed, already adjusted service values, excluding identified NPVs; blank values contribute 0 |
 | `es_per_ha` | `es_total / area_ha_county` (full county polygon hectares) |
 | `es_per_ha_natural` | `es_total / area_ha_all_natural` (sum of five corrected NLCD class areas, not valid coverage) |
 | `es_per_gdp` | `es_total / GDP_2024` (ratio, not percentage) |
@@ -726,12 +726,14 @@ and 116 have no observed NLCD coverage. Combined regional GDP is not copied or
 allocated to constituent counties. Zero NLCD coverage does not mean no natural
 land exists. Per-county reasons are in `derived_metric_county_status`.
 
-**Interpretation:** this preserves the requested 20-component sum, including
-annual flood value and flood NPV. It mixes time bases (annual flows, stocks,
-wages and NPV) and is **not an annual ES valuation or an estimate of GDP
-contribution**. The explicit allowlist avoids known subtotal/total duplication,
-but does not establish independence among services or remove economic overlap.
-Change the reviewed component list if a different interpretation is needed.
+**Interpretation:** the 19-component sum keeps annual flood value but excludes
+`sum_flood_marginal_npv_masked_to_wetlands_adj`, the only component explicitly
+identified as NPV in the configured inputs. Its standalone value/factor remain
+in the output. All four ratios use this same NPV-excluded numerator. The remaining
+values still have differing bases, including wages and carbon-stock valuation;
+this is **not established as an annual ES valuation or an estimate of GDP
+contribution**. The allowlist avoids known subtotal/total duplication, but does
+not remove economic overlap. Review the list when new valuation sources are added.
 
 Future primary county builds automatically run this stage after adjustments,
 using the corrected mask release selected in the YAML. Mask updates with

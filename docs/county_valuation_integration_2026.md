@@ -421,12 +421,28 @@ current command is in the [README](../README.md#add-county-totals-and-ratios-wit
 `es_total` sums only the reviewed `es_total.components` allowlist. Empty service
 cells contribute zero for this arithmetic, while their original null values
 remain unchanged and their counts are audited. A missing **column** stops the
-run. The original 20-component list includes both annual flood value and flood
-NPV, as well as stock values and wages. This is a requested mixed-basis sum,
-**not an annual economic valuation or GDP contribution estimate**. It excludes
-individual water-provisioning/job subtotals already included in totals, per-ha
-carbon sums, adjustment factors and categorical land-cover sums. This does not
-guarantee absence of economic overlap among the included services.
+run. The revised 19-component list excludes identified NPVs: currently
+`sum_flood_marginal_npv_masked_to_wetlands_adj`, the only component explicitly
+classified as NPV by the configured input metadata. Annual flood value stays in
+the sum; the standalone NPV field and factor stay in both output formats but do
+not contribute to `es_total` or any of the four ratios. Missing the NPV column is
+not an error for this stage because it is not a required component.
+
+The remaining list still contains values with differing bases, including
+carbon-stock valuation and wages. Excluding NPV does **not** establish an annual
+economic valuation or GDP contribution estimate. Individual water-provisioning/
+job subtotals already included in totals, per-ha carbon sums, adjustment factors
+and categorical land-cover sums are also excluded. This does not guarantee
+absence of economic overlap among the included services. New sources require
+review before adding them to the allowlist.
+
+Do not classify the mangrove `Ben_Stock_2020` field as NPV solely from "Stock":
+the [CWON 2024 technical report](https://documents1.worldbank.org/curated/en/099101124150015562/pdf/P17844613fd9760e31a55510ba9e7e43371.pdf)
+distinguishes annual benefits to protected capital stock from discounted asset
+value (sections 4.2–4.3 and Table A3's separate STOCK BEN and PV columns).
+The local GeoPackage has `Risk_Stock_*` and `Ben_Stock_*` columns but no embedded
+field definitions; its exact release/time-basis mapping remains unverified.
+It remains included, rather than being removed on a name-only NPV inference.
 
 Denominator paths are explicit and relative to `--data-root`:
 

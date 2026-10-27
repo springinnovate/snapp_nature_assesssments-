@@ -5,12 +5,14 @@ schema_version: 1
 es_total:
   # Explicit allowlist: do not include irrigation/power/public subtotals again,
   # individual job categories, carbon per-ha sums, factors, or classification codes.
+  # Exclude NPV components from es_total and every derived ratio. The only
+  # currently identified NPV is sum_flood_marginal_npv_masked_to_wetlands_adj;
+  # its standalone output column and factor remain available unchanged.
   components:
     - sum_flood_annual_value_masked_to_wetlands_adj
     - sum_avoided_dredging_costs_raster_adj
     - sum_avoided_sdwa_health_costs_raster_adj
     - sum_avoided_treatment_costs_raster_adj
-    - sum_flood_marginal_npv_masked_to_wetlands_adj
     - sum_mental_health_national_existing_greenness_cost_90m_adj
     - sum_pollination_attributed_annual_crop_yield_value_adj
     - sum_CO2e_mitigation_dollar_value_per_pixel_adj
@@ -28,10 +30,11 @@ es_total:
     - physical_health_adj
   blank_value: 0.0
   interpretation: >-
-    User-requested sum of selected adjusted values with mixed time bases,
-    including annual flows, wages, stock values and flood NPV. Not an annual
-    ecosystem-service valuation or a GDP contribution estimate; potential
-    overlap between components is not removed by this arithmetic sum.
+    User-requested sum of 19 selected adjusted values, excluding identified
+    NPV components (currently flood NPV). Retains annual flows, wages and
+    other valuations with differing bases; excluding NPV does not establish
+    an annual ecosystem-service valuation or a GDP contribution estimate.
+    Potential overlap between components is not removed by this arithmetic sum.
 
 sources:
   county_area:

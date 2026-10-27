@@ -33,7 +33,9 @@ class DerivedMetricsTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.ids = pd.Index(['01001', '01003', '01005'], name='GEOID')
         self.frame = pd.DataFrame({'first_adj': [10., np.nan, 5.], 'second_adj': [2., 4., np.nan],
-                                   'sum_do_not_double_count_adj': [1000.] * 3}, index=self.ids)
+                                   'sum_do_not_double_count_adj': [1000.] * 3,
+                                   'sum_flood_marginal_npv_masked_to_wetlands_adj': [1e12, 2e12, np.nan]},
+                                  index=self.ids)
         self.masks = pd.DataFrame(index=self.ids)
         self.masks['area_ha_valid_nlcd'] = [2., 2., 0.]
         for name in CLASSES:
@@ -99,6 +101,27 @@ class DerivedMetricsTests(unittest.TestCase):
         for ids in (['1001', '01001'], ['x'], [None]):
             with self.subTest(ids=ids), self.assertRaises(ValueError):
                 county_keys(pd.Series(ids), 'fixture')
+
+    def test_default_policy_excludes_npv_from_total_and_all_ratios(self):
+        """Keep annual flood benefits while NPV neither contributes nor is required."""
+        components = load_derived_rules(DEFAULT_CONFIG)['es_total']['components']
+        npv = 'sum_flood_marginal_npv_masked_to_wetlands_adj'
+        self.assertEqual(len(components), 19)
+        self.assertFalse(any('npv' in name.lower() for name in components))
+        self.assertIn('sum_flood_annual_value_masked_to_wetlands_adj', components)
+        self.rules['es_total']['components'] = components
+        self.config.write_text(yaml.safe_dump(self.rules), encoding='utf-8')
+        frame = pd.DataFrame(1., index=self.ids, columns=components)
+        frame[npv] = [1e12, 2e12, np.nan]
+        result, tables = calculate_county_metrics(frame, self.root, self.config)
+        without_npv, _ = calculate_county_metrics(frame.drop(columns=npv), self.root, self.config)
+        pd.testing.assert_frame_equal(result, without_npv)
+        np.testing.assert_allclose(result.es_total, [19.] * 3)
+        np.testing.assert_allclose(result.es_per_ha, [9.5, 4.75, 3.8])
+        np.testing.assert_allclose(result.es_per_ha_natural, [19., 38., np.nan], equal_nan=True)
+        np.testing.assert_allclose(result.es_per_gdp, [.019, np.nan, np.nan], equal_nan=True)
+        np.testing.assert_allclose(result.es_per_capita, [19. / 3, 9.5, np.nan], equal_nan=True)
+        self.assertNotIn(npv, tables['derived_metric_components'].field.to_list())
 
     def test_rule_typos_duplicates_and_already_derived_inputs_fail(self):
         """Never ignore ambiguous YAML or recompute against a stale derived export."""
