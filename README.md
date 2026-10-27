@@ -401,10 +401,10 @@ Mangroves remain disabled in this raster inventory because
 `17`), not monetary values. The county valuation builder instead uses the
 `ucsc_cwon_studyunits.gpkg` vector source described below.
 
-The coral row also needs a metadata decision before publication: the spreadsheet
-labels it USD 2010, while the local filename is `Coral_Reefs_2024adj_CPI.tif`.
-It is enabled for the requested zonal run, and the discrepancy is recorded in
-the inline inventory and every frozen run snapshot.
+The legacy `Coral_Reefs_2024adj_CPI.tif` is now disabled in the raster inventory.
+The county builder instead uses `aeb_coral.gpkg` point totals from `BC_USD11`,
+assigned once per point to the nearest county polygon and adjusted by 1.368.
+Historical frozen zonal snapshots are unchanged.
 
 Run the exact path printed by preparation. Do not use a wildcard that would
 execute several historical runs. With the toolkit clone used on the original
@@ -585,9 +585,9 @@ Each contains `proportional_recreation_val_2024` joined by `GEOID`.
 [`build_county_ecosystem_service_valuations_2026.py`](build_county_ecosystem_service_valuations_2026.py)
 builds a county dataset for comparing ecosystem-service values in the October
 2026 SNAPP assessment. It adds grazing, air quality, wages, timber, fisheries,
-urban heat, recreation, mangrove coastal flood protection, and physical-health
+urban heat, recreation, coral and mangrove coastal protection, and physical-health
 estimates to the September 10 county results. County estimates are joined by
-FIPS; state fisheries, recreation polygons, and mangrove study units are
+FIPS; state fisheries, recreation polygons, mangrove study units, and coral points are
 distributed to counties using the documented allocation rules.
 
 Place the source files under `data/` as listed in the
@@ -647,6 +647,17 @@ This denominator differs deliberately from recreation's full-polygon-area
 denominator. See the [mangrove allocation method](docs/county_valuation_integration_2026.md#mangrove-study-unit-allocation)
 for the source-units caveat, null handling, and unallocated study units.
 
+Corals use `BC_USD11` from the `aeb_coral` point layer in
+`data/analysis_inputs/ecosystem_services/aeb_coral.gpkg`. Each point contributes
+its entire value once to the nearest county polygon, including offshore points;
+counties with multiple assigned points receive their sum. Distances are measured
+in point-centered WGS84 azimuthal-equidistant metres, not to county centroids.
+The total is multiplied once by **1.368**, exported as
+`sum_aeb_coral_BC_USD11_adj`, with `corals_adj_factor` retained. The old coral
+raster sums are omitted. `integration_coral_allocation` records each point's
+assignment and distance. See the [coral method](docs/county_valuation_integration_2026.md#coral-point-allocation)
+for tie-breaking, null handling, and coverage limits.
+
 Negative timber `total_annual_rent` is clamped to zero at the source-county
 level, before Connecticut redistribution or aggregation. The source CSV is
 unchanged; the output retains `timber_adj_factor` of 1 and records the clamp in
@@ -670,8 +681,8 @@ Air quality exports only `air_quality_avoided_mortality_annual_value_adj`, the
 county total across CSV land-cover/pollutant rows, and
 `air_quality_avoided_mortality_annual_value_adj_factor` of `1.135`. See the guide
 for units, Connecticut allocation, and null handling. No raster zonal rerun is
-needed for these county integration changes, including the mangrove replacement
-and timber clamp; rerun the county builder to generate a new timestamped pair:
+needed for these county integration changes, including the coral point replacement,
+mangrove replacement, and timber clamp; rerun the county builder to generate a new timestamped pair:
 
 ```powershell
 python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16

@@ -4,7 +4,7 @@
 
 This dataset brings ecosystem-service estimates onto a common county geography
 for the October 2026 SNAPP nature assessment. It combines raster-derived county
-sums with tabular, state-level, and polygon estimates, then applies the
+sums with tabular, state-level, polygon, and point estimates, then applies the
 assessment's recorded unit conversions and valuation adjustments.
 
 The output has one record for each of 3,225 counties or county equivalents,
@@ -57,6 +57,7 @@ Paths in the table are relative to the repository's `data/` directory.
 | Physical health | `analysis_inputs/ecosystem_services/physical_health/hypertension_linear_us_counties_all.gpkg` |
 | Recreation | `analysis_inputs/recreation/usa_nature_assessment_recreation__snapp_estimates.gpkg` |
 | Mangrove coastal flood protection | `analysis_inputs/ecosystem_services/mangroves/ucsc_cwon_studyunits.gpkg` |
+| Coral coastal protection | `analysis_inputs/ecosystem_services/aeb_coral.gpkg` |
 
 Three additional files record the assessment decisions:
 
@@ -266,6 +267,47 @@ This vector estimate replaces the categorical `mangrove_CONUS.tif` aggregate.
 The historical `sum_mangrove_CONUS` field and its adjusted variant are omitted
 from the county deliverables, even when present in the starting zonal results.
 
+### Coral point allocation
+
+Coral estimates use `BC_USD11` in the `aeb_coral` layer of `aeb_coral.gpkg`,
+with `OBJECTID` identifying each point. The supplied release contains nine
+points. Each point's entire value is assigned **once** to its nearest county
+polygon, and all assigned values are summed per county:
+
+```text
+sum_aeb_coral_BC_USD11_adj = sum(assigned points' BC_USD11) × 1.368
+```
+
+The assessment-supplied multiplier is recorded in `adjustment_factors.csv`
+and exported as `corals_adj_factor`. The source field is treated as a USD 2011
+total per point, not a per-hectare or per-pixel rate. No rasterization or pixel
+area conversion is performed. The multiplier alone does not establish the
+source's benefit time horizon or comparability with other services.
+
+Distance is measured to the full county polygon (not its centroid) in metres
+using a WGS84 azimuthal-equidistant projection centered on each source point.
+County polygons are repaired when necessary but are not simplified; the
+original output county geometry is preserved. Points inside a polygon have
+zero distance. Offshore points have no maximum-distance cutoff. If distances
+tie within one micrometre, the lowest GEOID wins; no point is duplicated among
+counties, even if county polygons overlap. `integration_coral_allocation`
+records every source identifier, raw value, assigned GEOID, distance, method,
+and tied counties. These are spatial assignments, not observations of which
+county receives the economic benefit.
+
+Counties without assigned points receive zero under this coverage convention,
+not a measured absence of coral benefits. A null-valued assigned point makes
+its county total null, rather than allowing a partial sum. Invalid source
+identifiers, non-point geometries, or nonnumeric values stop the analysis.
+Known source values are conserved before any incomplete county totals are
+withheld; both quantities are recorded in `integration_services`.
+
+This replaces the legacy `Coral_Reefs_2024adj_CPI.tif` estimate. That raster is
+disabled in the tracked TIFF inventory; its `sum_Coral_Reefs_2024adj_CPI` and
+`sum_Coral_Reefs_2024adj_CPI_adj` columns are omitted even when present in the
+historical county zonals. Only the county builder needs to be rerun; source
+files, historical outputs, and frozen zonal run configurations are unchanged.
+
 ### Raster-derived county estimates and adjustments
 
 The raster estimates are read from the supplied county zonal-results
@@ -291,7 +333,6 @@ adjusted county estimate = source county estimate × adjustment factor
 | Water provisioning components | `sum_Wval_sw_2020usd_irr`, `sum_Wval_sw_2020usd_pow`, `sum_Wval_sw_2020usd_pub` | 1.182 |
 | Flood mitigation NPV | `sum_marginal_npv_masked_to_wetlands` | 0.09 |
 | Flood mitigation annual value | `sum_annual_value_masked_to_wetlands` | 0.09 |
-| Corals | `sum_Coral_Reefs_2024adj_CPI` | 1 |
 | Mental health | `sum_mental_health_national_existing_greenness_cost_90m` | 1 |
 
 Pollination is supplied as dollars per hectare on a 30 m grid. Each pixel
@@ -322,10 +363,6 @@ and raw zonal outputs remain unscaled, and the zonal inventory must not apply
 the same conversion upstream. To update existing combined county results,
 rerun only `build_county_ecosystem_service_valuations_2026.py`; no raster
 regeneration or zonal-statistics rerun is needed. Historical outputs are unchanged.
-
-Coral inputs include a 2024 dollar adjustment and receive factor 1. A multiplier
-alone does not validate source values or establish comparability with other
-services.
 
 ## Output fields and interpretation
 
@@ -390,6 +427,8 @@ There are specific zero conventions:
 - Fisheries counties with zero allocation weight receive zero within states
   that have numeric source values.
 - Recreation counties without intersecting source polygons receive zero.
+- Coral counties without assigned points receive zero; assigned null-valued
+  points instead propagate null totals.
 - Mangrove counties without positive-area study-unit intersections receive zero;
   intersections with null-valued study units instead propagate null totals.
 
@@ -409,7 +448,7 @@ or independence.
 ## Quality checks and provenance
 
 The workflow checks identifiers and allocation support, reconciles state
-fisheries, recreation, and mangrove source totals, and verifies that the output preserves
+fisheries, recreation, mangrove, and coral source totals, and verifies that the output preserves
 county geometries and retained attributes. Source-file hashes are checked
 before publication. CSV and GeoPackage attributes are compared for matching
 fields, order, and values.
@@ -425,6 +464,7 @@ The GeoPackage includes supporting tables for evaluating the estimates:
 | Do county fisheries allocations reproduce their state totals? | `integration_state_checks` |
 | How much recreation value is allocated, corrected, or outside the county footprint? | `integration_recreation_allocation` |
 | Which mangrove study units were allocated, and which had no county-intersection support? | `integration_mangrove_allocation` |
+| Which county received each coral point, at what distance, and were there ties? | `integration_coral_allocation` |
 | Which countries' mangrove study units were selected, and how many were excluded? | `integration_services` |
 | Which timber source values were clamped, and how much did clamping change the total? | `integration_source_issues`, `integration_services` |
 | Which Connecticut allocation weights were used? | `integration_ct_crosswalk` |
@@ -450,8 +490,9 @@ python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry
 
 The integration uses the configured county aggregates, so this step does not
 require a raster zonal-statistics run. Rerunning this builder is sufficient to
-replace the old categorical mangrove aggregate with the study-unit allocation
-and to apply the timber clamp. The default output pair is:
+replace the old coral raster totals with point allocations, replace the old
+categorical mangrove aggregate with the study-unit allocation, and apply the
+timber clamp. The default output pair is:
 
 ```text
 data/analysis_results/combined/snapp_ecosystem_services_counties_YYYY_MM_DD_HH_MM_SS.csv
