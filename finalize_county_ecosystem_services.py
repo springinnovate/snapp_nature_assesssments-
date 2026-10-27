@@ -16,7 +16,7 @@ from tqdm import tqdm
 from build_county_ecosystem_service_valuations_2026 import (
     load_export_rules, read_attributes, sha256, write_output,
 )
-from county_derived_metrics import DEFAULT_CONFIG, calculate_county_metrics
+from county_derived_metrics import DEFAULT_CONFIG, DERIVED_FIELDS, calculate_county_metrics
 from nlcd_mask_areas import FIELD_DEFINITIONS
 
 ROOT = Path(__file__).resolve().parent
@@ -63,15 +63,16 @@ def finalize_counties(county_results: Path, data_root: Path = ROOT / 'data',
         frame, layer, geom = read_attributes(county_results)
         frame = frame.set_index('GEOID')
         progress.update(1)
+    if set(frame) & set(DERIVED_FIELDS):
+        raise ValueError('Input already has derived metrics; use its original pre-derived county results')
     existing_masks = set(frame) & set(FIELD_DEFINITIONS)
     if existing_masks and existing_masks != set(FIELD_DEFINITIONS):
         raise ValueError('Input contains only some corrected NLCD fields; supply a complete mask-area export')
     metrics, tables = calculate_county_metrics(
         frame, data_root, config_path,
         natural_areas=frame[list(FIELD_DEFINITIONS)] if existing_masks else None,
-        natural_source=county_results if existing_masks else None, county_vector=county_results)
-    # Existing areas were reconciled above; preserve them byte-for-byte as well
-    # as all monetary values and factors. Append only genuinely new columns.
+        natural_source=county_results if existing_masks else None)
+    # Keep existing areas, service values and factors; append the new columns.
     additions = metrics[[c for c in metrics if c not in frame]]
     for name, path in inputs.items():
         if sha256(path) != hashes[name]:

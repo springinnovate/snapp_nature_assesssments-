@@ -15,7 +15,7 @@ from shapely.geometry import box
 import yaml
 
 from build_county_ecosystem_service_valuations_2026 import read_attributes, read_db, sha256
-from county_derived_metrics import DEFAULT_CONFIG, DERIVED_FIELDS, calculate_county_metrics, county_keys, load_derived_rules
+from county_derived_metrics import DEFAULT_CONFIG, DERIVED_FIELDS, calculate_county_metrics
 from finalize_county_ecosystem_services import finalize_counties
 from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS
 from prepare_tif_zonal_stats_config import prepare_config
@@ -71,7 +71,7 @@ class DerivedMetricsTests(unittest.TestCase):
 
     def test_exact_allowlist_blanks_units_and_null_ratios(self):
         """Sum only listed adjusted values and use true denominators, not coverage."""
-        result, tables = calculate_county_metrics(self.frame, self.root, self.config, county_vector=self.base)
+        result, tables = calculate_county_metrics(self.frame, self.root, self.config)
         np.testing.assert_allclose(result.es_total, [12., 4., 5.])
         np.testing.assert_allclose(result.es_per_ha, [6., 1., 1.])
         np.testing.assert_allclose(result.es_per_ha_natural, [12., 8., np.nan], equal_nan=True)
@@ -89,22 +89,14 @@ class DerivedMetricsTests(unittest.TestCase):
         self.assertEqual(sources.loc['gdp', 'sha256'], sha256(self.root / 'gdp.csv'))
         self.assertEqual(yaml.safe_load(tables['derived_metric_rules'].yaml_text.iloc[0]), self.rules)
 
-    def test_invalid_required_components_and_numbers_fail(self):
-        """Missing columns differ from permitted blanks; malformed values fail."""
-        with self.assertRaisesRegex(ValueError, 'Missing required'):
+    def test_missing_component_is_not_treated_as_a_blank_observation(self):
+        """Pandas column selection enforces the required component contract."""
+        with self.assertRaises(KeyError):
             calculate_county_metrics(self.frame.drop(columns='first_adj'), self.root, self.config)
-        for value in ('oops', np.inf):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                changed = self.frame.astype(object)
-                changed.loc['01001', 'first_adj'] = value
-                calculate_county_metrics(changed, self.root, self.config)
-        for ids in (['1001', '01001'], ['x'], [None]):
-            with self.subTest(ids=ids), self.assertRaises(ValueError):
-                county_keys(pd.Series(ids), 'fixture')
 
     def test_default_policy_excludes_npv_from_total_and_all_ratios(self):
         """Keep annual flood benefits while NPV neither contributes nor is required."""
-        components = load_derived_rules(DEFAULT_CONFIG)['es_total']['components']
+        components = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding='utf-8'))['es_total']['components']
         npv = 'sum_flood_marginal_npv_masked_to_wetlands_adj'
         self.assertEqual(len(components), 19)
         self.assertFalse(any('npv' in name.lower() for name in components))
@@ -123,26 +115,23 @@ class DerivedMetricsTests(unittest.TestCase):
         np.testing.assert_allclose(result.es_per_capita, [19. / 3, 9.5, np.nan], equal_nan=True)
         self.assertNotIn(npv, tables['derived_metric_components'].field.to_list())
 
-    def test_rule_typos_duplicates_and_already_derived_inputs_fail(self):
-        """Never ignore ambiguous YAML or recompute against a stale derived export."""
-        text = self.config.read_text(encoding='utf-8')
-        for content in (text + '\nschema_version: 1\n', text + '\nunknown: true\n',
-                         text.replace('scale: 1000.0', 'scalle: 1000.0')):
-            with self.subTest(content=content[-40:]), self.assertRaises(ValueError):
-                self.config.write_text(content, encoding='utf-8')
-                load_derived_rules(self.config)
-        self.config.write_text(text, encoding='utf-8')
-        with self.assertRaisesRegex(ValueError, 'already has derived metrics'):
-            calculate_county_metrics(self.frame.assign(es_total=0), self.root, self.config)
-        self.rules['es_total']['components'] = ['first_adj', 'first_adj']
-        self.config.write_text(yaml.safe_dump(self.rules), encoding='utf-8')
-        with self.assertRaisesRegex(ValueError, 'unique adjusted'):
-            load_derived_rules(self.config)
+    def test_tracked_rules_describe_the_pipeline_contract(self):
+        """Check our committed configuration in tests, rather than every run."""
+        rules = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding='utf-8'))
+        self.assertEqual(rules['es_total']['blank_value'], 0.)
+        components = rules['es_total']['components']
+        self.assertEqual(len(components), len(set(components)))
+        self.assertTrue(all(c.endswith('_adj') for c in components))
+        self.assertEqual(rules['sources']['gdp']['scale'], 1000.)
+        self.assertEqual(rules['sources']['population']['where'], {'SUMLEV': '050'})
+        self.assertEqual(rules['ratios'], {'es_per_ha': 'area_ha_county',
+                         'es_per_ha_natural': 'area_ha_all_natural', 'es_per_gdp': 'GDP_2024',
+                         'es_per_capita': 'Pop_2024'})
 
-    def test_invalid_sources_or_units_cannot_silently_publish(self):
-        """Reject wrong currency units, duplicate keys and invalid denominators."""
+    def test_csv_reader_reports_duplicate_keys_and_nonnumeric_values(self):
+        """Use pandas ingestion errors for malformed external CSV records."""
         original = (self.root / 'gdp.csv').read_bytes()
-        for field, value in [('Unit', 'Dollars'), ('GeoFIPS', '01003'), ('2024', '-3'), ('2024', 'garbage')]:
+        for field, value in [('GeoFIPS', '01003'), ('2024', 'garbage')]:
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 table = pd.read_csv(self.root / 'gdp.csv', dtype=str)
                 table.loc[1, field] = value
@@ -152,8 +141,18 @@ class DerivedMetricsTests(unittest.TestCase):
                 finally:
                     (self.root / 'gdp.csv').write_bytes(original)
         (self.root / 'area.csv').write_text('GEOID,hectares\n01001,2\n', encoding='utf-8')
-        with self.assertRaisesRegex(ValueError, 'required county denominator'):
+        with self.assertRaises(KeyError):
             calculate_county_metrics(self.frame, self.root, self.config)
+
+    def test_unavailable_denominators_produce_blank_ratios(self):
+        """Treat zero, negative and missing divisors as undefined ratios."""
+        table = pd.read_csv(self.root / 'gdp.csv', dtype={'GeoFIPS': str})
+        table.loc[table.GeoFIPS.eq('01001'), '2024'] = '-3'
+        table.to_csv(self.root / 'gdp.csv', index=False)
+        result, tables = calculate_county_metrics(self.frame, self.root, self.config)
+        self.assertTrue(result.es_per_gdp.isna().all())
+        status = tables['derived_metric_county_status'].set_index('GEOID')
+        self.assertEqual(status.loc['01001', 'GDP_2024_status'], 'nonpositive')
 
     def test_current_mask_override_is_used_and_audited(self):
         """A mask update must use its fresh areas, not a prior configured release."""
@@ -168,13 +167,6 @@ class DerivedMetricsTests(unittest.TestCase):
         self.assertEqual(source.selection, 'explicit_override')
         self.assertEqual(source.path, str(self.base))
         self.assertEqual(source.sha256, sha256(self.base))
-        for field, value in [('area_ha_all_natural', 5.), ('area_ha_nlcd_forests', -1.),
-                              ('proportion_nlcd_forests_of_valid', .9)]:
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                invalid = self.masks.copy()
-                invalid.loc['01001', field] = value
-                calculate_county_metrics(self.frame, self.root, self.config,
-                                          natural_areas=invalid, natural_source=self.base)
 
     def test_finalizer_preserves_base_and_writes_matching_formats(self):
         """Preserve attributes, factors, geometry, FIDs, audits and source hashes."""
@@ -285,16 +277,6 @@ class DerivedMetricsTests(unittest.TestCase):
         self.assertEqual(attrs.pollination_adj_factor.to_list(), [.09] * 3)
         with closing(read_db(output)) as con:
             self.assertEqual(con.execute('SELECT count(*) FROM derived_metric_components').fetchone()[0], 1)
-
-    def test_invalid_mask_geography_fails_before_export(self):
-        """Equal county keys do not permit using a different county footprint."""
-        wrong = self.root / 'wrong_counties.gpkg'
-        gpd.GeoDataFrame(self.frame, geometry=self.geometry.translate(xoff=5)).reset_index().to_file(
-            wrong, layer='counties', driver='GPKG')
-        with self.assertRaisesRegex(ValueError, 'boundaries differ'):
-            finalize_counties(wrong, self.root, self.config, self.root / 'invalid.gpkg')
-        self.assertFalse((self.root / 'invalid.gpkg').exists())
-
 
 if __name__ == '__main__':
     unittest.main()

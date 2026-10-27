@@ -19,12 +19,13 @@ import geopandas as gpd
 import pandas as pd
 import rasterio
 from tqdm import tqdm
+import yaml
 
 from build_county_ecosystem_service_valuations_2026 import (
     read_attributes, sha256, write_output,
 )
 from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS, RAW_FIELD, derive_nlcd_mask_areas
-from county_derived_metrics import DEFAULT_CONFIG as DEFAULT_DERIVED_CONFIG, calculate_county_metrics, load_derived_rules
+from county_derived_metrics import DEFAULT_CONFIG as DEFAULT_DERIVED_CONFIG, calculate_county_metrics
 from prepare_tif_zonal_stats_config import load_run_config, prepare_config
 
 
@@ -218,7 +219,8 @@ def run_mask_update(runner: Path, config_path: Path = DEFAULT_CONFIG,
         if set(base) & set(FIELD_DEFINITIONS):
             raise ValueError("Select the original pre-mask county results, not an earlier augmented output.")
         if derived_config is not None:
-            missing = set(load_derived_rules(derived_config)["es_total"]["components"]) - set(base)
+            derived_rules = yaml.safe_load(derived_config.read_text(encoding="utf-8"))
+            missing = set(derived_rules["es_total"]["components"]) - set(base)
             if missing:
                 raise ValueError(f"County input lacks required adjusted es_total components: {sorted(missing)}")
     metadata = validate_mask_definition(config_path)

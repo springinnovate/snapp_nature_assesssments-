@@ -1,13 +1,10 @@
-# Post-calculation rules for BOTH county CSV and GeoPackage exports.
-# Paths are relative to --data-root. No wildcard/latest-run discovery.
+# County totals and ratios for the CSV and GeoPackage exports.
+# Source paths are relative to --data-root.
 schema_version: 1
 
 es_total:
-  # Explicit allowlist: do not include irrigation/power/public subtotals again,
-  # individual job categories, carbon per-ha sums, factors, or classification codes.
-  # Exclude NPV components from es_total and every derived ratio. The only
-  # currently identified NPV is sum_flood_marginal_npv_masked_to_wetlands_adj;
-  # its standalone output column and factor remain available unchanged.
+  # Sum these adjusted service totals. Annual flood value is included;
+  # flood NPV is kept as a separate output field, outside this total.
   components:
     - sum_flood_annual_value_masked_to_wetlands_adj
     - sum_avoided_dredging_costs_raster_adj
@@ -30,11 +27,10 @@ es_total:
     - physical_health_adj
   blank_value: 0.0
   interpretation: >-
-    User-requested sum of 19 selected adjusted values, excluding identified
-    NPV components (currently flood NPV). Retains annual flows, wages and
-    other valuations with differing bases; excluding NPV does not establish
-    an annual ecosystem-service valuation or a GDP contribution estimate.
-    Potential overlap between components is not removed by this arithmetic sum.
+    Sum of 19 adjusted service values, with annual flood benefits included and
+    flood NPV excluded. Interpret as an assessment summary: the components
+    include annual benefits, wages and carbon-stock valuation with differing
+    time bases and possible economic overlap.
 
 sources:
   county_area:
@@ -46,9 +42,7 @@ sources:
     scale: 1.0
     require_all_counties: true
   natural_areas:
-    # Used by a primary build or finalization without existing corrected areas.
-    # A current mask-update passes its freshly calculated areas instead; its exact
-    # source path/hash is then recorded as an explicit override in the audit.
+    # Mask release to join when the county input has no corrected NLCD areas.
     path: analysis_results/nlcd_mask_areas/2026_10_26_15_03_29_853049/counties_nlcd_mask_areas_2026_10_26_15_03_29_853049.gpkg
     layer: tl_2024_us_county_50_states
     key: GEOID
@@ -59,7 +53,7 @@ sources:
     field: '2024'
     output: GDP_2024
     where: {LineCode: '3'}
-    expected_units: {column: Unit, value: Thousands of dollars}
+    units: Thousands of dollars
     scale: 1000.0
     missing_tokens: ['(NA)', '(D)']
     exclude_state_totals: true
@@ -74,9 +68,7 @@ sources:
     scale: 1.0
     require_all_counties: false
 
-# These are ratios, not percentages. Missing or nonpositive denominators give
-# null, NEVER infinity or an invented value. Unmatched BEA combined regions are
-# audited, not copied to each constituent county or allocated without approval.
+# Divide es_total by each denominator.
 ratios:
   es_per_ha: area_ha_county
   es_per_ha_natural: area_ha_all_natural

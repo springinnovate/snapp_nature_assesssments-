@@ -411,89 +411,85 @@ or independence.
 
 ## County totals and ratios
 
-This post-calculation stage operates on current adjusted values, not on a fixed
-historical valuation CSV. It runs automatically in the primary builder and in
-county-augmented mask exports. For an already completed output, use
-`finalize_county_ecosystem_services.py --county-results <explicit.gpkg>`;
-this runs neither zonals nor service allocation/adjustment again. The exact
-current command is in the [README](../README.md#add-county-totals-and-ratios-without-rerunning-zonals).
+### What the summary columns mean
 
-`es_total` sums only the reviewed `es_total.components` allowlist. Empty service
-cells contribute zero for this arithmetic, while their original null values
-remain unchanged and their counts are audited. A missing **column** stops the
-run. The revised 19-component list excludes identified NPVs: currently
-`sum_flood_marginal_npv_masked_to_wetlands_adj`, the only component explicitly
-classified as NPV by the configured input metadata. Annual flood value stays in
-the sum; the standalone NPV field and factor stay in both output formats but do
-not contribute to `es_total` or any of the four ratios. Missing the NPV column is
-not an error for this stage because it is not a required component.
+Each county row contains `es_total`, the sum of 19 adjusted service values,
+and four ways to compare that total with the county's size, economy and
+population. The [component list](../data/workflow_assets/county_integration/derived_metrics.yaml)
+gives the exact fields used. Annual flood benefits are included; flood NPV is
+kept separately. Where the table contains both a service total and its component
+parts, the calculation uses the total once.
 
-The remaining list still contains values with differing bases, including
-carbon-stock valuation and wages. Excluding NPV does **not** establish an annual
-economic valuation or GDP contribution estimate. Individual water-provisioning/
-job subtotals already included in totals, per-ha carbon sums, adjustment factors
-and categorical land-cover sums are also excluded. This does not guarantee
-absence of economic overlap among the included services. New sources require
-review before adding them to the allowlist.
+| Column | Calculation | Units |
+| --- | --- | --- |
+| `es_total` | Sum of the selected adjusted service fields | Dollars across the included valuations |
+| `es_per_ha` | `es_total / area_ha_county` | Dollars per county hectare |
+| `es_per_ha_natural` | `es_total / area_ha_all_natural` | Dollars per observed natural-land hectare |
+| `es_per_gdp` | `es_total / GDP_2024` | Ratio; 0.02 means the total is numerically 2% of GDP |
+| `es_per_capita` | `es_total / Pop_2024` | Dollars per resident |
 
-Do not classify the mangrove `Ben_Stock_2020` field as NPV solely from "Stock":
-the [CWON 2024 technical report](https://documents1.worldbank.org/curated/en/099101124150015562/pdf/P17844613fd9760e31a55510ba9e7e43371.pdf)
-distinguishes annual benefits to protected capital stock from discounted asset
-value (sections 4.2–4.3 and Table A3's separate STOCK BEN and PV columns).
-The local GeoPackage has `Risk_Stock_*` and `Ben_Stock_*` columns but no embedded
-field definitions; its exact release/time-basis mapping remains unverified.
-It remains included, rather than being removed on a name-only NPV inference.
+Treat `es_total` as an assessment summary. Its components include annual
+benefits, wages and carbon-stock valuation, so their time periods and economic
+meanings differ. In particular, `es_per_gdp` is a size comparison, not a measure
+of how much these services contribute to annual GDP. The
+[interpretation notes](#interpreting-the-values) describe these limits.
 
-Denominator paths are explicit and relative to `--data-root`:
+A blank service value contributes zero to the sum. Its original service column
+stays blank, so you can distinguish missing coverage from an estimated zero.
 
-| Exported denominator | Source and method |
+### Where the denominators come from
+
+The output keeps all four denominator columns. They are joined by five-digit
+county FIPS, preserving leading zeroes.
+
+| Column | Source |
 | --- | --- |
-| `area_ha_county` | `counties_area_20260910_130816.csv`, `intersect_area_ha_tl_2024_us_county_50_states`, exact `GEOID` join |
-| `area_ha_all_natural` | Corrected NLCD forests + grasslands + shrubland + water/snow + wetlands; not `area_ha_valid_nlcd` |
-| `GDP_2024` | `analysis_inputs/CAGDP1_LineCode3_All_States.csv`, `LineCode=3`, `2024` ×1,000, `GeoFIPS` join; require units `Thousands of dollars`, exclude state totals |
-| `Pop_2024` | `analysis_inputs/co-est2025-alldata.csv` (cp1252), `SUMLEV=050`, `POPESTIMATE2024`, exact `GEOFIPS` join |
+| `area_ha_county` | `intersect_area_ha_tl_2024_us_county_50_states` in `counties_area_20260910_130816.csv`, matched by `GEOID` |
+| `area_ha_all_natural` | Sum of the corrected NLCD forest, grassland, shrubland, water/snow and wetland areas |
+| `GDP_2024` | `2024` in `CAGDP1_LineCode3_All_States.csv`, LineCode 3, matched by `GeoFIPS`. Values are in thousands of dollars and are multiplied by 1,000 |
+| `Pop_2024` | `POPESTIMATE2024` in `co-est2025-alldata.csv`, county rows (`SUMLEV=050`), matched by `GEOFIPS` |
 
-The ratios are respectively `es_per_ha`, `es_per_ha_natural`, `es_per_gdp`, and
-`es_per_capita`: numerator `es_total` divided by the corresponding denominator.
-GDP is a dimensionless arithmetic ratio, not multiplied by 100. All denominator
-fields remain in both outputs. Missing/zero denominators give null; negative or
-malformed values fail validation. No population/GDP crosswalk is inferred.
+Full source paths are in
+[`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml).
+The GDP and population files are under `data/analysis_inputs/`; the county-area
+and corrected NLCD files are earlier analysis results.
 
-In the supplied 3,225-county release, 3,091 have exact GDP matches and 3,144 have
-population estimates. The 134 missing GDP matches include 81 territory rows and
-53 Hawaii/Virginia counties/cities represented only through combined BEA regions.
-Those regional values are recorded as unmatched source rows, never replicated
-across counties or allocated without a reviewed method. The 81 missing population
-matches are territories. The 116 counties with no observed NLCD coverage have
-null natural-area ratios, not evidence of zero natural land. The original service
-fields retain their existing missing-coverage policies.
+Natural-land area is the area of the five selected NLCD classes.
+`area_ha_valid_nlcd` measures the larger footprint with usable NLCD observations.
+The natural-land ratio uses the former. For a county outside NLCD coverage,
+zero observed hectares means the data are unavailable, rather than that the
+county has no natural land.
 
-Current corrected areas already in the input take precedence in the finalizer.
-Otherwise the configured mask release must have matching county keys, CRS and
-boundaries. A mask-update uses its own current areas and records the override's
-source/hash. The five class areas must sum to natural area within valid coverage;
-each share must agree, and zero coverage requires null shares.
+### Why a ratio may be blank
 
-Primary builds require coral PR #69 for `sum_aeb_coral_BC_USD11_adj`; the October 26
-completed input already includes this corrected field. The workflow will not
-substitute the old raster-derived coral value. Use a pre-derived input to rerun
-finalization after editing rules; outputs are append-only new timestamped pairs.
+A ratio is blank when its denominator is missing or nonpositive. In the
+October 26 release:
 
-### Derived-metric provenance
+- 134 counties lack a matching GDP row: 81 territory rows and 53 Hawaii/Virginia
+  counties or cities represented only by combined BEA regions. Those combined
+  amounts remain in the source records rather than being assigned to each county.
+- 81 territory rows lack population estimates.
+- 116 counties have no observed NLCD coverage, so their natural-land ratios are blank.
 
-All `derived_metric_*` tables are auxiliary GeoPackage tables, not county layers:
+To investigate a particular county, find its `GEOID` in the GeoPackage's
+`derived_metric_county_status` table. This records the denominator match and the
+number of service values treated as zero.
 
-- `derived_metric_rules`: full YAML snapshot and hash.
-- `derived_metric_sources`: selected source paths, hashes, sizes, and overrides.
-- `derived_metric_components`: exact component order, blank counts and totals.
-- `derived_metric_county_status`: denominator matches and reasons for null ratios.
-- `derived_metric_source_issues`: unmatched source rows not allocated to counties.
-- `derived_metric_run`: interpretation, join/missing-value policies and timestamp.
-- `derived_metric_publication`: standalone finalizer's input GeoPackage, exporter,
-  writer and naming-config hashes, plus naming YAML snapshot.
+### Trace a result or run it again
 
-All original values, factors, FIDs and geometry are preserved by the standalone
-export; both formats are checked for attribute parity before publication.
+Start with `derived_metric_rules` inside the result GeoPackage. It saves the
+YAML used for that run, even if the repository settings have since changed.
+`derived_metric_sources` gives the source paths and file hashes;
+`derived_metric_components` lists the included fields, their totals across
+counties, and their blank counts. Unmatched source rows are recorded in
+`derived_metric_source_issues`.
+
+For a new output from existing county values, use the
+[finalization command in the README](../README.md#add-county-totals-and-ratios-without-rerunning-zonals).
+It copies the original values, factors and geometry, then appends the summaries
+to a new timestamped CSV/GeoPackage pair. Reuse that original input when changing
+settings. The full county builder performs the same calculation after applying
+service adjustments; a county mask update uses the areas it has just calculated.
 
 ## Quality checks and provenance
 

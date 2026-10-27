@@ -37,7 +37,7 @@ from osgeo import gdal, ogr
 from tqdm import tqdm
 
 from mangrove_county_allocation import allocate_mangrove_values
-from county_derived_metrics import calculate_county_metrics, load_derived_rules
+from county_derived_metrics import calculate_county_metrics
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "data/workflow_assets/county_integration"
@@ -1095,7 +1095,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     if not (base.STATEFP == ids.str[:2]).all():
         raise ValueError("Base state and county identifiers disagree")
     export_plan = plan_county_export(base_columns, factors.index, rules, geometry_field=geom)
-    derived_rules = load_derived_rules(config_dir / "derived_metrics.yaml")
+    derived_rules = yaml.safe_load((config_dir / "derived_metrics.yaml").read_text(encoding="utf-8"))
     missing_components = set(derived_rules["es_total"]["components"]) - {
         row["output_field"] for row in export_plan if row["output_field"]}
     if missing_components:
@@ -1170,7 +1170,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     summaries = pd.concat(summary_frames, axis=1) if summary_frames else pd.DataFrame(index=ids)
     additions, output_fields = adjusted_county_fields(base, originals, summaries, factors, export_plan)
     derived, derived_tables = calculate_county_metrics(
-        additions, data_root, config_dir / "derived_metrics.yaml", county_vector=paths["base"])
+        additions, data_root, config_dir / "derived_metrics.yaml")
     additions = pd.concat([additions, derived], axis=1)
     renamed_fields = {row["source_field"]: row["output_field"] for row in export_plan
                       if row["source_field"] and row["action"] == "rename"}
