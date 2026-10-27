@@ -19,11 +19,13 @@ import geopandas as gpd
 import pandas as pd
 import rasterio
 from tqdm import tqdm
+import yaml
 
 from build_county_ecosystem_service_valuations_2026 import (
     read_attributes, sha256, write_output,
 )
 from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS, RAW_FIELD, derive_nlcd_mask_areas
+from county_derived_metrics import DEFAULT_CONFIG as DEFAULT_DERIVED_CONFIG, calculate_county_metrics
 from prepare_tif_zonal_stats_config import load_run_config, prepare_config
 
 
@@ -82,7 +84,9 @@ def validate_mask_definition(config_path: Path) -> list[dict]:
 
 
 def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
-                      county_results: Path | None = None, raster_metadata: list[dict] | None = None) -> Path:
+                      county_results: Path | None = None, raster_metadata: list[dict] | None = None,
+                      *, derived_config: Path | None = DEFAULT_DERIVED_CONFIG,
+                      data_root: Path | None = None) -> Path:
     """Publish corrected areas, optionally alongside unchanged service values.
 
     Args:
@@ -92,6 +96,9 @@ def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
         county_results: Existing final county GeoPackage to augment, or None to
             export mask-only attributes and geometry from ``mask_results``.
         raster_metadata: Validated raster grid and source stat records.
+        derived_config: Rules for totals/ratios on augmented county outputs.
+            None disables that stage for programmatic mask-only testing.
+        data_root: Denominator source root; defaults to this repository's data.
 
     Returns:
         New GeoPackage path, after CSV parity and preservation checks.
@@ -165,6 +172,13 @@ def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
     }
     if raster_metadata:
         tables["nlcd_area_rasters"] = pd.DataFrame(raster_metadata)
+    if county_results and derived_config is not None:
+        # Use THIS run's newly corrected masks, never the older configured release.
+        derived, derived_tables = calculate_county_metrics(
+            base.set_index("GEOID"), data_root or ROOT / "data", derived_config,
+            natural_areas=additions, natural_source=mask_results)
+        additions = pd.concat([additions, derived.drop(columns=list(FIELD_DEFINITIONS))], axis=1)
+        tables.update(derived_tables)
     for key, path in inputs.items():
         if sha256(path) != fingerprints[key]:
             raise ValueError(f"Input changed during mask export: {path}")
@@ -175,7 +189,9 @@ def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
 
 
 def run_mask_update(runner: Path, config_path: Path = DEFAULT_CONFIG,
-                    county_results: Path | None = None, raster_workers: int = 2) -> list[Path]:
+                    county_results: Path | None = None, raster_workers: int = 2,
+                    *, derived_config: Path | None = DEFAULT_DERIVED_CONFIG,
+                    data_root: Path | None = None) -> list[Path]:
     """Prepare and run only masks, then publish new paired result files.
 
     Args:
@@ -183,6 +199,8 @@ def run_mask_update(runner: Path, config_path: Path = DEFAULT_CONFIG,
         config_path: Tracked county mask-only profile to freeze for this run.
         county_results: Optional explicit existing final county GeoPackage.
         raster_workers: Parallel mask rasters; no service-raster jobs are selected.
+        derived_config: Rules for county totals/ratios, or None for isolated tests.
+        data_root: Denominator source root; defaults to this repository's data.
 
     Returns:
         Corrected mask GeoPackage and, if requested, augmented county GeoPackage.
@@ -200,6 +218,11 @@ def run_mask_update(runner: Path, config_path: Path = DEFAULT_CONFIG,
         base, _, _ = read_attributes(county_results)
         if set(base) & set(FIELD_DEFINITIONS):
             raise ValueError("Select the original pre-mask county results, not an earlier augmented output.")
+        if derived_config is not None:
+            derived_rules = yaml.safe_load(derived_config.read_text(encoding="utf-8"))
+            missing = set(derived_rules["es_total"]["components"]) - set(base)
+            if missing:
+                raise ValueError(f"County input lacks required adjusted es_total components: {sorted(missing)}")
     metadata = validate_mask_definition(config_path)
     stamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S_%f")
     run_root = ROOT / "data/analysis_results/nlcd_mask_areas" / stamp
@@ -229,7 +252,8 @@ def run_mask_update(runner: Path, config_path: Path = DEFAULT_CONFIG,
     if county_results:
         outputs.append(export_mask_areas(raw, ROOT / "data/analysis_results/combined" /
                                         f"snapp_ecosystem_services_counties_{stamp}.gpkg", frozen,
-                                        county_results=county_results, raster_metadata=metadata))
+                                        county_results=county_results, raster_metadata=metadata,
+                                        derived_config=derived_config, data_root=data_root))
     return outputs
 
 
@@ -239,6 +263,8 @@ def main() -> None:
     parser.add_argument("--runner", type=Path, help="Local zonal_stats_toolkit/runner.py; required unless reusing --mask-results")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--county-results", type=Path, help="Existing final county GPKG; service values are copied unchanged")
+    parser.add_argument("--derived-config", type=Path, default=DEFAULT_DERIVED_CONFIG)
+    parser.add_argument("--data-root", type=Path, default=ROOT / "data", help="Denominator source root")
     parser.add_argument("--raster-workers", type=int, default=2)
     parser.add_argument("--mask-results", type=Path, help="Reuse this exact NEW raw mask GPKG instead of running any zonals")
     parser.add_argument("--run-config", type=Path, help="Frozen config corresponding to --mask-results")
@@ -247,11 +273,13 @@ def main() -> None:
     if args.mask_results:
         if not args.run_config or not args.output or args.runner:
             parser.error("--mask-results requires --run-config and --output, and cannot be combined with --runner")
-        export_mask_areas(args.mask_results, args.output, args.run_config, args.county_results)
+        export_mask_areas(args.mask_results, args.output, args.run_config, args.county_results,
+                          derived_config=args.derived_config, data_root=args.data_root)
     else:
         if not args.runner or args.run_config or args.output:
             parser.error("Supply --runner, or use --mask-results with --run-config and --output")
-        run_mask_update(args.runner, args.config, args.county_results, args.raster_workers)
+        run_mask_update(args.runner, args.config, args.county_results, args.raster_workers,
+                        derived_config=args.derived_config, data_root=args.data_root)
 
 
 if __name__ == "__main__":

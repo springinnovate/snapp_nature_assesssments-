@@ -179,7 +179,7 @@ class MaskAreaTests(unittest.TestCase):
             raw_frame.to_file(raw, layer="tl_2024_us_county_60_states", driver="GPKG")
             before = sha256(base)
             output = root / "updated.gpkg"
-            export_mask_areas(raw, output, frozen, base, validate_mask_definition(profile))
+            export_mask_areas(raw, output, frozen, base, validate_mask_definition(profile), derived_config=None)
             self.assertEqual(sha256(base), before)
             attrs, layer, _ = read_attributes(output)
             self.assertEqual(layer, "tl_2024_us_county_50_states")
@@ -191,7 +191,7 @@ class MaskAreaTests(unittest.TestCase):
                 self.assertEqual(con.execute("SELECT count(*) FROM nlcd_area_fields").fetchone()[0], 12)
                 self.assertEqual(con.execute("SELECT count(*) FROM nlcd_area_sources").fetchone()[0], 5)
             with self.assertRaises(FileExistsError):
-                export_mask_areas(raw, output, frozen, base)
+                export_mask_areas(raw, output, frozen, base, derived_config=None)
             with self.assertRaisesRegex(ValueError, "already contains"):
                 export_mask_areas(raw, root / "second.gpkg", frozen, output)
 
@@ -217,7 +217,7 @@ class MaskAreaTests(unittest.TestCase):
             with patch("update_nlcd_mask_areas.ROOT", root), patch(
                 "update_nlcd_mask_areas.subprocess.run", side_effect=subprocess.CalledProcessError(1, "runner")
             ) as launch, self.assertRaises(subprocess.CalledProcessError):
-                run_mask_update(Path(__file__), profile, base)
+                run_mask_update(Path(__file__), profile, base, derived_config=None)
             self.assertIn("--job-workers", launch.call_args.args[0])
             self.assertEqual(len(list((root / "runs").glob("*.yaml"))), 1)
             self.assertFalse((root / "data/analysis_results/combined").exists())
@@ -230,7 +230,8 @@ class MaskAreaTests(unittest.TestCase):
             profile, base = write_fixture(root)
             before = sha256(base)
             with patch("update_nlcd_mask_areas.ROOT", root):
-                outputs = run_mask_update(Path(os.environ["SNAPP_TEST_ZONAL_RUNNER"]), profile, base, raster_workers=1)
+                outputs = run_mask_update(Path(os.environ["SNAPP_TEST_ZONAL_RUNNER"]), profile, base,
+                                          raster_workers=1, derived_config=None)
             self.assertEqual(len(outputs), 2)
             self.assertEqual(sha256(base), before)
             for output in outputs:
