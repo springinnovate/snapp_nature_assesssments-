@@ -226,7 +226,7 @@ class DerivedMetricsTests(unittest.TestCase):
         self.assertTrue(attrs.es_per_ha_natural.iloc[1:].isna().all())
 
     def test_primary_builder_uses_post_adjustment_values(self):
-        """Check that the build adds adjusted coral points and raster values to totals."""
+        """Check that totals use adjusted coral, recreation, and raster values."""
         import build_county_ecosystem_service_valuations_2026 as builder
 
         raw_field = builder.BASE_FIELDS['pollination']
@@ -240,16 +240,19 @@ class DerivedMetricsTests(unittest.TestCase):
         gpd.GeoDataFrame({'OBJECTID': [1], 'BC_USD11': [100.]},
                          geometry=[Point(.5, .5)], crs=self.geometry.crs).to_file(
             coral_source, layer='aeb_coral', driver='GPKG')
+        recreation_source = self.root / 'recreation.csv'
+        pd.DataFrame({'GEOID': ['01001', '01003'], 'county_cs_2024usd': [11., 0.],
+                      'county_visits_2024': [200, 300]}).to_csv(recreation_source, index=False)
         names = ['base', 'grazing', 'timber', 'air_quality', 'urban_heat', 'physical_health', 'jobs',
                  'marine_fisheries', 'coastline', 'coastline_lines', 'inland_fisheries', 'freshwater',
                  'freshwater_polygons', 'great_lakes_features',
                  'recreation', 'mangroves', 'corals']
-        pd.DataFrame({'source': names,
-                      'path': [coral_source.name if name == 'corals' else source.name for name in names]}).to_csv(
+        task_paths = {'corals': coral_source, 'recreation': recreation_source}
+        pd.DataFrame({'source': names, 'path': [task_paths.get(name, source).name for name in names]}).to_csv(
             self.root / 'sources.csv', index=False)
-        pd.DataFrame({'service': ['pollination', 'corals'], 'factor': [.09, 1.368],
-                      'reason': ['hectares to pixels', 'coral factor'],
-                      'source_units': ['USD/ha', 'USD 2011']}).to_csv(
+        pd.DataFrame({'service': ['pollination', 'corals', 'recreation'], 'factor': [.09, 1.368, 1.],
+                      'reason': ['hectares to pixels', 'coral factor', '2024 dollars'],
+                      'source_units': ['USD/ha', 'USD 2011', 'USD 2024']}).to_csv(
             self.root / 'adjustment_factors.csv', index=False)
         pd.DataFrame({'source_geoid': ['01001'], 'target_geoid': ['01001'], 'weight': [1.]}).to_csv(
             self.root / 'ct_county_crosswalk.csv', index=False)
@@ -257,12 +260,12 @@ class DerivedMetricsTests(unittest.TestCase):
         export.update({'exclude_fields': [], 'exclude_patterns': [],
                        'rename_fields': {'corals_adj': export['rename_fields']['corals_adj']}})
         self.config.with_name('export_rules.yaml').write_text(yaml.safe_dump(export), encoding='utf-8')
-        self.rules['es_total']['components'] = [raw_field + '_adj', coral_field]
+        self.rules['es_total']['components'] = [raw_field + '_adj', coral_field, 'recreation_adj']
         self.config.write_text(yaml.safe_dump(self.rules), encoding='utf-8')
         compute_task = builder.compute_task
 
-        def fixture_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
-            """Run coral allocation with real geometry and stub unrelated services.
+        def fixture_task(task, paths, base, crosswalk, geometry_workers):
+            """Exercise coral allocation and recreation joins; stub other services.
 
             Args:
                 task: Named service family.
@@ -270,18 +273,16 @@ class DerivedMetricsTests(unittest.TestCase):
                 base: Raw county frame.
                 crosswalk: Fixture crosswalk.
                 geometry_workers: Geometry worker count.
-                chunk_dir: Optional checkpoint directory.
 
             Returns:
                 An ordinary worker result with raw, unadjusted values.
             """
-            if task == 'corals':
-                return compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir)
+            if task in task_paths:
+                return compute_task(task, paths, base, crosswalk, geometry_workers)
             return {'originals': {'pollination': base[raw_field]} if task == 'base' else {},
                     'statuses': [pd.DataFrame({'service': [task], 'status': ['fixture']})],
                     'metadata': [{'service': 'pollination', 'original_total': 19.}] if task == 'base' else [],
                     'issues': [], 'checks': [{'service': task, 'status': 'fixture'}],
-                    'recreation_audit': pd.DataFrame(columns=['siteid']),
                     'mangrove_audit': pd.DataFrame(columns=['unit'])}
 
         with patch.object(builder, 'ProcessPoolExecutor', ThreadPoolExecutor), patch.object(
@@ -291,12 +292,15 @@ class DerivedMetricsTests(unittest.TestCase):
         attrs, _, _ = read_attributes(output)
         self.assertNotIn(legacy_coral_field, attrs)
         np.testing.assert_allclose(attrs[coral_field], [136.8, 0., 0.])
-        np.testing.assert_allclose(attrs.es_total, [137.7, .36, .45])
-        np.testing.assert_allclose(attrs.es_per_ha, [68.85, .09, .09])
+        np.testing.assert_allclose(attrs.recreation_adj, [11., 0., np.nan])
+        self.assertNotIn('county_visits_2024', attrs)
+        np.testing.assert_allclose(attrs.es_total, [148.7, .36, .45])
+        np.testing.assert_allclose(attrs.es_per_ha, [74.35, .09, .09])
+        self.assertEqual(attrs.recreation_adj_factor.to_list(), [1.] * 3)
         self.assertEqual(attrs.corals_adj_factor.to_list(), [1.368] * 3)
         self.assertEqual(attrs.pollination_adj_factor.to_list(), [.09] * 3)
         with closing(read_db(output)) as con:
-            self.assertEqual(con.execute('SELECT count(*) FROM derived_metric_components').fetchone()[0], 2)
+            self.assertEqual(con.execute('SELECT count(*) FROM derived_metric_components').fetchone()[0], 3)
             self.assertEqual(con.execute('SELECT GEOID, input_value FROM integration_coral_allocation').fetchall(),
                              [('01001', 100.)])
 

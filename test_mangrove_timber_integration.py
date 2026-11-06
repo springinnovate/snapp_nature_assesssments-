@@ -53,7 +53,7 @@ class MangroveTimberIntegrationTests(unittest.TestCase):
             path = Path(directory) / "timber.csv"
             source.to_csv(path, index=False)
             original_hash = sha256(path)
-            result = compute_task("timber", {"timber": path}, base, self.crosswalk, 1, None)
+            result = compute_task("timber", {"timber": path}, base, self.crosswalk, 1)
             self.assertEqual(sha256(path), original_hash)
 
         self.assertEqual(result["originals"]["timber"].to_list(), [0, 120, 0, 0, 0])
@@ -92,7 +92,7 @@ class MangroveTimberIntegrationTests(unittest.TestCase):
                 "total_annual_rent": [-100, 200, 50],
                 "coverage_status": ["valued"] * 3,
             }).to_csv(path, index=False)
-            result = compute_task("timber", {"timber": path}, base, crosswalk, 1, None)
+            result = compute_task("timber", {"timber": path}, base, crosswalk, 1)
 
         self.assertEqual(result["originals"]["timber"].to_list(), [0, 200, 50])
         metadata = result["metadata"][0]
@@ -126,7 +126,7 @@ class MangroveTimberIntegrationTests(unittest.TestCase):
             sources.to_file(paths["mangroves"], layer="UCSC_CWON_studyunits", driver="GPKG")
             hashes = {key: sha256(path) for key, path in paths.items()}
             base = read_attributes(paths["base"])[0].set_index("GEOID")
-            result = compute_task("mangroves", paths, base, self.crosswalk, 2, None)
+            result = compute_task("mangroves", paths, base, self.crosswalk, 2)
             self.assertEqual({key: sha256(path) for key, path in paths.items()}, hashes)
             np.testing.assert_allclose(result["originals"]["mangroves"],
                                        [950, 250, np.nan, 0], equal_nan=True)
@@ -200,7 +200,7 @@ class MangroveTimberIntegrationTests(unittest.TestCase):
             sources.to_file(paths["mangroves"], layer="UCSC_CWON_studyunits", driver="GPKG")
             original_hash = sha256(paths["mangroves"])
             base = read_attributes(paths["base"])[0].set_index("GEOID")
-            result = compute_task("mangroves", paths, base, self.crosswalk, 1, None)
+            result = compute_task("mangroves", paths, base, self.crosswalk, 1)
             self.assertEqual(sha256(paths["mangroves"]), original_hash)
 
         self.assertEqual(result["originals"]["mangroves"].to_list(), [600, 0])
@@ -247,7 +247,7 @@ class MangroveTimberIntegrationTests(unittest.TestCase):
             hashes = {key: sha256(path) for key, path in paths.items()}
             attributes, layer, geom = read_attributes(paths["base"])
             base = attributes.set_index("GEOID")
-            results = {task: compute_task(task, paths, base, self.crosswalk, 1, None)
+            results = {task: compute_task(task, paths, base, self.crosswalk, 1)
                        for task in ("mangroves", "timber")}
             originals = {service: series for result in results.values()
                          for service, series in result["originals"].items()}

@@ -51,7 +51,7 @@ The main input paths are:
 | USA boundary | `data/analysis_inputs/boundaries/usa_boundary/usa_vector.gpkg` |
 | Counties | `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` |
 | PAD-US geodatabase | `data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb` |
-| Recreation value polygons | `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` |
+| Recreation value polygons for the zonal combiner | `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` |
 | Ecosystem service rasters | `data/analysis_inputs/ecosystem_services` (selected in `data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml`) |
 | NLCD 2023 land cover raster | `data/analysis_inputs/nlcd/Annual_NLCD_LndCov_2023_CU_C1V0.tif` |
 | Land-cover reclassification tables | `data/workflow_assets/landcover_reclass/*.csv` |
@@ -180,7 +180,7 @@ final GeoPackage under `data/processing_outputs/bbb_candidate_blm_lands`.
 `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` to
 counties. Run this step if you need the recreation input for the
 [zonal combiner](#combined-zonal-results). The county valuation builder reads
-its own polygon source from `sources.csv` and does not use this output.
+the county recreation CSV from `sources.csv` and does not use this output.
 
 Run:
 
@@ -425,7 +425,11 @@ service inputs. It does not run zonal statistics.
 
 1. Place the files listed in the [input guide](docs/county_valuation_integration_2026.md#input-data)
    under `data/`. For coral, supply `data/analysis_inputs/ecosystem_services/aeb_coral.gpkg`
-   with point layer `aeb_coral` and value field `BC_USD11`.
+   with point layer `aeb_coral` and value field `BC_USD11`. For recreation, supply
+   `data/analysis_inputs/recreation/2026_11_02/usa_nature_assessment_recreation_20261102.csv`
+   and keep its companion README alongside it locally. The county builder does
+   not require the [recreation preparation step](#2b-prepare-recreation-value-by-county)
+   used by the zonal combiner.
 2. Check [`sources.csv`](data/workflow_assets/county_integration/sources.csv)
    for the input paths. Use county zonals with unscaled pollination sums; the
    builder applies the hectare-to-pixel factor.
