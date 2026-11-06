@@ -241,7 +241,8 @@ class DerivedMetricsTests(unittest.TestCase):
                          geometry=[Point(.5, .5)], crs=self.geometry.crs).to_file(
             coral_source, layer='aeb_coral', driver='GPKG')
         names = ['base', 'grazing', 'timber', 'air_quality', 'urban_heat', 'physical_health', 'jobs',
-                 'marine_fisheries', 'coastline', 'inland_fisheries', 'freshwater', 'recreation', 'mangroves', 'corals']
+                 'marine_fisheries', 'coastline', 'coastline_lines', 'inland_fisheries', 'freshwater',
+                 'recreation', 'mangroves', 'corals']
         pd.DataFrame({'source': names,
                       'path': [coral_source.name if name == 'corals' else source.name for name in names]}).to_csv(
             self.root / 'sources.csv', index=False)
