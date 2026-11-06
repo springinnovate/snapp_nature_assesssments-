@@ -145,7 +145,9 @@ raster_inventory = [{"label": "Pollination", "filename": "pollination.tif", "uni
             config_text = config_path.read_text(encoding="utf-8")
             self.assertIn("2026_08_09_01_00_00.gpkg", config_text)
             self.assertNotIn("2026_08_07_01_00_00.gpkg", config_text)
-            self.assertIn("[job:pad_ecosystem_services]", config_text)
+            self.assertIn("[job:padus_all_lands]", config_text)
+            self.assertIn("padus_all_lands/padus_all_lands.csv", config_text)
+            self.assertIn("padus_all_lands/padus_all_lands.gpkg", config_text)
             self.assertIn("max_simplify_tolerance_meters = 15", config_text)
 
     def test_run_snapshots_preserve_policy_and_conversion_history(self) -> None:

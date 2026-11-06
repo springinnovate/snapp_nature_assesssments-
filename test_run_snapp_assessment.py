@@ -70,10 +70,10 @@ class AssessmentWrapperTests(unittest.TestCase):
             "raster_inventory = "
             '[{"filename": "enabled.tif", "include": true}, '
             '{"filename": "disabled.tif", "include": false}]\n'
-            "[job:pad_ecosystem_services]\nzone_key = all\n"
+            "[job:padus_all_lands]\nzone_key = all\n"
             "vector_pattern = padus_all_lands_by_county/padus_all_lands_clipped_by_county_*.gpkg\n"
             "results_subdir = padus_all_lands\n"
-            "[job:public_ecosystem_services]\nzone_key = public\n"
+            "[job:padus_public_lands]\nzone_key = public\n"
             "vector_pattern = padus_public_lands_by_county/padus_public_lands_clipped_by_county_*.gpkg\n"
             "results_subdir = padus_public_lands\n",
         )
@@ -133,9 +133,10 @@ class AssessmentWrapperTests(unittest.TestCase):
             self.assertEqual(Path(option("--results-dir")), self.results)
             self.assertEqual(Path(option("--output")), self.snapshot)
             config = configparser.ConfigParser()
-            for product, job in (("all", "pad_ecosystem_services"), ("public", "public_ecosystem_services")):
-                destination = self.results / f"padus_{product}_lands" / job
-                vector = self.cuts[f"padus_{product}_lands_by_county"]
+            for product in ("all", "public"):
+                job = f"padus_{product}_lands"
+                destination = self.results / job / job
+                vector = self.cuts[f"{job}_by_county"]
                 if self.wrong_config_cut and product == "public":
                     vector = self.cuts["padus_all_lands_by_county"]
                 config[f"job:{job}"] = {
@@ -189,19 +190,24 @@ class AssessmentWrapperTests(unittest.TestCase):
                 "build_county_ecosystem_service_valuations_2026.py",
             ],
         )
-        for directory in ("padus_all_lands", "padus_public_lands", "counties", "bbb_candidate_blm_lands"):
-            packages = list((self.results / directory).glob("*.gpkg"))
-            self.assertEqual(len(packages), 1)
-            self.assertTrue(packages[0].with_suffix(".csv").is_file())
-        self.assertEqual(
-            (self.results / "bbb_candidate_blm_lands" / self.bbb.name).read_bytes(),
-            self.bbb.read_bytes(),
-        )
-        self.assertEqual(
-            (self.results / "bbb_candidate_blm_lands" / self.bbb.with_suffix(".csv").name).read_bytes(),
-            self.bbb.with_suffix(".csv").read_bytes(),
-        )
-        self.assertEqual(json.loads(self.manifest.read_text(encoding="utf-8"))["status"], "complete")
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "complete")
+        stamps = {
+            "padus_all_lands": "20261106_000000",
+            "padus_public_lands": "20261106_000000",
+            "counties": self.run_id,
+            "bbb_candidate_blm_lands": "20260901_214726",
+        }
+        self.assertEqual(set(manifest["outputs"]), set(stamps))
+        for product, stamp in stamps.items():
+            with self.subTest(product=product):
+                pair = [self.results / product / f"{product}_{stamp}.{ext}" for ext in ("csv", "gpkg")]
+                self.assertCountEqual(pair, (self.results / product).iterdir())
+                self.assertEqual(manifest["outputs"][product], list(map(str, pair)))
+        bbb_source_pair = [self.bbb.with_suffix(".csv"), self.bbb]
+        self.assertEqual(manifest["reused_bbb"], list(map(str, bbb_source_pair)))
+        for source, copy in zip(bbb_source_pair, manifest["outputs"]["bbb_candidate_blm_lands"]):
+            self.assertEqual(source.read_bytes(), Path(copy).read_bytes())
 
     def test_validate_only_does_not_create_run_outputs(self):
         """Check the source rules without creating directories or running jobs."""
@@ -218,6 +224,16 @@ class AssessmentWrapperTests(unittest.TestCase):
         with self.assertRaises((FileNotFoundError, ValueError)) as raised:
             self.run_wrapper()
         self.assertIn(self.bbb.with_suffix(".csv").name, str(raised.exception))
+        self.assertEqual(self.stage_calls, [])
+        self.assertFalse(self.results.exists())
+
+    def test_untimestamped_bbb_pair_fails_preflight(self):
+        """Require a BBB source timestamp instead of inventing a new one."""
+        untimestamped = self.bbb.with_name("bbb.gpkg")
+        self.write_file(untimestamped)
+        self.write_file(untimestamped.with_suffix(".csv"))
+        with self.assertRaisesRegex(ValueError, "_YYYYMMDD_HHMMSS timestamp"):
+            self.run_wrapper("--bbb-results", str(untimestamped))
         self.assertEqual(self.stage_calls, [])
         self.assertFalse(self.results.exists())
 
