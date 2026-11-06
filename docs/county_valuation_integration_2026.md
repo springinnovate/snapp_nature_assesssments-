@@ -222,7 +222,9 @@ The builder joins `county_cs_2024usd` to the county layer on five-character
 `GEOID`, preserving leading zeroes. The field is the estimated annual use
 value of visitation in 2024 USD. A factor of 1 gives `recreation_adj`;
 `recreation_adj_factor` records that factor. `county_visits_2024` counts
-visitor-days and is not used in the valuation.
+visitor-days and is not used in the valuation. These estimates belong to the
+whole-county export; the CSV does not provide recreation values for individual
+PAD-US or BBB footprints.
 
 Counties without a matching value have a null recreation estimate. A supplied
 zero remains zero. See `integration_sources` for the CSV used in a run and

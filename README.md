@@ -4,8 +4,8 @@ This repository supports a SNAPP assessment of ecosystem services over counties,
 all PAD-US lands, and public PAD-US lands in the United States. The workflow
 prepares geospatial inputs, runs zonal statistics with
 [`zonal_stats_toolkit`](https://github.com/springinnovate/zonal_stats_toolkit),
-and combines the metric-specific outputs into final CSV and GeoPackage
-deliverables.
+and builds county ecosystem-service valuations. Both workflows write CSV and
+GeoPackage outputs.
 
 The input data stack is stored in this Google Drive folder:
 <https://drive.google.com/drive/folders/141tOj6sf8Go0UttVogSc_T3Jet1wXzlu>
@@ -42,7 +42,7 @@ The `data/` directory is organized by workflow role.
 | `data/processing_outputs` | Intermediate products that document how analysis inputs were derived. |
 | `data/workflow_assets` | Small tracked configuration files, reclassification tables, and runner configuration. |
 | `data/analysis_results/zonal_statistics` | Individual `zonal_stats_toolkit` outputs, grouped into one subdirectory per final zonal dataset. |
-| `data/analysis_results/combined` | Final joined CSV and GeoPackage deliverables. |
+| `data/analysis_results/combined` | County valuation CSV and GeoPackage outputs. |
 
 The main input paths are:
 
@@ -51,7 +51,6 @@ The main input paths are:
 | USA boundary | `data/analysis_inputs/boundaries/usa_boundary/usa_vector.gpkg` |
 | Counties | `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` |
 | PAD-US geodatabase | `data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb` |
-| Recreation value polygons for the zonal combiner | `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` |
 | Ecosystem service rasters | `data/analysis_inputs/ecosystem_services` (selected in `data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml`) |
 | NLCD 2023 land cover raster | `data/analysis_inputs/nlcd/Annual_NLCD_LndCov_2023_CU_C1V0.tif` |
 | Land-cover reclassification tables | `data/workflow_assets/landcover_reclass/*.csv` |
@@ -214,23 +213,6 @@ Without output overrides, the script writes the intermediate GeoPackage under
 `data/processing_outputs/blm_lands_excluding_federally_protected_areas` and the
 final GeoPackage under `data/processing_outputs/bbb_candidate_blm_lands`.
 
-#### 2b. Prepare Recreation Value By County
-
-`prepare_recreation_value_by_county.py` allocates the `val_2024` values from
-`data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` to
-counties. Run this step if you need the recreation input for the
-[zonal combiner](#combined-zonal-results). The county valuation builder reads
-the county recreation CSV from `sources.csv` and does not use this output.
-
-Run:
-
-```powershell
-python prepare_recreation_value_by_county.py
-```
-
-The output is written to
-`data/analysis_inputs/zonal_units/recreation_by_county/recreation_value_by_county_<timestamp>.gpkg`.
-
 #### 3. Prepare Land-Cover Masks
 
 `generate_nlcd_reclass_masks.py` creates 0/1/nodata byte rasters from the NLCD
@@ -320,11 +302,15 @@ conda activate zonal-stats-toolkit
 python "<zonal_stats_toolkit_repo>\runner.py" ".\data\workflow_assets\zonal_stats\runs\snapp_assessment_tif_zonal_stats_<UTC-timestamp>.yaml" --job-workers 4 --raster-workers 2
 ```
 
-The TIFF jobs write timestamped CSV and GeoPackage results under
-`data/analysis_results/zonal_statistics/<zonal-product>/`. To join outputs by
-county, use the [zonal combiner](#combined-zonal-results).
+For PAD-US and BBB zonals, use the toolkit's CSV and GeoPackage with the same
+job name and timestamp. Specify `--results-dir` when preparing the config to
+keep each run's outputs in its own directory. The default is
+`data/analysis_results/zonal_statistics/`; each footprint has a subdirectory.
+For example, the all-lands pair is
+`padus_all_lands/pad_ecosystem_services_<timestamp>.{csv,gpkg}` within the
+selected results directory. Keep the run config with the files.
 
-#### Combined raster and vector configuration
+#### Raster and vector configuration
 
 The zonal statistics configuration is:
 
@@ -350,7 +336,7 @@ From this repository root, run the toolkit runner. Replace
 python "<zonal_stats_toolkit_repo>\runner.py" .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
 ```
 
-This configuration combines raster, mask, area, freshwater, and coastline
+This configuration runs separate raster, mask, area, freshwater, and coastline
 jobs. Its configured metrics are:
 
 | Input family | Operations |
@@ -361,8 +347,8 @@ jobs. Its configured metrics are:
 | NHD freshwater polygons | `intersect_area_ha` |
 | Coastline | `intersect_length_km` |
 
-The runner writes individual timestamped outputs under
-`data/analysis_results/zonal_statistics`.
+Keep each job's timestamped CSV and GeoPackage together under
+`data/analysis_results/zonal_statistics/`.
 
 ### Calculate county NLCD areas without rerunning ecosystem-service zonals
 
@@ -423,53 +409,17 @@ parity and preservation of every retained base attribute and geometry are checke
 before publication. The raw mask run remains in its timestamped `raw/counties/`
 directory; use that raw GeoPackage, not the already renamed mask-area export.
 
-### Combined zonal results
-
-Run the combiner after the zonal jobs. It reads the latest CSV and GeoPackage
-for each job under `data/analysis_results/zonal_statistics/` and the prepared
-recreation-by-county GeoPackage under
-`data/analysis_inputs/zonal_units/recreation_by_county/`. Use `--results-dir`
-and `--recreation-dir` to select other input directories.
-
-```powershell
-python combine_final_zonal_stats_results.py
-```
-
-If the input includes NLCD mask jobs, supply their `sum`, `valid_count`, and
-`total_count` fields. Run the mask jobs in the combined raster and vector
-configuration to generate these inputs. To add NLCD areas to a county valuation
-file separately, use the [mask-only command](#calculate-county-nlcd-areas-without-rerunning-ecosystem-service-zonals).
-
-The combiner writes pairs under `data/analysis_results/combined/` for the
-available products:
-
-- `counties_combined_<timestamp>.csv` and
-  `counties_combined_<timestamp>.gpkg`.
-- `padus_all_lands_combined_<timestamp>.csv` and
-  `padus_all_lands_combined_<timestamp>.gpkg`.
-- `padus_public_lands_combined_<timestamp>.csv` and
-  `padus_public_lands_combined_<timestamp>.gpkg`.
-- `padus_public_access_lands_combined_<timestamp>.csv` and
-  `padus_public_access_lands_combined_<timestamp>.gpkg`, when those zonal jobs
-  have been run.
-- `blm_lands_excluding_federally_protected_areas_combined_<timestamp>.csv` and
-  `.gpkg`, when that county-cut intermediate and its zonal jobs exist.
-- `bbb_candidate_blm_lands_combined_<timestamp>.csv` and
-  `bbb_candidate_blm_lands_combined_<timestamp>.gpkg`, when those zonal jobs
-  have been run.
-
 ## Build County Ecosystem-Service Valuations for the 2026 Assessment
 
 Use the county builder to combine county zonals with the tabular and vector
-service inputs. It does not run zonal statistics.
+service inputs. Recreation and fisheries are county valuation fields, not
+PAD-US or BBB zonal outputs. The builder does not run zonal statistics.
 
 1. Place the files listed in the [input guide](docs/county_valuation_integration_2026.md#input-data)
    under `data/`. For coral, supply `data/analysis_inputs/ecosystem_services/aeb_coral.gpkg`
    with point layer `aeb_coral` and value field `BC_USD11`. For recreation, supply
    `data/analysis_inputs/recreation/2026_11_02/usa_nature_assessment_recreation_20261102.csv`
-   and keep its companion README alongside it locally. The county builder does
-   not require the [recreation preparation step](#2b-prepare-recreation-value-by-county)
-   used by the zonal combiner.
+   and keep its companion README alongside it locally.
 2. Check [`sources.csv`](data/workflow_assets/county_integration/sources.csv)
    for the input paths. Use county zonals with unscaled pollination sums; the
    builder applies the hectare-to-pixel factor.
