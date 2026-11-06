@@ -472,6 +472,64 @@ def marine_coastline_weights(counties, coastline, baseline):
     return weights
 
 
+def inland_freshwater_weights(counties, freshwater_path, lake_fids, baseline):
+    """Remeasure freshwater outside the five Great Lakes for affected counties.
+
+    Args:
+        counties: County polygons with one row per five-digit GEOID.
+        freshwater_path: Prepared NHD polygons with source_layer and source_fid.
+        lake_fids: NHDWaterbody source identifiers for the five lake footprints.
+        baseline: Existing county freshwater hectares indexed by GEOID.
+
+    Returns:
+        Hectares per GEOID, with supplied weights preserved outside the lakes.
+
+    Raises:
+        ValueError: The prepared layer lacks any configured lake feature.
+    """
+    weights = baseline.reindex(pd.Index(counties.GEOID, name="GEOID")).copy()
+    lake_ids = {int(fid) for fid in lake_fids}
+    fid_list = ", ".join(str(fid) for fid in sorted(lake_ids))
+    with tqdm(total=3, desc="Correct inland freshwater weights", unit="step") as progress:
+        progress.set_postfix_str("Load Great Lakes polygons")
+        lakes = gpd.read_file(
+            freshwater_path, columns=["source_fid"],
+            where=f"source_layer = 'NHDWaterbody' AND source_fid IN ({fid_list})",
+        )
+        missing_ids = lake_ids - set(lakes.source_fid)
+        if not lake_ids or missing_ids:
+            raise ValueError(f"Missing configured Great Lakes features in {freshwater_path}: {sorted(missing_ids)}")
+        footprint = lakes.to_crs(AREA_CRS).geometry.union_all()
+        progress.update(1)
+
+        progress.set_postfix_str("Find counties with Great Lakes area")
+        projected = counties[["GEOID", "geometry"]].to_crs(AREA_CRS)
+        candidates = projected.iloc[projected.sindex.query(footprint)].copy()
+        candidates.geometry = candidates.geometry.make_valid()
+        affected = candidates.loc[candidates.geometry.intersection(footprint).area.gt(0)].copy()
+        progress.update(1)
+        if affected.empty:
+            progress.update(1)
+            return weights
+
+        progress.set_postfix_str("Measure remaining freshwater")
+        # Clip the county zones, not the shared water layer. Read only water
+        # near those counties and sum intersections per feature as in the zonals.
+        mask = counties.loc[affected.index].to_crs(lakes.crs).geometry.union_all()
+        affected.geometry = affected.geometry.difference(footprint)
+        water = gpd.read_file(freshwater_path, columns=[], mask=mask)
+        intersections = gpd.overlay(
+            water.to_crs(AREA_CRS).explode(index_parts=False),
+            affected.loc[~affected.geometry.is_empty],
+            how="intersection",
+            keep_geom_type=False,
+        )
+        hectares = (intersections.area / 10_000).groupby(intersections.GEOID).sum()
+        weights.loc[affected.GEOID] = hectares.reindex(affected.GEOID, fill_value=0.0)
+        progress.update(1)
+    return weights
+
+
 def load_export_rules(path):
     """Load and validate the tracked YAML presentation policy.
 
@@ -950,9 +1008,16 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
             method = ("State total allocated by county coastline share; counties intersecting Great Lakes "
                       "shoreline remeasured using marine lines only in EPSG:6933")
         else:
-            weights = input_weights(paths["freshwater"], ids, "intersect_area_ha_")
+            counties = gpd.read_file(paths["base"], columns=["GEOID"])
+            counties.GEOID = counties.GEOID.map(fips)
+            baseline = input_weights(paths["freshwater"], ids, "intersect_area_ha_")
+            lake_fids = pd.read_csv(paths["great_lakes_features"])["source_fid"]
+            weights = inland_freshwater_weights(
+                counties, paths["freshwater_polygons"], lake_fids, baseline,
+            )
             field = "Consumptive use value (USD)_Intermediate assumption"
-            method = "state total allocated by county freshwater share"
+            method = ("State total allocated by county freshwater share; affected counties measured "
+                      "outside the five Great Lakes footprints in EPSG:6933")
         frame = pd.read_csv(paths[task])
         values, status, state_checks = state_values(frame, field, base.STATEFP, weights)
         checks.extend(dict(service=task, **c) for c in state_checks)
@@ -1186,7 +1251,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "air_quality": ["base", "air_quality"], "urban_heat": ["base", "urban_heat"],
         "physical_health": ["base", "physical_health"], "jobs": ["base", "jobs"],
         "marine_fisheries": ["base", "marine_fisheries", "coastline", "coastline_lines"],
-        "inland_fisheries": ["base", "inland_fisheries", "freshwater"],
+        "inland_fisheries": ["base", "inland_fisheries", "freshwater", "freshwater_polygons", "great_lakes_features"],
         "recreation": ["base", "recreation"],
         "mangroves": ["base", "mangroves"],
         "corals": ["base", "corals"],
