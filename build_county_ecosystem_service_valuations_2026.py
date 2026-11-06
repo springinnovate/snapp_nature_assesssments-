@@ -438,6 +438,40 @@ def input_weights(path, ids, prefix):
     return numbers(frame.set_index("GEOID")[fields[0]]).reindex(ids)
 
 
+def marine_coastline_weights(counties, coastline, baseline):
+    """Replace weights that include Great Lakes shoreline with marine-only lengths.
+
+    Args:
+        counties: County polygons with one row per five-digit GEOID.
+        coastline: TIGER coastline lines with waterbody labels in NAME.
+        baseline: Existing county coastline lengths in kilometres, indexed by GEOID.
+
+    Returns:
+        Kilometres per GEOID. Only counties with positive Great Lakes overlap
+        are remeasured; all other supplied lengths are preserved.
+    """
+    ids = pd.Index(counties.GEOID, name="GEOID")
+    is_lake = coastline["NAME"].astype("string").str.strip().str.casefold().eq("great lakes")
+    weights = baseline.reindex(ids).copy()
+    if not is_lake.any():
+        return weights
+
+    # Match the nationwide planar measurement used by the vector zonal job.
+    lines = coastline[["geometry"]].assign(great_lakes=is_lake.fillna(False))
+    intersections = gpd.overlay(
+        lines.to_crs(AREA_CRS).explode(index_parts=False),
+        counties[["GEOID", "geometry"]].to_crs(AREA_CRS),
+        how="intersection",
+        keep_geom_type=False,
+    )
+    lengths = intersections.length / 1000
+    lake = intersections.great_lakes
+    affected = intersections.loc[lake & lengths.gt(0), "GEOID"].unique()
+    marine_lengths = lengths.loc[~lake].groupby(intersections.GEOID).sum()
+    weights.loc[affected] = marine_lengths.reindex(affected, fill_value=0.0)
+    return weights
+
+
 def load_export_rules(path):
     """Load and validate the tracked YAML presentation policy.
 
@@ -904,17 +938,25 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
         job_values = pd.DataFrame({s: originals[s] for s in JOB_FIELDS}).sum(axis=1, min_count=4)
         add("jobs", job_values, pd.Series(np.where(job_values.isna(), "missing_source", "sum_four_categories"), index=ids),
             "jobs", "; ".join(JOB_FIELDS.values()), "sum four raw wage categories")
-    for service, weight_source, prefix, field in (
-        ("marine_fisheries", "coastline", "intersect_length_km_", "ncp_value"),
-        ("inland_fisheries", "freshwater", "intersect_area_ha_", "Consumptive use value (USD)_Intermediate assumption"),
-    ):
-        if task != service:
-            continue
-        weights = input_weights(paths[weight_source], ids, prefix)
-        frame = pd.read_csv(paths[service])
+    if task in {"marine_fisheries", "inland_fisheries"}:
+        if task == "marine_fisheries":
+            logging.info("Correct county coastline weights for Great Lakes overlap")
+            counties = gpd.read_file(paths["base"], columns=["GEOID"])
+            counties.GEOID = counties.GEOID.map(fips)
+            coastline = gpd.read_file(paths["coastline_lines"], columns=["NAME"])
+            baseline = input_weights(paths["coastline"], ids, "intersect_length_km_")
+            weights = marine_coastline_weights(counties, coastline, baseline)
+            field = "ncp_value"
+            method = ("State total allocated by county coastline share; counties intersecting Great Lakes "
+                      "shoreline remeasured using marine lines only in EPSG:6933")
+        else:
+            weights = input_weights(paths["freshwater"], ids, "intersect_area_ha_")
+            field = "Consumptive use value (USD)_Intermediate assumption"
+            method = "state total allocated by county freshwater share"
+        frame = pd.read_csv(paths[task])
         values, status, state_checks = state_values(frame, field, base.STATEFP, weights)
-        checks.extend(dict(service=service, **c) for c in state_checks)
-        add(service, values, status, service, field, f"state total allocated by county {weight_source} share")
+        checks.extend(dict(service=task, **c) for c in state_checks)
+        add(task, values, status, task, field, method)
     if task == "corals":
         with tqdm(total=2, desc="Load coral allocation inputs", unit="layer") as progress:
             counties = gpd.read_file(paths["base"], columns=["GEOID"])
@@ -1143,7 +1185,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "base": ["base"], "grazing": ["base", "grazing"], "timber": ["base", "timber"],
         "air_quality": ["base", "air_quality"], "urban_heat": ["base", "urban_heat"],
         "physical_health": ["base", "physical_health"], "jobs": ["base", "jobs"],
-        "marine_fisheries": ["base", "marine_fisheries", "coastline"],
+        "marine_fisheries": ["base", "marine_fisheries", "coastline", "coastline_lines"],
         "inland_fisheries": ["base", "inland_fisheries", "freshwater"],
         "recreation": ["base", "recreation"],
         "mangroves": ["base", "mangroves"],

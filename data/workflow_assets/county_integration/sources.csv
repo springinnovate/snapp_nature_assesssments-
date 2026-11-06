@@ -1,6 +1,7 @@
 source,path
 base,analysis_results/zonal_statistics/counties/counties_ecosystem_services_20260910_130816.gpkg
 coastline,analysis_results/zonal_statistics/counties/counties_coastline_length_20260910_130816.gpkg
+coastline_lines,analysis_inputs/linear_features/coastline/tl_2019_us_coastline_50_states.gpkg
 freshwater,analysis_results/zonal_statistics/counties/counties_freshwater_area_20260910_130816.csv
 grazing,analysis_inputs/ecosystem_services/grazing/SNAPPGrazingDataset_final_062326.xlsx
 jobs,analysis_inputs/ecosystem_services/jobs/Finalized Flagged and Sorted Industry and County Codes.xlsx

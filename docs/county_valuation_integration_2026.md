@@ -45,6 +45,7 @@ Paths in the table are relative to the repository's `data/` directory.
 | --- | --- |
 | Raster-derived county results and county boundaries | `analysis_results/zonal_statistics/counties/counties_ecosystem_services_20260910_130816.gpkg` |
 | County coastline lengths | `analysis_results/zonal_statistics/counties/counties_coastline_length_20260910_130816.gpkg` |
+| TIGER coastline lines for marine fisheries | `analysis_inputs/linear_features/coastline/tl_2019_us_coastline_50_states.gpkg` |
 | County freshwater areas | `analysis_results/zonal_statistics/counties/counties_freshwater_area_20260910_130816.csv` |
 | Grazing | `analysis_inputs/ecosystem_services/grazing/SNAPPGrazingDataset_final_062326.xlsx` |
 | Nature-related wages | `analysis_inputs/ecosystem_services/jobs/Finalized Flagged and Sorted Industry and County Codes.xlsx` |
@@ -165,10 +166,21 @@ county value = state value × county weight / sum of county weights in that stat
 
 | Service | State source value | County allocation weight | Source units/year | Factor |
 | --- | --- | --- | --- | --- |
-| Marine fisheries | `ncp_value` | Coastline length | USD, 2023 | 1.027 |
+| Marine fisheries | `ncp_value` | Marine coastline length (km) | USD, 2023 | 1.027 |
 | Inland fisheries | `Consumptive use value (USD)_Intermediate assumption` | Freshwater area | USD, 2022 | 1.065 |
 
-The denominator is the sum of the supplied county weights within each state,
+For marine fisheries, the county builder starts with the county lengths from
+the `coastline` row in `sources.csv`. It uses the TIGER GeoPackage in the
+`coastline_lines` row to measure Great Lakes lines (`NAME = 'Great Lakes'`)
+and the remaining coastline separately. It intersects each group with the county
+polygons and measures length in the EPSG:6933 projected CRS. A county with
+positive Great Lakes length uses its measured length from the remaining lines,
+or zero if none intersect. All other counties use their supplied coastline
+lengths. These weights determine how the state value is distributed among its
+counties; the state source value and adjustment factor do not depend on the
+measured length. Inland fisheries uses the county freshwater-area input.
+
+The denominator is the sum of the county weights within each state,
 not an independently measured state coastline length or freshwater area.
 The method assumes that state value is proportional to the selected geographic
 measure. It does not locate fishing activity or beneficiaries within counties.
@@ -561,8 +573,10 @@ directory:
 python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16
 ```
 
-The integration uses the configured county aggregates and NLCD mask areas,
-so this step does not run raster zonal statistics. The default output pair is:
+The integration uses the configured county aggregates and NLCD mask areas.
+It calculates marine coastline weights from the supplied county lengths and
+TIGER lines as part of the build; no separate zonal statistics run is needed.
+The default output pair is:
 
 ```text
 data/analysis_results/combined/snapp_ecosystem_services_counties_YYYY_MM_DD_HH_MM_SS.csv
