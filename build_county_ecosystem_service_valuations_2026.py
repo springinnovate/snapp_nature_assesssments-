@@ -38,6 +38,7 @@ from tqdm import tqdm
 
 from coral_county_allocation import allocate_coral_values
 from mangrove_county_allocation import allocate_mangrove_values
+from county_derived_metrics import calculate_county_metrics
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "data/workflow_assets/county_integration"
@@ -1058,7 +1059,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
 
     Args:
         data_root: Root of the source and analysis data stack.
-        config_dir: Source/factor/crosswalk CSVs and export_rules.yaml.
+        config_dir: Source/factor/crosswalk CSVs, export_rules.yaml and derived_metrics.yaml.
         output: Optional new GeoPackage path; CSV uses the same basename.
         workers: Independent ecosystem-service worker processes.
         geometry_workers: Intersection threads per recreation or mangrove task.
@@ -1086,7 +1087,8 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     coral_allocator_hash = sha256(coral_allocator_path)
     geometry_utils_path = ROOT / "geometry_utils.py"
     geometry_utils_hash = sha256(geometry_utils_path)
-    config_names = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv", "export_rules.yaml")
+    config_names = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv",
+                    "export_rules.yaml", "derived_metrics.yaml")
     config_hashes = {name: sha256(config_dir / name) for name in config_names}
     rules = load_export_rules(config_dir / "export_rules.yaml")
     rules_text = (config_dir / "export_rules.yaml").read_text(encoding="utf-8")
@@ -1117,12 +1119,22 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         raise ValueError(
             "The county base must contain the unscaled "
             "sum_pollination_attributed_annual_crop_yield_value field. Use the "
-            "September raw county zonals in sources.csv; a per-pixel VRT aggregate "
+            "raw county zonals configured in sources.csv; a per-pixel VRT aggregate "
             "must not receive the pollination factor 0.09 a second time."
         )
     if not (base.STATEFP == ids.str[:2]).all():
         raise ValueError("Base state and county identifiers disagree")
     export_plan = plan_county_export(base_columns, factors.index, rules, geometry_field=geom)
+    derived_rules = yaml.safe_load((config_dir / "derived_metrics.yaml").read_text(encoding="utf-8"))
+    missing_components = set(derived_rules["es_total"]["components"]) - {
+        row["output_field"] for row in export_plan if row["output_field"]}
+    if missing_components:
+        raise ValueError(f"Export cannot supply required es_total components: {sorted(missing_components)}. "
+                         "Check the county base, export_rules.yaml and derived_metrics.yaml.")
+    for spec in derived_rules["sources"].values():
+        path = (data_root / spec["path"]).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"Required derived-metric source is missing: {path}")
     crosswalk = pd.read_csv(config_dir / "ct_county_crosswalk.csv", dtype={"source_geoid": str, "target_geoid": str})
     validate_crosswalk(crosswalk, ids)
     cache_root = data_root / "processing_outputs/county_integration_2026"
@@ -1188,6 +1200,9 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
             summary_frames.append(summary_fields)
     summaries = pd.concat(summary_frames, axis=1) if summary_frames else pd.DataFrame(index=ids)
     additions, output_fields = adjusted_county_fields(base, originals, summaries, factors, export_plan)
+    derived, derived_tables = calculate_county_metrics(
+        additions, data_root, config_dir / "derived_metrics.yaml")
+    additions = pd.concat([additions, derived], axis=1)
     renamed_fields = {row["source_field"]: row["output_field"] for row in export_plan
                       if row["source_field"] and row["action"] == "rename"}
     source_statistics = [row["source_field"] for row in export_plan
@@ -1248,7 +1263,8 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
                                            if field not in additions and field not in renamed_fields]),
             "renamed_value_fields": json.dumps(renamed_fields, sort_keys=True),
             "notes": "Carbon factor is supplied USD 3.66 per tonne CO2e times 1.182 inflation; no mass conversion. "
-                     "Per-hectare carbon sum is not an area-integrated county total; no cross-service grand total. "
+                     "Per-hectare carbon sum is not an area-integrated county total. "
+                     "es_total uses only the embedded derived_metrics.yaml component list with mixed time bases. "
                      "Mangrove ISO3 limited to USA,PRI,VIR; Ben_Stock_2020 treated as study-unit USD 2020 total; "
                      "allocated over county intersections only, excluding uncovered ocean. "
                      "Negative timber source rents clamped to zero before county allocation. "
@@ -1259,6 +1275,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
                      "CSV and GeoPackage county attributes verified equal; CSV excludes geometry only.",
         }]),
     }
+    tables.update(derived_tables)
     if output is None:
         output = data_root / rules["output"]["directory"] / (
             f"{rules['output']['filename_prefix']}_{datetime.now():%Y_%m_%d_%H_%M_%S}.gpkg")

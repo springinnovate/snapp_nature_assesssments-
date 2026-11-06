@@ -1,0 +1,32 @@
+# Reviewed MASK-ONLY definition (toolkit INI syntax). No service value rasters.
+# Freeze with prepare_tif_zonal_stats_config.py or update_nlcd_mask_areas.py.
+# The existing 0/1/255 rasters do not need regeneration.
+# Names/formulas/validation live in nlcd_mask_areas.py FIELD_DEFINITIONS.
+[project]
+name = snapp_assessment_nlcd_masks
+global_work_dir = ../../processing_outputs/nlcd_mask_areas_work
+results_dir = ../../analysis_results/zonal_statistics
+raster_dir = ../../analysis_inputs/masks
+derived_raster_dir = ../../processing_outputs/nlcd_mask_areas_derived
+zonal_units_dir = ../../analysis_inputs/zonal_units
+log_level = INFO
+max_simplify_tolerance_meters = 15
+raster_inventory =
+    [
+      {"label": "forests", "filename": "forests/reclassified_NLCD2023_forests_2026_05_18_12_57_08.tif", "units": "binary 0/1; NoData 255", "include": true},
+      {"label": "grasslands", "filename": "grasslands/reclassified_NLCD2023_grasslands_2026_05_18_12_57_08.tif", "units": "binary 0/1; NoData 255", "include": true},
+      {"label": "shrubland", "filename": "shrubland/reclassified_NLCD2023_shrubland_2026_05_18_12_57_08.tif", "units": "binary 0/1; NoData 255", "include": true},
+      {"label": "water_snow", "filename": "water_snow/reclassified_NLCD2023_water_snow_2026_05_18_12_57_08.tif", "units": "binary 0/1; NoData 255", "include": true},
+      {"label": "wetlands", "filename": "wetlands/reclassified_NLCD2023_wetlands_2026_05_18_12_57_08.tif", "units": "binary 0/1; NoData 255", "include": true}
+    ]
+
+[job:counties_masks]
+zone_key = counties
+label = County NLCD coverage and natural class areas
+vector_pattern = counties/tl_2024_us_county_50_states.gpkg
+# Historical source layer label; output label is corrected on export.
+agg_layer = tl_2024_us_county_60_states
+agg_field = GEOID
+# sum counts 1-valued pixels; counts/areas and min/max validate the conversion.
+operations = sum, valid_count, total_count, area_ha_valid, area_ha_total, min, max
+results_subdir = counties

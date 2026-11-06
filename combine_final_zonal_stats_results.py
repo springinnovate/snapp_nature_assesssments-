@@ -35,6 +35,8 @@ import geopandas as gpd
 import pandas as pd
 from tqdm import tqdm
 
+from nlcd_mask_areas import derive_nlcd_mask_areas as _derive_nlcd_class_area_fields
+
 DEFAULT_RESULTS_DIR = Path("data/analysis_results/zonal_statistics")
 DEFAULT_OUTPUT_DIR = Path("data/analysis_results/combined")
 DEFAULT_RECREATION_DIR = Path("data/analysis_inputs/zonal_units/recreation_by_county")
@@ -573,80 +575,6 @@ def _add_recreation_value_to_output(
     return combined.reset_index(drop=True)
 
 
-def _find_nlcd_mask_column(
-    frame: pd.DataFrame,
-    prefix: str,
-    class_name: str,
-) -> str | None:
-    """Find one timestamped NLCD mask metric column.
-
-    Args:
-        frame: Combined output frame.
-        prefix: Metric column prefix.
-        class_name: NLCD class group name such as `forests`.
-
-    Returns:
-        Matching column name, or None when the class metric is absent.
-
-    Raises:
-        ValueError: If multiple matching columns are present.
-    """
-    column_prefix = f"{prefix}{class_name}"
-    matches = [column for column in frame.columns if column.startswith(column_prefix)]
-    if len(matches) > 1:
-        raise ValueError(
-            f"Expected one NLCD mask column matching {column_prefix}, "
-            f"found {len(matches)}: {', '.join(matches)}"
-        )
-    if not matches:
-        return None
-    return matches[0]
-
-
-def _derive_nlcd_class_area_fields(frame: pd.DataFrame) -> pd.DataFrame:
-    """Derive stable NLCD class area fields and drop valid-area artifacts.
-
-    Args:
-        frame: Combined CSV or GeoPackage output frame.
-
-    Returns:
-        Output frame with `area_ha_nlcd_*` fields added and
-        `area_ha_valid_reclassified_NLCD2023_*` fields removed.
-
-    Raises:
-        ValueError: If a land-cover class has only one of the area/proportion
-            input fields.
-    """
-    frame = frame.copy()
-    valid_area_columns_to_drop = []
-    for class_name, output_field in NLCD_CLASS_AREA_FIELDS:
-        valid_area_column = _find_nlcd_mask_column(
-            frame,
-            NLCD_VALID_AREA_PREFIX,
-            class_name,
-        )
-        proportion_column = _find_nlcd_mask_column(
-            frame,
-            NLCD_PROPORTION_PREFIX,
-            class_name,
-        )
-        if valid_area_column is None and proportion_column is None:
-            continue
-        if valid_area_column is None or proportion_column is None:
-            raise ValueError(
-                f"Cannot derive {output_field}; expected both "
-                f"{NLCD_VALID_AREA_PREFIX}{class_name}* and "
-                f"{NLCD_PROPORTION_PREFIX}{class_name}*."
-            )
-
-        frame[output_field] = frame[valid_area_column] * frame[proportion_column]
-        valid_area_columns_to_drop.append(valid_area_column)
-
-    if valid_area_columns_to_drop:
-        frame = frame.drop(columns=valid_area_columns_to_drop)
-    return frame
-
-
 def _combine_csvs(paths: list[Path], progress_label: str) -> pd.DataFrame:
     """Combine one result family's CSV outputs.
 
@@ -903,12 +831,13 @@ def _write_smoke_test_inputs(results_dir: Path) -> None:
             }
             if job_stem.endswith("_masks"):
                 for class_index, (class_name, _) in enumerate(NLCD_CLASS_AREA_FIELDS):
-                    rows[
-                        f"{NLCD_VALID_AREA_PREFIX}{class_name}_2026_01_01_00_00_00"
-                    ] = [100.0, 200.0]
-                    rows[
-                        f"{NLCD_PROPORTION_PREFIX}{class_name}_2026_01_01_00_00_00"
-                    ] = [0.1 * (class_index + 1), 0.2 * (class_index + 1)]
+                    for operation, values in {
+                        "valid_count": [100, 200], "total_count": [120, 250],
+                        "area_ha_valid": [100.0, 200.0], "area_ha_total": [120.0, 250.0],
+                        "sum": [class_index + 1, 2 * (class_index + 1)],
+                        "min": [0, 0], "max": [1, 1],
+                    }.items():
+                        rows[f"{operation}_reclassified_NLCD2023_{class_name}_2026_01_01_00_00_00"] = values
             frame = pd.DataFrame(rows)
             frame.to_csv(project_dir / f"{job_stem}_20260101_000000.csv", index=False)
 
@@ -985,7 +914,7 @@ def _validate_smoke_test_nlcd_fields(csv_outputs: list[Path]) -> None:
         for class_index, (_, output_field) in enumerate(NLCD_CLASS_AREA_FIELDS):
             if output_field not in frame.columns:
                 raise AssertionError(f"Smoke test missing derived field {output_field}.")
-            expected = [10.0 * (class_index + 1), 40.0 * (class_index + 1)]
+            expected = [float(class_index + 1), 2.0 * (class_index + 1)]
             actual = frame[output_field].tolist()
             if any(abs(left - right) > 1e-9 for left, right in zip(actual, expected)):
                 raise AssertionError(

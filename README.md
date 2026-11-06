@@ -86,55 +86,29 @@ Run:
 python prepare_padus_all_and_public_lands.py
 ```
 
-The default classification policy is stored in
-`config/padus_land_rules.rules`. Pass a different rule file with
-`--rules-config <path>` when needed. The file uses a constrained, declarative
-syntax; it is parsed and validated without executing Python or SQL:
-
-```text
-public_land =
-    Own_Type not in {TRIB}
-    AND (
-        Own_Type in {DIST, FED, JNT, LOC, STAT}
-        OR (
-            Own_Type in {DESG, NGO, PVT, UNK}
-            AND Mang_Type in {DIST, FED, JNT, LOC, STAT}
-        )
-    )
-
-public_access =
-    public_land
-    AND (
-        Pub_Access in {OA}
-        OR (
-            Pub_Access in {RA, UK}
-            AND Own_Type not in {PVT}
-            AND manager not in {DOD, DOE, NASA}
-            AND Des_Tp not in {
-                MIL, PAGR, PCON, PFOR, PHCA, POTH, PPRK, PRAN, PREC
-            }
-        )
-    )
-```
+The default classification policy is in
+[`config/padus_land_rules.rules`](config/padus_land_rules.rules). Pass a
+different rule file with `--rules-config <path>` when needed. The rules use the
+stored PAD-US codes, not the longer descriptions displayed in GIS software.
 
 The all-land product includes every PAD-US feature that has positive-area
 overlap with the USA boundary after processing.
 
-The public-land product is a subset of the all-land product. PAD-US stores
-coded values in the geodatabase even when GIS software displays longer
-descriptions, so the configured rule uses stored codes. Federal, Joint, Local
-Government, Regional Agency Special District, and State owners are included.
-Designation, Non-Governmental Organization, Private, and Unknown owners are
-included only when managed by one of those public entity types. Tribal and
-Territorial records are not selected.
+The public-land product selects features with federal, state, local government,
+regional district, joint, or territorial manager types (`FED`, `STAT`, `LOC`,
+`DIST`, `JNT`, `TERR`). Only an explicit unknown manager type (`UNK`) uses the
+`Des_Tp` allowlist in the rule file. For example, a federally managed
+conservation easement qualifies, but a conservation easement with an unknown
+manager does not. Blank and other manager codes are excluded. Owner type does
+not determine public-land status.
 
-The public-access product is a subset of public land. Open Access (`OA`) records
-are included directly. Restricted Access (`RA`) and Unknown (`UK`) records are
-included only when they are not privately owned, are not managed by DOD, DOE,
-or NASA, and do not use one of the configured private or military designation
-codes. Closed (`XA`) records are excluded. PAD-US 4.1 stores NASA under the
-local manager value `National Aeronautics and Space Administration (NASA)`, so
-the script normalizes that exact value to the configured `NASA` manager token.
+The public-access product starts from public land and excludes NASA-managed
+features. Open Access (`OA`) records otherwise qualify directly. Restricted
+Access (`RA`) and Unknown (`UK`) records also qualify if they are not privately
+owned, are not managed by DOD or DOE, and do not have one of the excluded
+private or military designations. Closed (`XA`) records do not qualify. The
+script recognizes NASA by its exact PAD-US local manager value,
+`National Aeronautics and Space Administration (NASA)`.
 
 All three clipped products contain `land_type`, source `OBJECTID`, the PAD-US
 source attributes, and geometry. The rule parser rejects unsupported fields,
@@ -161,63 +135,15 @@ The resulting by-county PAD-US products are written under
 `data/analysis_inputs/zonal_units`. Public-access outputs are routed to
 `padus_public_access_lands_by_county`, protected-area-filtered BLM outputs to
 `blm_lands_excluding_federally_protected_areas_by_county`, and final BBB
-outputs to `bbb_candidate_blm_lands_by_county`. This change does not add these
-products as jobs in the zonal-statistics configuration.
+outputs to `bbb_candidate_blm_lands_by_county`. Select the products to analyze
+in the zonal-statistics configuration.
 
 #### 2a. Screen BBB PAD-US Candidate Lands
 
-`filter_bbb_padus_by_population_centers.py` screens a USA-clipped PAD-US
-GeoPackage against the mappable land criteria in Section 50301. Before doing
-geometry work, it selects records where:
-
-- `FeatClass = 'Fee'`;
-- `Own_Type = 'FED'`;
-- `Mang_Name = 'BLM'`; and
-- `State_Nm` is Alaska, Arizona, California, Colorado, Idaho, Nevada, New
-  Mexico, Oregon, Utah, Washington, or Wyoming.
-
-The script first subtracts federally protected areas represented by overlapping
-PAD-US records and writes that intermediate BLM-only result. It uses designation
-codes for National Monuments, National Recreation Areas, Wilderness Areas, Wild
-and Scenic Rivers, National Trails, National Conservation Areas, National
-Wildlife Refuges, and National Parks. It also uses NPS and FWS
-approved/proclamation boundaries to cover National Park System units and,
-conservatively, National Wildlife Refuge and National Fish Hatchery System
-units. The FWS boundary proxy can include some additional FWS administrative
-areas because PAD-US does not provide a separate system-membership field for
-every boundary.
-
-It then clips those records to the union of:
-
-- a five-statute-mile band around the **boundary** of each incorporated
-  municipality with a population of at least 1,000; and
-- a five-statute-mile circle around the Census-provided `CENTLON`/`CENTLAT`
-  centroid of each census-designated place with a population of at least 1,000.
-
-Each place is buffered in its local UTM coordinate system so the five-mile
-distance is not calculated in longitude/latitude or a single nationwide map
-projection. Input features are clipped to the union of those zones, and all
-source attributes are retained. Progress bars report PAD-US attribute
-selection, protected-area loading and indexing, population-layer loading,
-place buffering, zone union, output-schema creation, candidate scanning,
-feature writing, and GeoPackage finalization.
-
-The two outputs are screening layers, not determinations that a tract will be
-offered or sold:
-
-- `blm_lands_excluding_federally_protected_areas_<timestamp>.gpkg`, containing
-  eligible-state BLM fee land after only the protected-area subtraction, with
-  layer `blm_lands_excluding_federally_protected_areas` and `land_type` value
-  `blm_excluding_federally_protected`; and
-- `bbb_candidate_blm_lands_within_5_miles_of_population_centers_<timestamp>.gpkg`,
-  containing the preceding land that also satisfies the bill's five-mile rule,
-  with layer `bbb_candidate_blm_lands` and `land_type` value
-  `bbb_candidate_blm`.
-
-PAD-US does not establish existing grazing permits or leases, incompatible
-valid existing rights, residential suitability, or tract selection.
-Protected-area coverage is limited to the records present in the supplied
-PAD-US GeoPackage.
+Use the USA-clipped **all-lands** PAD-US GeoPackage as the input. The screen
+writes eligible-state BLM fee land minus mapped federal protections and a second
+layer restricted to land within five miles of qualifying population centers.
+The outputs are screening layers, not a list of tracts eligible for sale.
 
 Run it with a PAD-US GeoPackage as the positional argument:
 
@@ -252,22 +178,9 @@ final GeoPackage under `data/processing_outputs/bbb_candidate_blm_lands`.
 
 `prepare_recreation_value_by_county.py` allocates the `val_2024` values from
 `data/analysis_inputs/recreation/usa_nature_assessment_recreation.gpkg` to
-counties. The script reprojects recreation features and counties to EPSG:5070
-for equal-area intersection math, skips recreation features where `val_2024` is
-zero or null, and uses a spatial index over the remaining recreation features to
-find possible county overlaps.
-
-For each positive-area county intersection, the script assigns the county the
-same fraction of the recreation feature value as the county receives of that
-feature's area:
-
-```text
-county_value += val_2024 * (intersection_area / recreation_feature_area)
-```
-
-All counties are kept in the output. Counties without positive-area recreation
-overlap receive `0`. The output fields are `GEOID` and
-`proportional_recreation_val_2024`, with county geometry written in EPSG:5070.
+counties. Run this step if you need the recreation input for the
+[zonal combiner](#combined-zonal-results). The county valuation builder reads
+its own polygon source from `sources.csv` and does not use this output.
 
 Run:
 
@@ -331,104 +244,47 @@ unless the rule is changed explicitly in the script.
 
 ### Zonal Statistics
 
-#### TIFF handoff workflow
+#### Ecosystem-service TIFF zonals
 
-For the current ecosystem-service TIFF handoff, place source rasters in
-`data/analysis_inputs/ecosystem_services`, then review
-`data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml`.
-This version-controlled definition contains the raster inventory, units,
-include/exclude decisions, scale factors, zone patterns, metrics, output roots,
-and simplification tolerance. There is no separate TOML raster manifest.
-
-The toolkit historically uses INI sections in files named `.yaml`; the inline
-`[project].raster_inventory` is a JSON list inside that existing format. Only
-entries with `"include": true` are analyzed. Paths in `[project]` are relative
-to the definition; zone patterns are relative to `zonal_units_dir`. Use
-`--config <path.yaml>` to prepare another reviewed definition.
-
-Generate a raster-only runner configuration with:
+Place the raster inputs in `data/analysis_inputs/ecosystem_services`. Edit
+[`snapp_assessment_tif_zonal_stats.yaml`](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml)
+to select rasters (`"include": true` in the `[project].raster_inventory` JSON
+list). Paths are relative to the config file; vector patterns are relative to
+`zonal_units_dir`. Use `--config <path.yaml>` for a different definition.
 
 ```powershell
 python prepare_tif_zonal_stats_config.py
 ```
 
-The preparation step validates every enabled TIFF, automatically selects the
-newest timestamped county-cut GeoPackage for each available land product, and
-writes a new runnable snapshot:
-
-```text
-data/workflow_assets/zonal_stats/runs/snapp_assessment_tif_zonal_stats_<UTC-timestamp>.yaml
-```
-
-The definition and `runs/*.yaml` snapshots are Git-trackable. Commit the reviewed
-definition and the snapshot actually used for an analysis. Each snapshot records
-the complete source definition (including blocked raster reasons), its SHA-256,
-the generator SHA-256, source and analysis raster paths, units and scale factors,
-selected concrete vector versions, skipped-zone reasons, metrics, and outputs.
-Keep that snapshot with any exported results so the analysis can be traced back
-to its exact inputs and policy. Historical configs in ignored
-`data/processing_outputs/zonal_stats_config` are preserved, but preparation no
-longer overwrites that old fixed filename. `--output` can name a new snapshot;
-existing configs are never overwritten.
-
-The reviewed `[project]` section defaults to
-`max_simplify_tolerance_meters = 15`; preparation copies its configured value
-into the snapshot. The zonal-statistics toolkit uses this
-explicit physical tolerance when simplifying aggregation geometry; it does not
-derive the tolerance from each raster's pixel size. This avoids the previous
-2 km simplification applied to the 4 km water-provisioning raster while retaining
-geometry simplification for PAD-US performance.
-
-By default the generated config covers counties, PAD-US all lands, PAD-US
-public lands, PAD-US public-access lands, and BBB candidate BLM lands. It also
-includes BLM lands excluding mapped federal protections when that intermediate
-product has been cut by county. Use repeatable `--zone` options to run only a
-subset; for example:
+The script validates the enabled inputs, picks the newest matching county-cut
+GeoPackage per zone, and prints a runnable config under
+`data/workflow_assets/zonal_stats/runs/`. Check the selected paths and keep the
+config with the results. Use repeatable `--zone` options to select a subset:
 
 ```powershell
 python prepare_tif_zonal_stats_config.py --zone all --zone public --zone public-access --zone bbb-candidates
 ```
 
-The inline inventory applies the required `0.09` pollination per-hectare to 30 m-pixel
-conversion through a lightweight VRT, avoiding a duplicate multi-gigabyte
-TIFF. Each run's VRT is stored in its own subdirectory under
-`data/processing_outputs/zonal_stats_derived_rasters`, so later changes to scale
-factors cannot overwrite an earlier run's conversion. Air quality and mental
-health remain disabled in this handoff until validated value TIFFs are selected;
-the county air-quality CSV is handled by the separate county valuation builder.
-Mangroves remain disabled in this raster inventory because
-`mangrove_CONUS.tif` contains categorical CCAP values (`-128`, `0`, `16`, and
-`17`), not monetary values. The county valuation builder instead uses the
-`ucsc_cwon_studyunits.gpkg` vector source described below.
-
-The legacy `Coral_Reefs_2024adj_CPI.tif` is now disabled in the raster inventory.
-The county builder instead uses `aeb_coral.gpkg` point totals from `BC_USD11`,
-assigned once per point to the nearest county polygon and adjusted by 1.368.
-Historical frozen zonal snapshots are unchanged.
+This TIFF profile applies the pollination hectare-to-pixel conversion. For the
+county valuation builder, use county zonals with **unscaled** pollination sums
+instead. Supply coral and mangrove vectors and the air-quality CSV to the
+[county builder](#build-county-ecosystem-service-valuations-for-the-2026-assessment),
+not to the TIFF runner.
 
 Run the exact path printed by preparation. Do not use a wildcard that would
-execute several historical runs. With the toolkit clone used on the original
-workstation, replace `<UTC-timestamp>` below with that printed filename:
+execute several runs. Replace `<zonal_stats_toolkit_repo>` with your toolkit
+clone and `<UTC-timestamp>` with the printed filename:
 
 ```powershell
 conda activate zonal-stats-toolkit
-python D:\repositories\zonal_stats_toolkit\runner.py .\data\workflow_assets\zonal_stats\runs\snapp_assessment_tif_zonal_stats_<UTC-timestamp>.yaml --job-workers 4 --raster-workers 2
+python "<zonal_stats_toolkit_repo>\runner.py" ".\data\workflow_assets\zonal_stats\runs\snapp_assessment_tif_zonal_stats_<UTC-timestamp>.yaml" --job-workers 4 --raster-workers 2
 ```
 
 The TIFF jobs write timestamped CSV and GeoPackage results under
-`data/analysis_results/zonal_statistics/<zonal-product>`. After the run, create
-the latest joined deliverables with:
+`data/analysis_results/zonal_statistics/<zonal-product>/`. To join outputs by
+county, use the [zonal combiner](#combined-zonal-results).
 
-```powershell
-conda activate geo
-python combine_final_zonal_stats_results.py
-```
-
-The resulting combined filenames identify the zonal product directly, including
-`padus_public_access_lands_combined_*` and
-`bbb_candidate_blm_lands_combined_*`.
-
-#### Full legacy assessment configuration
+#### Combined raster and vector configuration
 
 The zonal statistics configuration is:
 
@@ -436,10 +292,9 @@ The zonal statistics configuration is:
 data/workflow_assets/zonal_stats/snapp_assessment_zonal_stats.yaml
 ```
 
-Before running, update the concrete timestamped vector paths in that file if new
-PAD-US by-county or NHD freshwater products have been generated. The toolkit
-supports glob patterns for raster inputs, but vector inputs are listed as
-explicit GeoPackage paths.
+Before running, set the concrete county-cut and freshwater GeoPackage paths
+and review the raster glob in this file. This configuration does not use the
+TIFF profile's raster inventory or scaling rules.
 
 The configuration runs the same analysis families for three zonal datasets:
 
@@ -452,16 +307,16 @@ From this repository root, run the toolkit runner. Replace
 [`zonal_stats_toolkit`](https://github.com/springinnovate/zonal_stats_toolkit):
 
 ```powershell
-python <zonal_stats_toolkit_repo>\runner.py .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
+python "<zonal_stats_toolkit_repo>\runner.py" .\data\workflow_assets\zonal_stats\snapp_assessment_zonal_stats.yaml
 ```
 
-The legacy configuration combines raster, mask, area, freshwater, and coastline
+This configuration combines raster, mask, area, freshwater, and coastline
 jobs. Its configured metrics are:
 
 | Input family | Operations |
 | --- | --- |
 | Ecosystem service rasters | `sum`, `mean`, `area_ha_valid`, `proportion_valid_nonzero` |
-| NLCD reclassification masks | `area_ha_valid`, `proportion_valid_nonzero` |
+| NLCD reclassification masks | `sum`, `valid_count`, `total_count`, `area_ha_valid`, `area_ha_total`, `min`, `max` |
 | Zonal unit area | `intersect_area_ha` |
 | NHD freshwater polygons | `intersect_area_ha` |
 | Coastline | `intersect_length_km` |
@@ -469,35 +324,84 @@ jobs. Its configured metrics are:
 The runner writes individual timestamped outputs under
 `data/analysis_results/zonal_statistics`.
 
-### Final Combination
+### Calculate county NLCD areas without rerunning ecosystem-service zonals
 
-`combine_final_zonal_stats_results.py` joins the latest timestamped CSV and
-GeoPackage outputs within each zonal-statistics subdirectory. Shared columns are
-kept once, and repeated fields with conflicting values for the same `GEOID`
-raise an error. It also joins the latest prepared recreation value by county
-from `data/analysis_inputs/zonal_units/recreation_by_county`, carrying only
-`proportional_recreation_val_2024` into each available county-keyed final
-output.
+Use the same Python environment as the zonal toolkit. Replace
+`<zonal_stats_toolkit_repo>` with your toolkit clone and `<county-values.gpkg>`
+with a completed county valuation file that does not contain NLCD area fields
+or ES totals and ratios. Run from the repository:
 
-During this step, timestamped NLCD mask artifact fields such as
-`area_ha_valid_reclassified_NLCD2023_*` are replaced with stable derived class
-area fields:
+```powershell
+python update_nlcd_mask_areas.py --runner "<zonal_stats_toolkit_repo>\runner.py" --county-results "<county-values.gpkg>" --raster-workers 2
+```
 
-- `area_ha_nlcd_forests`
-- `area_ha_nlcd_grasslands`
-- `area_ha_nlcd_shrubland`
-- `area_ha_nlcd_water_snow`
-- `area_ha_nlcd_wetlands`
+This **single command** freezes the tracked
+[`snapp_assessment_nlcd_masks.yaml`](data/workflow_assets/zonal_stats/snapp_assessment_nlcd_masks.yaml),
+runs only its five existing NLCD masks, validates the raw results, and writes:
 
-The final outputs keep the corresponding `proportion_valid_nonzero_*` fields.
+- `data/analysis_results/nlcd_mask_areas/<timestamp>/counties_nlcd_mask_areas_<timestamp>.{csv,gpkg}`:
+  county attributes, one valid-coverage area, five class areas and proportions,
+  and the sum of the five class areas.
+- `data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.{csv,gpkg}`:
+  the explicitly selected existing county valuations with those same twelve
+  fields appended, plus the [county totals and ratios](#add-county-totals-and-ratios-without-rerunning-zonals).
+  Service values, adjustment factors, geometry, and existing
+  provenance tables are preserved, not recalculated.
 
-Run:
+The script prints the exact paths and preserves existing outputs. Omit
+`--county-results` to produce only the mask-area pair, for example before running
+the full county valuation builder. Set `sources.natural_areas` in
+[`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml)
+to that mask-area GeoPackage and its feature layer before building valuations.
+With `--county-results`, the command also calculates `es_total`, denominators
+and ratios using the mask areas from this run. It does not regenerate the masks
+or rerun ecosystem-service zonals and valuations.
+
+`area_ha_valid_nlcd` is the observed NLCD footprint, **not** the county's full
+polygon area. The five class areas cover forests, grasslands, shrubland,
+water/snow, and wetlands; their sum cannot exceed that footprint. A valid zero
+pixel contributes to coverage but not class area. NoData contributes to neither.
+Zero coverage produces zero observed hectares and null proportions; it does not
+mean a county outside NLCD coverage has no natural land. These are pixel-centre
+areas with the reviewed 15 m simplification cap, not fractional boundary areas.
+
+The reviewed profile is version-controlled. Each invocation creates a new
+immutable config under `data/workflow_assets/zonal_stats/runs/` and isolated raw
+results/cache directories. Keep that config with the results. GeoPackages embed
+the frozen config, field definitions, source/config/code hashes, and raster grid,
+size and modification-time records. Raster contents are not fully hashed.
+
+To append the **same completed mask run to a later county valuation export**,
+no zonals need to run again. Use the paths printed by the original mask run:
+
+```powershell
+python update_nlcd_mask_areas.py --mask-results "<exact raw counties_masks_TIMESTAMP.gpkg>" --run-config "<its frozen mask .yaml>" --county-results "<new pre-mask county valuations.gpkg>" --output "<new output path.gpkg>"
+```
+
+This verifies county keys/boundaries and refuses mismatched inputs. CSV/GPKG
+parity and preservation of every retained base attribute and geometry are checked
+before publication. The raw mask run remains in its timestamped `raw/counties/`
+directory; use that raw GeoPackage, not the already renamed mask-area export.
+
+### Combined zonal results
+
+Run the combiner after the zonal jobs. It reads the latest CSV and GeoPackage
+for each job under `data/analysis_results/zonal_statistics/` and the prepared
+recreation-by-county GeoPackage under
+`data/analysis_inputs/zonal_units/recreation_by_county/`. Use `--results-dir`
+and `--recreation-dir` to select other input directories.
 
 ```powershell
 python combine_final_zonal_stats_results.py
 ```
 
-The final deliverables are:
+If the input includes NLCD mask jobs, supply their `sum`, `valid_count`, and
+`total_count` fields. Run the mask jobs in the combined raster and vector
+configuration to generate these inputs. To add NLCD areas to a county valuation
+file separately, use the [mask-only command](#calculate-county-nlcd-areas-without-rerunning-ecosystem-service-zonals).
+
+The combiner writes pairs under `data/analysis_results/combined/` for the
+available products:
 
 - `counties_combined_<timestamp>.csv` and
   `counties_combined_<timestamp>.gpkg`.
@@ -514,128 +418,74 @@ The final deliverables are:
   `bbb_candidate_blm_lands_combined_<timestamp>.gpkg`, when those zonal jobs
   have been run.
 
-By default, these files are written to `data/analysis_results/combined`.
-Each contains `proportional_recreation_val_2024` joined by `GEOID`.
-
 ## Build County Ecosystem-Service Valuations for the 2026 Assessment
 
-[`build_county_ecosystem_service_valuations_2026.py`](build_county_ecosystem_service_valuations_2026.py)
-builds a county dataset for comparing ecosystem-service values in the October
-2026 SNAPP assessment. It adds grazing, air quality, wages, timber, fisheries,
-urban heat, recreation, coral and mangrove coastal protection, and physical-health
-estimates to the September 10 county results. County estimates are joined by
-FIPS; state fisheries, recreation polygons, mangrove study units, and coral points are
-distributed to counties using the documented allocation rules.
+Use the county builder to combine county zonals with the tabular and vector
+service inputs. It does not run zonal statistics.
 
-Place the source files under `data/` as listed in the
-[input and methods guide](docs/county_valuation_integration_2026.md#input-data).
-With the repository's Python environment active, run from the repository folder:
+1. Place the files listed in the [input guide](docs/county_valuation_integration_2026.md#input-data)
+   under `data/`. For coral, supply `data/analysis_inputs/ecosystem_services/aeb_coral.gpkg`
+   with point layer `aeb_coral` and value field `BC_USD11`.
+2. Check [`sources.csv`](data/workflow_assets/county_integration/sources.csv)
+   for the input paths. Use county zonals with unscaled pollination sums; the
+   builder applies the hectare-to-pixel factor.
+3. Check [`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml)
+   for the county-area, NLCD mask-area, GDP, and population inputs. If you need
+   the NLCD areas, run the [mask-only step](#calculate-county-nlcd-areas-without-rerunning-ecosystem-service-zonals)
+   without `--county-results` and set `sources.natural_areas` to its output.
+
+With the geospatial environment active, run:
 
 ```powershell
 python build_county_ecosystem_service_valuations_2026.py
 ```
 
-The builder writes matching
-`data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.csv`
-and `.gpkg` files with matching county attributes. The GeoPackage also contains the
-county map and tables describing sources and missing coverage. The original
-files are preserved.
+Use `--workers` and `--geometry-workers` to set parallelism. The builder
+prints the paths to the matching
+`data/analysis_results/combined/snapp_ecosystem_services_counties_<timestamp>.{csv,gpkg}`
+files. Both include the service values, adjustment factors, NLCD areas,
+`es_total` and ratios. Use the GeoPackage for county geometry and the input
+and allocation records.
 
-The county feature layer is named `tl_2024_us_county_50_states`, controlled by
-`output.layer_name` in `export_rules.yaml`. This corrects the historical
-`60_states` label without filtering geography: DC, Puerto Rico and the U.S.
-Virgin Islands remain included. Existing source-layer references retain the
-legacy name because those input files are unchanged.
+To change output names or columns, edit
+[`export_rules.yaml`](data/workflow_assets/county_integration/export_rules.yaml).
+For field definitions and interpretation, see the
+[county methods guide](docs/county_valuation_integration_2026.md#output-fields-and-interpretation).
 
-Both formats put original county identifiers and geographic attributes first,
-including `ALAND` and `AWATER`, followed by all retained `sum_` fields, other
-service totals, and adjustment-factor columns. Configured raster sums default to
-their source names plus `_adj`, including
-`sum_pollination_attributed_annual_crop_yield_value_adj` with
-`pollination_adj_factor` of `0.09`. Retained source sums without a configured
-adjustment keep their existing names and values. Mean, median, min, max, standard
-deviation, percentiles, generated counts, valid-area fields, and proportions are omitted.
-There are no original-value copies or duplicate service-total aliases.
+### Add county totals and ratios without rerunning zonals
 
-The tracked
-[`export_rules.yaml`](data/workflow_assets/county_integration/export_rules.yaml)
-controls export field names, exclusions, column groups, output directory, and
-filename prefix. This is a YAML file, separate from the toolkit's historical
-INI-style runner configuration. Source selection, multipliers, and Connecticut
-allocation remain in `sources.csv`, `adjustment_factors.csv`, and
-`ct_county_crosswalk.csv`. The rules rename the flood totals to
-`sum_flood_annual_value_masked_to_wetlands_adj` and
-`sum_flood_marginal_npv_masked_to_wetlands_adj`, rename pixel carbon to
-`sum_CO2e_mitigation_dollar_value_per_pixel_adj`, and omit the four `sum_Wsw_*`
-quantity fields. The similarly named `sum_Wval_sw_2020usd_*_adj` monetary
-provisioning values remain.
+#### Run the finalizer
 
-Mangroves use `Ben_Stock_2020` from the `UCSC_CWON_studyunits` layer in
-`data/analysis_inputs/ecosystem_services/mangroves/ucsc_cwon_studyunits.gpkg`.
-Only `ISO3` values `USA`, `PRI`, and `VIR` are included; neighboring countries'
-offshore study units cannot contribute merely by intersecting a U.S. county.
-Each selected study-unit total is allocated in proportion to its positive-area county
-intersections; ocean or other area outside all counties is excluded from the
-denominator. A unit intersecting only one county contributes its entire value
-there. Contributions are summed by county and multiplied by 1.182 to produce
-`sum_mangrove_coastal_flood_protection_value_adj`, with `mangroves_adj_factor`
-shown separately. The old categorical `sum_mangrove_CONUS` fields are omitted.
-This denominator differs deliberately from recreation's full-polygon-area
-denominator. See the [mangrove allocation method](docs/county_valuation_integration_2026.md#mangrove-study-unit-allocation)
-for the source-units caveat, null handling, and unallocated study units.
+Use this when the county service values are already calculated and you want to
+add `es_total` and its four ratios. The full county builder includes these
+automatically, so it does not need a separate finalization step.
 
-Corals use `BC_USD11` from the `aeb_coral` point layer in
-`data/analysis_inputs/ecosystem_services/aeb_coral.gpkg`. Each point contributes
-its entire value once to the nearest county polygon, including offshore points;
-counties with multiple assigned points receive their sum. Distances are measured
-in point-centered WGS84 azimuthal-equidistant metres, not to county centroids.
-The total is multiplied once by **1.368**, exported as
-`sum_aeb_coral_BC_USD11_adj`, with `corals_adj_factor` retained. The old coral
-raster sums are omitted. `integration_coral_allocation` records each point's
-assignment and distance. See the [coral method](docs/county_valuation_integration_2026.md#coral-point-allocation)
-for tie-breaking, null handling, and coverage limits.
-
-Negative timber `total_annual_rent` is clamped to zero at the source-county
-level, before Connecticut redistribution or aggregation. The source CSV is
-unchanged; the output retains `timber_adj_factor` of 1 and records the clamp in
-its audit tables. Missing timber values continue to follow the documented
-zero-filling convention.
-
-The carbon multiplier is the assessment-supplied price of USD 3.66 per tonne CO2e
-times the 1.182 inflation adjustment, or 4.32612. The pixel-carbon output is the
-county sum of monetary per-pixel values. The separately retained carbon-per-hectare
-sum is not an area-integrated county dollar total.
-
-Export rules are validated before expensive processing. Each GeoPackage stores
-their full YAML text, hash, and resolved field actions so its schema can be traced
-to the configuration that produced it. Editing only export rules reuses completed
-raw calculation checkpoints. See the
-[export-rules guide](docs/county_valuation_integration_2026.md#export-rules) for
-the supported keys. Existing environments without PyYAML can install it with
-`python -m pip install pyyaml`.
-
-Air quality exports only `air_quality_avoided_mortality_annual_value_adj`, the
-county total across CSV land-cover/pollutant rows, and
-`air_quality_avoided_mortality_annual_value_adj_factor` of `1.135`. See the guide
-for units, Connecticut allocation, and null handling. No raster zonal rerun is
-needed for these county integration changes, including the coral point replacement,
-mangrove replacement, and timber clamp; rerun the county builder to generate a new timestamped pair:
+Activate the geospatial Python environment. Replace `<county-values.gpkg>`
+with a completed, adjusted county valuation file that does not already contain
+the ES totals and ratios, then run from the repository:
 
 ```powershell
-python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16
+python finalize_county_ecosystem_services.py --county-results "<county-values.gpkg>"
 ```
 
-Before comparing or summing values, read the guide's
-[interpretation notes](docs/county_valuation_integration_2026.md#interpreting-the-values):
-missing values differ from zero, some estimates are allocated across boundaries,
-and the services include different units and time horizons.
+The script copies the service values, factors, county boundaries and supporting
+tables, then appends the summaries. It prints the paths to a CSV and GeoPackage
+in `data/analysis_results/combined/`, named
+`snapp_ecosystem_services_counties_<timestamp>`. It does not rerun zonals or
+service valuations.
 
-## Runtime Notes
+To choose the output name, add `--output "<output.gpkg>"`; the CSV gets
+the same name. When changing the calculation settings, rerun using the same
+input you used the first time, rather than the file that already has totals.
 
-The PAD-US, NHD, NLCD preparation, and zonal statistics steps are the expensive
-parts of the workflow. On the local NVMe workstation used for this work, with 32
-logical processors and 128 GB RAM, the full preparation and zonal statistics
-workflow should be expected to take a few hours.
+The settings are in
+[`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml):
+the service fields to sum, the county-area/GDP/population files, and the ratio
+denominators. Source paths are relative to `data/`. The input may contain all
+twelve NLCD area/share fields. If it has none, the script joins the mask-area
+GeoPackage selected in this file; the masks must use the same county geography.
 
-The final combination step is comparatively light and should take about 10 to 15
-seconds.
+The mask updater with `--county-results` also includes these summaries.
+
+For the meaning of `es_total`, the ratios, and blank values, see the
+[county results guide](docs/county_valuation_integration_2026.md#county-totals-and-ratios).
