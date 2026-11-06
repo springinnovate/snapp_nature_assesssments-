@@ -13,6 +13,15 @@ from padus_land_rules import (
 
 
 RULE_PATH = Path("config/padus_land_rules.rules")
+PUBLIC_MANAGER_TYPES = ("FED", "STAT", "LOC", "DIST", "JNT", "TERR")
+UNKNOWN_MANAGER_INCLUDED = (
+    "ACC", "AGRE", "FOTH", "FORE", "LCA", "LHCA", "LOTH", "LP", "LREC", "LRMA",
+    "MIL", "RECE", "REA", "SCA", "SHCA", "SOTH", "SP", "SREC", "SRMA", "WPA",
+)
+UNKNOWN_MANAGER_EXCLUDED = (
+    "CONE", "TRIBL", "ND", "OTHE", "PAGR", "PCON", "PFOR", "PHCA", "POTH",
+    "PPRK", "PRAN", "PREC", "UNK", "UNKE",
+)
 ALLOWED_VALUES = {
     "Own_Type": {
         "DESG",
@@ -40,18 +49,7 @@ ALLOWED_VALUES = {
         "TRIB",
         "UNK",
     },
-    "Des_Tp": {
-        "MIL",
-        "PAGR",
-        "PCON",
-        "PFOR",
-        "PHCA",
-        "POTH",
-        "PPRK",
-        "PRAN",
-        "PREC",
-        "WPA",
-    },
+    "Des_Tp": {*UNKNOWN_MANAGER_INCLUDED, *UNKNOWN_MANAGER_EXCLUDED},
     "Pub_Access": {"OA", "RA", "XA", "UK"},
     "manager": {"NASA", "DOE", "DOD"},
 }
@@ -69,8 +67,8 @@ class PadusLandRulesTest(unittest.TestCase):
         self,
         *,
         own_type: str,
-        mang_type: str,
-        des_type: str = "WPA",
+        mang_type: str | None,
+        des_type: str | None = "WPA",
         mang_name: str = "BLM",
         loc_mang: str = "Bureau of Land Management",
         pub_access: str = "UK",
@@ -100,33 +98,38 @@ class PadusLandRulesTest(unittest.TestCase):
         )
         return self.rules.evaluate(context)
 
-    def test_public_owner_types_are_public_land(self) -> None:
-        for own_type in ("FED", "JNT", "LOC", "DIST", "STAT"):
-            with self.subTest(own_type=own_type):
-                result = self.classify(own_type=own_type, mang_type="PVT")
+    def test_public_manager_type_takes_precedence(self) -> None:
+        """Neither tribal ownership nor a fallback exclusion vetoes inclusion."""
+        for mang_type in PUBLIC_MANAGER_TYPES:
+            with self.subTest(mang_type=mang_type):
+                result = self.classify(
+                    own_type="TRIB", mang_type=mang_type, des_type="CONE"
+                )
                 self.assertTrue(result["public_land"])
-                self.assertTrue(result["public_access"])
 
-        for own_type in ("TERR", "TRIB"):
-            with self.subTest(own_type=own_type):
-                result = self.classify(own_type=own_type, mang_type="FED")
+    def test_nonpublic_manager_never_uses_designation_fallback(self) -> None:
+        """Only explicit UNK can qualify by designation."""
+        for mang_type in ("NGO", "PVT", "TRIB", "DESG", "", None, "UNLISTED"):
+            with self.subTest(mang_type=mang_type):
+                result = self.classify(
+                    own_type="FED", mang_type=mang_type, des_type="SP", pub_access="OA"
+                )
                 self.assertFalse(result["public_land"])
                 self.assertFalse(result["public_access"])
 
-    def test_fallback_owner_requires_public_manager(self) -> None:
-        for own_type in ("DESG", "NGO", "PVT", "UNK"):
-            for mang_type in ("FED", "LOC", "DIST", "STAT"):
-                with self.subTest(own_type=own_type, mang_type=mang_type):
-                    self.assertTrue(
-                        self.classify(
-                            own_type=own_type,
-                            mang_type=mang_type,
-                        )["public_land"]
+    def test_unknown_manager_uses_designation_allowlist(self) -> None:
+        """Apply the full designation table only to unknown managers."""
+        for expected, designations in (
+            (True, UNKNOWN_MANAGER_INCLUDED),
+            (False, (*UNKNOWN_MANAGER_EXCLUDED, "", None, "UNLISTED")),
+        ):
+            for des_type in designations:
+                with self.subTest(des_type=des_type):
+                    result = self.classify(
+                        own_type="FED", mang_type="UNK", des_type=des_type, pub_access="OA"
                     )
-
-        excluded = self.classify(own_type="PVT", mang_type="NGO")
-        self.assertFalse(excluded["public_land"])
-        self.assertFalse(excluded["public_access"])
+                    self.assertEqual(result["public_land"], expected)
+                    self.assertEqual(result["public_access"], expected)
 
     def test_restricted_and_unknown_access_can_be_public(self) -> None:
         for pub_access in ("RA", "UK"):

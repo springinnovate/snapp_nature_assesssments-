@@ -86,55 +86,29 @@ Run:
 python prepare_padus_all_and_public_lands.py
 ```
 
-The default classification policy is stored in
-`config/padus_land_rules.rules`. Pass a different rule file with
-`--rules-config <path>` when needed. The file uses a constrained, declarative
-syntax; it is parsed and validated without executing Python or SQL:
-
-```text
-public_land =
-    Own_Type not in {TRIB}
-    AND (
-        Own_Type in {DIST, FED, JNT, LOC, STAT}
-        OR (
-            Own_Type in {DESG, NGO, PVT, UNK}
-            AND Mang_Type in {DIST, FED, JNT, LOC, STAT}
-        )
-    )
-
-public_access =
-    public_land
-    AND (
-        Pub_Access in {OA}
-        OR (
-            Pub_Access in {RA, UK}
-            AND Own_Type not in {PVT}
-            AND manager not in {DOD, DOE, NASA}
-            AND Des_Tp not in {
-                MIL, PAGR, PCON, PFOR, PHCA, POTH, PPRK, PRAN, PREC
-            }
-        )
-    )
-```
+The default classification policy is in
+[`config/padus_land_rules.rules`](config/padus_land_rules.rules). Pass a
+different rule file with `--rules-config <path>` when needed. The rules use the
+stored PAD-US codes, not the longer descriptions displayed in GIS software.
 
 The all-land product includes every PAD-US feature that has positive-area
 overlap with the USA boundary after processing.
 
-The public-land product is a subset of the all-land product. PAD-US stores
-coded values in the geodatabase even when GIS software displays longer
-descriptions, so the configured rule uses stored codes. Federal, Joint, Local
-Government, Regional Agency Special District, and State owners are included.
-Designation, Non-Governmental Organization, Private, and Unknown owners are
-included only when managed by one of those public entity types. Tribal and
-Territorial records are not selected.
+The public-land product selects features with federal, state, local government,
+regional district, joint, or territorial manager types (`FED`, `STAT`, `LOC`,
+`DIST`, `JNT`, `TERR`). Only an explicit unknown manager type (`UNK`) uses the
+`Des_Tp` allowlist in the rule file. For example, a federally managed
+conservation easement qualifies, but a conservation easement with an unknown
+manager does not. Blank and other manager codes are excluded. Owner type does
+not determine public-land status.
 
-The public-access product is a subset of public land. Open Access (`OA`) records
-are included directly. Restricted Access (`RA`) and Unknown (`UK`) records are
-included only when they are not privately owned, are not managed by DOD, DOE,
-or NASA, and do not use one of the configured private or military designation
-codes. Closed (`XA`) records are excluded. PAD-US 4.1 stores NASA under the
-local manager value `National Aeronautics and Space Administration (NASA)`, so
-the script normalizes that exact value to the configured `NASA` manager token.
+The public-access product starts from public land and excludes NASA-managed
+features. Open Access (`OA`) records otherwise qualify directly. Restricted
+Access (`RA`) and Unknown (`UK`) records also qualify if they are not privately
+owned, are not managed by DOD or DOE, and do not have one of the excluded
+private or military designations. Closed (`XA`) records do not qualify. The
+script recognizes NASA by its exact PAD-US local manager value,
+`National Aeronautics and Space Administration (NASA)`.
 
 All three clipped products contain `land_type`, source `OBJECTID`, the PAD-US
 source attributes, and geometry. The rule parser rejects unsupported fields,

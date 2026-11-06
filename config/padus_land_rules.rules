@@ -1,15 +1,11 @@
 public_land =
-    Own_Type not in {TRIB}
-    AND (
-            (
-                Own_Type in {DIST, FED, JNT, LOC, STAT}
-            ) OR (
-                (
-                    Own_Type in {DESG, NGO, PVT, UNK}
-                ) AND (
-                    Mang_Type in {DIST, FED, JNT, LOC, STAT}
-                )
-            )
+    Mang_Type in {FED, STAT, LOC, DIST, JNT, TERR}
+    OR (
+        Mang_Type in {UNK}
+        AND Des_Tp in {
+            ACC, AGRE, FOTH, FORE, LCA, LHCA, LOTH, LP, LREC, LRMA,
+            MIL, RECE, REA, SCA, SHCA, SOTH, SP, SREC, SRMA, WPA
+        }
     )
 
 public_access =
