@@ -47,6 +47,8 @@ Paths in the table are relative to the repository's `data/` directory.
 | County coastline lengths | `analysis_results/zonal_statistics/counties/counties_coastline_length_20260910_130816.gpkg` |
 | TIGER coastline lines for marine fisheries | `analysis_inputs/linear_features/coastline/tl_2019_us_coastline_50_states.gpkg` |
 | County freshwater areas | `analysis_results/zonal_statistics/counties/counties_freshwater_area_20260910_130816.csv` |
+| Prepared NHD freshwater polygons | `analysis_inputs/hydrography/nhdfreshwater/nhd_freshwater_clipped_to_usa_2026_05_18_01_44_14.gpkg` |
+| Great Lakes source feature IDs | `workflow_assets/county_integration/great_lakes_nhd_features.csv` |
 | Grazing | `analysis_inputs/ecosystem_services/grazing/SNAPPGrazingDataset_final_062326.xlsx` |
 | Nature-related wages | `analysis_inputs/ecosystem_services/jobs/Finalized Flagged and Sorted Industry and County Codes.xlsx` |
 | Timber | `analysis_inputs/ecosystem_services/timber/total_valuation_all_regions_fvs.csv` |
@@ -167,7 +169,7 @@ county value = state value × county weight / sum of county weights in that stat
 | Service | State source value | County allocation weight | Source units/year | Factor |
 | --- | --- | --- | --- | --- |
 | Marine fisheries | `ncp_value` | Marine coastline length (km) | USD, 2023 | 1.027 |
-| Inland fisheries | `Consumptive use value (USD)_Intermediate assumption` | Freshwater area | USD, 2022 | 1.065 |
+| Inland fisheries | `Consumptive use value (USD)_Intermediate assumption` | Freshwater area outside the five Great Lakes (ha) | USD, 2022 | 1.065 |
 
 For marine fisheries, the county builder starts with the county lengths from
 the `coastline` row in `sources.csv`. It uses the TIGER GeoPackage in the
@@ -178,7 +180,25 @@ positive Great Lakes length uses its measured length from the remaining lines,
 or zero if none intersect. All other counties use their supplied coastline
 lengths. These weights determine how the state value is distributed among its
 counties; the state source value and adjustment factor do not depend on the
-measured length. Inland fisheries uses the county freshwater-area input.
+measured length.
+
+For inland fisheries, the county builder starts with the county areas from
+the `freshwater` row in `sources.csv`. It reads the prepared NHD polygons from
+`freshwater_polygons` and the selection table from `great_lakes_features`.
+The table identifies nine `NHDWaterbody` source features by source FID and
+records the GNIS IDs for Lakes Superior, Michigan, Huron, Erie, and Ontario.
+These FIDs are tied to the configured NHD release; verify the table against
+the source if changing releases. The builder unions the selected polygons
+into a single exclusion footprint, so overlapping records for the same lake
+do not expand the excluded area beyond their combined footprint.
+
+Only counties with a positive-area intersection with this footprint are
+remeasured. For those counties, the builder excludes the footprint from the
+prepared freshwater polygons and sums the remaining per-feature county
+intersection areas in EPSG:6933, converted to hectares. Other counties retain
+their supplied freshwater areas. The exclusion affects only inland fisheries
+allocation; it does not change state totals, the adjustment factor, or the
+general freshwater zonal inputs and outputs.
 
 The denominator is the sum of the county weights within each state,
 not an independently measured state coastline length or freshwater area.
@@ -563,8 +583,8 @@ record for interpreting a particular deliverable.
 
 ## Reproducing the dataset
 
-The large input datasets are stored at the paths listed above. The five
-configuration files are included under
+The input datasets are stored at the paths listed above. The configuration
+files are included under
 `data/workflow_assets/county_integration/`. Activate the geospatial environment
 described in the [README](../README.md#environment), then run from the repository
 directory:
@@ -574,8 +594,9 @@ python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry
 ```
 
 The integration uses the configured county aggregates and NLCD mask areas.
-It calculates marine coastline weights from the supplied county lengths and
-TIGER lines as part of the build; no separate zonal statistics run is needed.
+It calculates the fisheries weights from the configured coastline and
+freshwater inputs as part of the build; no separate zonal statistics run is
+needed.
 The default output pair is:
 
 ```text
@@ -585,7 +606,7 @@ data/analysis_results/combined/snapp_ecosystem_services_counties_YYYY_MM_DD_HH_M
 
 The script prints both paths. Source files and existing deliverables are
 preserved. `--data-root` selects the input data root, `--config-dir` selects the
-five configuration files, and `--output <name>.gpkg` specifies a new output path
+configuration directory, and `--output <name>.gpkg` specifies a new output path
 with a matching CSV. See `--help` for execution options.
 
 ### Export rules

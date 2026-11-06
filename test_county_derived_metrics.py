@@ -242,6 +242,7 @@ class DerivedMetricsTests(unittest.TestCase):
             coral_source, layer='aeb_coral', driver='GPKG')
         names = ['base', 'grazing', 'timber', 'air_quality', 'urban_heat', 'physical_health', 'jobs',
                  'marine_fisheries', 'coastline', 'coastline_lines', 'inland_fisheries', 'freshwater',
+                 'freshwater_polygons', 'great_lakes_features',
                  'recreation', 'mangroves', 'corals']
         pd.DataFrame({'source': names,
                       'path': [coral_source.name if name == 'corals' else source.name for name in names]}).to_csv(
