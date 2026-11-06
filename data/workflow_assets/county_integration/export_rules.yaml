@@ -29,6 +29,9 @@ optional_exclude_fields:
   # Old land-cover class-code sums are NOT monetary valuations.
   - sum_mangrove_CONUS
   - sum_mangrove_CONUS_adj
+  # Superseded raster totals; coral valuations now come from BC_USD11 points.
+  - sum_Coral_Reefs_2024adj_CPI
+  - sum_Coral_Reefs_2024adj_CPI_adj
 
 # Shell-style field-name globs, not regular expressions. These remove generated
 # statistics/coverage diagnostics; original county attributes are protected.
@@ -58,6 +61,7 @@ exclude_patterns:
 # Configured raster sums default to <source sum>_adj; other services default to
 # <service>_adj and each multiplier defaults to <service>_adj_factor.
 rename_fields:
+  corals_adj: sum_aeb_coral_BC_USD11_adj
   mangroves_adj: sum_mangrove_coastal_flood_protection_value_adj
   sum_annual_value_masked_to_wetlands_adj: sum_flood_annual_value_masked_to_wetlands_adj
   sum_marginal_npv_masked_to_wetlands_adj: sum_flood_marginal_npv_masked_to_wetlands_adj

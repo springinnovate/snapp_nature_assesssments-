@@ -26,6 +26,14 @@ from prepare_tif_zonal_stats_config import (
 class TifZonalStatsConfigTest(unittest.TestCase):
     """Verify scaling, newest-vector discovery, and config rendering."""
 
+    def test_coral_raster_is_disabled_in_favor_of_point_integration(self) -> None:
+        """The deleted legacy TIFF must not be required by future zonal runs."""
+        config = load_run_config(DEFAULT_CONFIG)
+        inventory = json.loads(config["project"]["raster_inventory"])
+        coral = next(item for item in inventory if item["filename"] == "Coral_Reefs_2024adj_CPI.tif")
+        self.assertFalse(coral["include"])
+        self.assertIn("aeb_coral.gpkg BC_USD11", coral["reason"])
+
     def test_tracked_flood_inventory_leaves_area_conversion_to_county_export(self) -> None:
         """Keep flood inputs per hectare to avoid applying the area factor twice."""
         config = load_run_config(DEFAULT_CONFIG)

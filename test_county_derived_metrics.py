@@ -11,7 +11,7 @@ from unittest.mock import patch
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import box
+from shapely.geometry import Point, box
 import yaml
 
 from build_county_ecosystem_service_valuations_2026 import read_attributes, read_db, sha256
@@ -226,40 +226,55 @@ class DerivedMetricsTests(unittest.TestCase):
         self.assertTrue(attrs.es_per_ha_natural.iloc[1:].isna().all())
 
     def test_primary_builder_uses_post_adjustment_values(self):
-        """Exercise the real build/export path with only service worker I/O stubbed."""
+        """Check that the build adds adjusted coral points and raster values to totals."""
         import build_county_ecosystem_service_valuations_2026 as builder
 
         raw_field = builder.BASE_FIELDS['pollination']
-        raw = pd.DataFrame({'STATEFP': '01', raw_field: [10., 4., 5.]}, index=self.ids)
+        coral_field = 'sum_aeb_coral_BC_USD11_adj'
+        legacy_coral_field = 'sum_Coral_Reefs_2024adj_CPI'
+        raw = pd.DataFrame({'STATEFP': '01', raw_field: [10., 4., 5.],
+                            legacy_coral_field: [1000., 2000., 3000.]}, index=self.ids)
         source = self.root / 'raw_counties.gpkg'
         gpd.GeoDataFrame(raw, geometry=self.geometry).reset_index().to_file(source, layer='counties', driver='GPKG')
+        coral_source = self.root / 'aeb_coral.gpkg'
+        gpd.GeoDataFrame({'OBJECTID': [1], 'BC_USD11': [100.]},
+                         geometry=[Point(.5, .5)], crs=self.geometry.crs).to_file(
+            coral_source, layer='aeb_coral', driver='GPKG')
         names = ['base', 'grazing', 'timber', 'air_quality', 'urban_heat', 'physical_health', 'jobs',
                  'marine_fisheries', 'coastline', 'inland_fisheries', 'freshwater', 'recreation', 'mangroves', 'corals']
-        pd.DataFrame({'source': names, 'path': source.name}).to_csv(self.root / 'sources.csv', index=False)
-        pd.DataFrame({'service': ['pollination'], 'factor': [.09], 'reason': ['hectares to pixels'],
-                      'source_units': ['USD/ha']}).to_csv(self.root / 'adjustment_factors.csv', index=False)
+        pd.DataFrame({'source': names,
+                      'path': [coral_source.name if name == 'corals' else source.name for name in names]}).to_csv(
+            self.root / 'sources.csv', index=False)
+        pd.DataFrame({'service': ['pollination', 'corals'], 'factor': [.09, 1.368],
+                      'reason': ['hectares to pixels', 'coral factor'],
+                      'source_units': ['USD/ha', 'USD 2011']}).to_csv(
+            self.root / 'adjustment_factors.csv', index=False)
         pd.DataFrame({'source_geoid': ['01001'], 'target_geoid': ['01001'], 'weight': [1.]}).to_csv(
             self.root / 'ct_county_crosswalk.csv', index=False)
         export = yaml.safe_load(self.config.with_name('export_rules.yaml').read_text(encoding='utf-8'))
-        export.update({'exclude_fields': [], 'optional_exclude_fields': [], 'exclude_patterns': [], 'rename_fields': {}})
+        export.update({'exclude_fields': [], 'exclude_patterns': [],
+                       'rename_fields': {'corals_adj': export['rename_fields']['corals_adj']}})
         self.config.with_name('export_rules.yaml').write_text(yaml.safe_dump(export), encoding='utf-8')
-        self.rules['es_total']['components'] = [raw_field + '_adj']
+        self.rules['es_total']['components'] = [raw_field + '_adj', coral_field]
         self.config.write_text(yaml.safe_dump(self.rules), encoding='utf-8')
+        compute_task = builder.compute_task
 
         def fixture_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
-            """Return service-task fixtures while exercising orchestration and export.
+            """Run coral allocation with real geometry and stub unrelated services.
 
             Args:
                 task: Named service family.
-                paths: Unused fixture paths.
+                paths: Fixture source paths.
                 base: Raw county frame.
-                crosswalk: Unused fixture crosswalk.
-                geometry_workers: Unused worker count.
-                chunk_dir: Unused checkpoint directory.
+                crosswalk: Fixture crosswalk.
+                geometry_workers: Geometry worker count.
+                chunk_dir: Optional checkpoint directory.
 
             Returns:
-                The normal worker result schema with raw, unadjusted pollination.
+                An ordinary worker result with raw, unadjusted values.
             """
+            if task == 'corals':
+                return compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir)
             return {'originals': {'pollination': base[raw_field]} if task == 'base' else {},
                     'statuses': [pd.DataFrame({'service': [task], 'status': ['fixture']})],
                     'metadata': [{'service': 'pollination', 'original_total': 19.}] if task == 'base' else [],
@@ -272,11 +287,16 @@ class DerivedMetricsTests(unittest.TestCase):
         ), patch.object(builder, 'save_checkpoint'):
             output = builder.run(self.root, self.root, self.root / 'primary.gpkg', workers=1, geometry_workers=1)
         attrs, _, _ = read_attributes(output)
-        np.testing.assert_allclose(attrs.es_total, [.9, .36, .45])
-        np.testing.assert_allclose(attrs.es_per_ha, [.45, .09, .09])
+        self.assertNotIn(legacy_coral_field, attrs)
+        np.testing.assert_allclose(attrs[coral_field], [136.8, 0., 0.])
+        np.testing.assert_allclose(attrs.es_total, [137.7, .36, .45])
+        np.testing.assert_allclose(attrs.es_per_ha, [68.85, .09, .09])
+        self.assertEqual(attrs.corals_adj_factor.to_list(), [1.368] * 3)
         self.assertEqual(attrs.pollination_adj_factor.to_list(), [.09] * 3)
         with closing(read_db(output)) as con:
-            self.assertEqual(con.execute('SELECT count(*) FROM derived_metric_components').fetchone()[0], 1)
+            self.assertEqual(con.execute('SELECT count(*) FROM derived_metric_components').fetchone()[0], 2)
+            self.assertEqual(con.execute('SELECT GEOID, input_value FROM integration_coral_allocation').fetchall(),
+                             [('01001', 100.)])
 
 if __name__ == '__main__':
     unittest.main()
