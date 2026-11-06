@@ -58,6 +58,11 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         help="Polygon vector to cut by county.",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Write the county GeoPackage here instead of its default product directory.",
+    )
     return parser.parse_args()
 
 
@@ -86,11 +91,12 @@ def _prepare_counties_crs(
     return counties
 
 
-def _derive_output_names(input_path: Path) -> tuple[str, Path]:
+def _derive_output_names(input_path: Path, output_dir: Path | None = None) -> tuple[str, Path]:
     """Derive the timestamp-free output layer name and output path.
 
     Args:
         input_path: Input vector path.
+        output_dir: Optional override for the default product directory.
 
     Returns:
         Output layer name and timestamped output path.
@@ -118,7 +124,7 @@ def _derive_output_names(input_path: Path) -> tuple[str, Path]:
     else:
         out_stem = f"{input_stem}_clipped_by_county"
         out_dir = DEFAULT_OUT_DIR
-    return out_stem, out_dir / f"{out_stem}_{timestamp}.gpkg"
+    return out_stem, (output_dir or out_dir) / f"{out_stem}_{timestamp}.gpkg"
 
 
 def _process_county(
@@ -185,7 +191,7 @@ def _process_county(
 def main() -> None:
     """Run the county clipping and flattening workflow."""
     args = _parse_args()
-    out_layer_name, out_path = _derive_output_names(args.input_vector_path)
+    out_layer_name, out_path = _derive_output_names(args.input_vector_path, args.output_dir)
 
     step_bar = tqdm(total=6, desc="Cut input by county", unit="step")
 

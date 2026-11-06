@@ -32,6 +32,43 @@ repository for its current installation instructions and supported execution
 environment:
 <https://github.com/springinnovate/zonal_stats_toolkit>
 
+## Run the assessment
+
+Run from the repository root in a Python environment that supports both this
+repository's geospatial scripts and the zonal-statistics toolkit. The wrapper
+prepares and cuts the PAD-US VectorAnalysis layer, runs TIFF zonals for all
+lands and public lands, and builds county valuations from the existing county
+zonals and NLCD areas. Check the county input paths in
+[`sources.csv`](data/workflow_assets/county_integration/sources.csv) and
+[`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml).
+
+Pass the toolkit runner path and the GeoPackage from the BBB run to reuse.
+The matching CSV must be beside the GeoPackage with the same filename stem:
+
+```powershell
+python run_snapp_assessment.py `
+  --runner 'D:\repositories\zonal_stats_toolkit\runner.py' `
+  --bbb-results 'data/analysis_results/zonal_statistics/bbb_candidate_blm_lands/bbb_candidate_ecosystem_services_20260901_214726.gpkg'
+```
+
+Add `--validate-only` to check inputs without running the assessment. Use
+`--run-id` to name the run, `--padus-path` and `--padus-layer` to select a
+different all/public source, and `--job-workers` and `--raster-workers` to
+control toolkit parallelism. Use `--workers` and `--geometry-workers` for the
+county builder.
+
+Find the matched CSV and GeoPackage pairs under
+`data/analysis_results/assessment_runs/<run-id>/` in `counties/`,
+`padus_all_lands/`, `padus_public_lands/`, and `bbb_candidate_blm_lands/`.
+Keep `run_manifest.json` in that run directory with the results. Intermediates
+go under `data/processing_outputs/assessment_runs/<run-id>/`; the frozen zonal
+config is `data/workflow_assets/zonal_stats/runs/snapp_assessment_<run-id>.yaml`.
+
+The wrapper reuses the BBB pair without rerunning its zonals. It does not
+build a public-access product or add county recreation values to footprint
+outputs. Use a fresh run ID: the wrapper does not overwrite existing data and
+stops if a step fails.
+
 ## Data Layout
 
 The `data/` directory is organized by workflow role.
