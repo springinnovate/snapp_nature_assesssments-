@@ -54,6 +54,53 @@ class RuleSet:
 
     rules: Mapping[str, Expression]
 
+    def select(self, required_rules: frozenset[str]) -> RuleSet:
+        """Select the requested rules and their dependencies.
+
+        Args:
+            required_rules: Classifications needed for the requested outputs.
+
+        Returns:
+            The rules to validate and evaluate for those outputs.
+
+        Raises:
+            RuleConfigError: A rule name is unsupported, missing, or cyclic.
+        """
+        extra = set(self.rules) - REQUIRED_RULES
+        if extra:
+            raise RuleConfigError("Unsupported rule name(s): " + ", ".join(sorted(extra)))
+
+        selected = {}
+        active = set()
+
+        def visit(name: str) -> None:
+            if name in active:
+                raise RuleConfigError(f"Rule reference cycle includes {name!r}.")
+            if name in selected:
+                return
+            if name not in self.rules:
+                raise RuleConfigError(f"Missing required rule: {name!r}.")
+            active.add(name)
+            expression = self.rules[name]
+            for item in _walk_expression(expression):
+                if isinstance(item, Reference):
+                    visit(item.name)
+            active.remove(name)
+            selected[name] = expression
+
+        for name in sorted(required_rules):
+            visit(name)
+        return RuleSet(selected)
+
+    def referenced_fields(self) -> frozenset[str]:
+        """Return the fields read by this set of rules."""
+        return frozenset(
+            item.field
+            for expression in self.rules.values()
+            for item in _walk_expression(expression)
+            if isinstance(item, Membership)
+        )
+
     def evaluate(self, attributes: Mapping[str, object]) -> dict[str, bool]:
         """Evaluate all configured rules against one feature's attributes."""
         results: dict[str, bool] = {}
@@ -84,9 +131,16 @@ class RuleSet:
     def validate(
         self,
         allowed_values: Mapping[str, set[str] | frozenset[str]],
+        *,
+        required_rules: frozenset[str] = REQUIRED_RULES,
     ) -> None:
-        """Validate required rules, references, fields, and domain codes."""
-        missing_rules = REQUIRED_RULES.difference(self.rules)
+        """Validate required rules, references, fields, and domain codes.
+
+        Args:
+            allowed_values: Source field domains keyed by rule field.
+            required_rules: Classifications required for the requested outputs.
+        """
+        missing_rules = required_rules.difference(self.rules)
         extra_rules = set(self.rules).difference(REQUIRED_RULES)
         if missing_rules:
             raise RuleConfigError(
