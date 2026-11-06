@@ -66,12 +66,11 @@ Run commands from the repository root unless otherwise noted.
 
 #### 1. Prepare PAD-US Lands
 
-`prepare_padus_all_and_public_lands.py` converts the PAD-US layer
-`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` into three
-USA-clipped GeoPackages: an all-land product, a public-land subset, and a
-public-access subset of the public-land product.
-Geometries are simplified with a 15 m tolerance, clipped to the USA boundary,
-and repaired where possible.
+`prepare_padus_all_and_public_lands.py` clips PAD-US features to the USA
+boundary, simplifies them with a 15 m tolerance, and repairs geometries where
+possible. With no arguments it reads the full PAD-US geodatabase listed above,
+uses layer `PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement`, and
+writes all three products:
 
 - `padus_all_lands_clipped_to_usa_<timestamp>.gpkg` in
   `data/processing_outputs/padus_clipped_to_usa/all_lands`
@@ -85,6 +84,11 @@ Run:
 ```powershell
 python prepare_padus_all_and_public_lands.py
 ```
+
+Use `--padus-path` and `--padus-layer` to select a different input. Use
+`--products` to select the outputs and `--output-dir <root>` to place the product
+folders under a different root. Add `--validate-only` to check the selected
+input and rules without writing the clipped GeoPackages.
 
 The default classification policy is in
 [`config/padus_land_rules.rules`](config/padus_land_rules.rules). Pass a
@@ -110,9 +114,44 @@ private or military designations. Closed (`XA`) records do not qualify. The
 script recognizes NASA by its exact PAD-US local manager value,
 `National Aeronautics and Space Administration (NASA)`.
 
-All three clipped products contain `land_type`, source `OBJECTID`, the PAD-US
+The clipped products contain `land_type`, source `OBJECTID`, the PAD-US
 source attributes, and geometry. The rule parser rejects unsupported fields,
 operators, codes, and malformed expressions before geometry processing starts.
+
+##### Prepare all and public lands from the PAD-US analysis layer
+
+Use the analysis layer for the `all` and `public` products. It does not carry
+the owner and local-manager attributes required for the full public-access and
+BBB workflows. Use the full source for those workflows, or keep their existing
+county cuts and results separate from this run.
+
+```powershell
+$padusAnalysisPath = "data/analysis_inputs/padus/PADUS4_1VectorAnalysis_PADUS_Only (1)/PADUS4_1VectorAnalysis_PADUS_Only.gdb"
+$padusAnalysisLayer = "PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP"
+python prepare_padus_all_and_public_lands.py --padus-path $padusAnalysisPath --padus-layer $padusAnalysisLayer --products all public --validate-only
+python prepare_padus_all_and_public_lands.py --padus-path $padusAnalysisPath --padus-layer $padusAnalysisLayer --products all public
+```
+
+Cut the two GeoPackages printed by preparation. Replace the placeholders with
+those paths:
+
+```powershell
+python cut_and_flatten_by_county.py "<all-lands-clipped.gpkg>"
+python cut_and_flatten_by_county.py "<public-lands-clipped.gpkg>"
+```
+
+Then prepare the [TIFF zonals](#ecosystem-service-tiff-zonals) for just these
+products. Replace `<run>` with a unique run name in both paths to isolate the
+results and temporary files:
+
+```powershell
+python prepare_tif_zonal_stats_config.py --zone all --zone public `
+  --results-dir "data/analysis_results/zonal_statistics/padus_vectoranalysis_<run>" `
+  --work-dir "data/processing_outputs/zonal_stats_work/padus_vectoranalysis_<run>"
+```
+
+Confirm that the printed zone paths are the two county cuts from this run,
+then pass the printed config to the toolkit runner.
 
 #### 2. Cut PAD-US Lands By County
 
@@ -140,9 +179,10 @@ in the zonal-statistics configuration.
 
 #### 2a. Screen BBB PAD-US Candidate Lands
 
-Use the USA-clipped **all-lands** PAD-US GeoPackage as the input. The screen
-writes eligible-state BLM fee land minus mapped federal protections and a second
-layer restricted to land within five miles of qualifying population centers.
+Use the USA-clipped **all-lands** GeoPackage from the full PAD-US source. The
+screen writes eligible-state BLM fee land minus mapped federal protections and
+a second layer restricted to land within five miles of qualifying population
+centers.
 The outputs are screening layers, not a list of tracts eligible for sale.
 
 Run it with a PAD-US GeoPackage as the positional argument:
