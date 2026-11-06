@@ -170,7 +170,7 @@ class CoralCountyAllocationTests(unittest.TestCase):
             hashes = {key: sha256(path) for key, path in paths.items()}
             attributes, layer, geom = read_attributes(paths["base"])
             base = attributes.set_index("GEOID")
-            result = compute_task("corals", paths, base, pd.DataFrame(), 1, None)
+            result = compute_task("corals", paths, base, pd.DataFrame(), 1)
             checkpoint = root / "corals.sqlite"
             save_checkpoint(checkpoint, "coral-fixture", result)
             restored = load_checkpoint(checkpoint, "coral-fixture")

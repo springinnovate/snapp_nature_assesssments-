@@ -1,7 +1,7 @@
 """Build paired CSV/GeoPackage county ecosystem-service valuation exports.
 
-Join county estimates, allocate state fisheries, recreation/mangrove polygons,
-and coral points to counties, and apply the recorded valuation adjustments.
+Join county estimates, allocate state fisheries, mangrove polygons and coral
+points to counties, and apply the recorded valuation adjustments.
 The output preserves county boundaries and identifiers, groups county sums and
 other adjusted totals before their factors, and omits non-sum statistics.
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 import hashlib
@@ -46,8 +46,6 @@ AREA_CRS = "EPSG:6933"  # Equal area, including Alaska, Hawaii and US territorie
 # Assessment scope: do not assign neighboring countries' study-unit totals
 # merely because their offshore geometry also intersects a U.S. county.
 MANGROVE_COUNTRIES = ("USA", "PRI", "VIR")
-# Cap only numerical/sliver excess; substantial county overlap is still an error.
-RECREATION_COVERAGE_TOLERANCE = 1e-5
 # Recognize generated statistics so YAML export rules cannot remove county attributes.
 NON_SUM_FIELD = re.compile(
     r"^(?:mean|median|min|max|stdev|std|variance|var|p\d+(?:\.\d+)?|"
@@ -295,138 +293,6 @@ def state_values(frame, field, county_states, weights):
         close(allocated, row.value, f"State {row.statefp}")
         checks.append({"source_key": row.statefp, "input_value": float(row.value), "allocated_value": allocated})
     return result, status, checks
-
-
-def polygon_values(counties, polygons, value_field, id_field, chunk_size=2000,
-                   workers=1, checkpoint_dir=None):
-    """Distribute polygon values by county intersection area.
-
-    A source polygon crossing a county boundary contributes its value times the
-    fraction of its full area inside each county. Uncovered area remains
-    unallocated. Numerical excess up to 1e-5 of the source area is capped at one
-    by scaling that polygon's county shares together; larger excess is rejected.
-
-    Args:
-        counties: County GeoDataFrame containing GEOID and geometry.
-        polygons: Source GeoDataFrame containing values, IDs, and geometry.
-        value_field: Column containing the total value of each source polygon.
-        id_field: Column containing unique, non-null source polygon IDs.
-        chunk_size: Number of source polygons per intersection batch.
-        workers: Number of intersection threads.
-        checkpoint_dir: Optional directory for resumable batch checkpoints.
-
-    Returns:
-        A county-value Series indexed by GEOID and a per-source allocation audit,
-        including raw and corrected fractions and any correction in value.
-
-    Raises:
-        ValueError: Inputs or checkpoints are invalid, or county intersections
-            exceed a polygon's full area by more than the numerical tolerance.
-    """
-    if counties.crs is None or polygons.crs is None:
-        raise ValueError("Polygon allocation requires defined coordinate systems")
-    if polygons[id_field].isna().any() or polygons[id_field].duplicated().any():
-        raise ValueError("Recreation source IDs must be non-null and unique")
-    values = numbers(polygons[value_field]).to_numpy()
-    if np.isnan(values).any():
-        raise ValueError("Missing recreation polygon value")
-    county_geom = shapely.make_valid(counties.to_crs(AREA_CRS).geometry.to_numpy())
-    source_geom = shapely.make_valid(polygons.to_crs(AREA_CRS).geometry.to_numpy())
-    areas = shapely.area(source_geom)
-    if (areas <= 0).any() or not np.isfinite(areas).all():
-        raise ValueError("Empty or invalid recreation polygon area")
-    tree = shapely.STRtree(county_geom)
-    totals = np.zeros(len(counties))
-    fractions = np.zeros(len(polygons))
-    raw_fractions = np.zeros(len(polygons))
-    if checkpoint_dir is not None:
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    def batch(start):
-        """Calculate or restore one batch of area-weighted county contributions.
-
-        Args:
-            start: First source polygon index in the batch.
-
-        Returns:
-            Start index, county totals, corrected fractions, and raw fractions.
-
-        Raises:
-            ValueError: A checkpoint is invalid or a source is over-allocated.
-        """
-        cache = checkpoint_dir / f"{start:09d}.npz" if checkpoint_dir else None
-        size = min(chunk_size, len(polygons) - start)
-        if cache and cache.exists():
-            with np.load(cache, allow_pickle=False) as saved:
-                partial_totals, partial_fractions = saved["totals"], saved["fractions"]
-                partial_raw_fractions = saved["raw_fractions"]
-            if (partial_totals.shape != totals.shape or partial_fractions.shape != (size,)
-                    or partial_raw_fractions.shape != (size,)):
-                raise ValueError(f"Invalid recreation checkpoint: {cache}")
-            if (not np.isfinite(partial_totals).all() or not np.isfinite(partial_fractions).all()
-                    or not np.isfinite(partial_raw_fractions).all()):
-                raise ValueError(f"Non-finite recreation checkpoint: {cache}")
-            if ((partial_fractions < 0).any() or (partial_fractions > 1).any()
-                    or not np.allclose(partial_fractions, np.minimum(partial_raw_fractions, 1),
-                                       rtol=0, atol=1e-12)
-                    or (partial_raw_fractions > 1 + RECREATION_COVERAGE_TOLERANCE).any()):
-                raise ValueError(f"Invalid recreation checkpoint coverage: {cache}")
-            return start, partial_totals, partial_fractions, partial_raw_fractions
-        partial_totals = np.zeros(len(counties))
-        partial_raw_fractions = np.zeros(size)
-        subset = source_geom[start:start + chunk_size]
-        si, ci = tree.query(subset, predicate="intersects")
-        if len(si):
-            intersection_area = shapely.area(shapely.intersection(subset[si], county_geom[ci]))
-            fraction = intersection_area / areas[start + si]
-            np.add.at(partial_raw_fractions, si, fraction)
-            excessive = np.flatnonzero(partial_raw_fractions > 1 + RECREATION_COVERAGE_TOLERANCE)
-            if len(excessive):
-                examples = [
-                    f"{polygons.iloc[start + i][id_field]} ({partial_raw_fractions[i]:.9f})"
-                    for i in excessive[:5]
-                ]
-                raise ValueError(
-                    "County overlaps allocate a recreation polygon more than once; "
-                    f"coverage exceeds tolerance {RECREATION_COVERAGE_TOLERANCE:g}: "
-                    + ", ".join(examples)
-                )
-            # Correct every small excess before adding county dollars, so the
-            # audit and county totals conserve the same bounded source value.
-            fraction /= np.maximum(1, partial_raw_fractions[si])
-            np.add.at(partial_totals, ci, values[start + si] * fraction)
-        partial_fractions = np.minimum(partial_raw_fractions, 1)
-        if cache:
-            with tempfile.NamedTemporaryFile(dir=checkpoint_dir, suffix=".npz", delete=False) as stream:
-                temporary = Path(stream.name)
-                np.savez_compressed(stream, totals=partial_totals, fractions=partial_fractions,
-                                    raw_fractions=partial_raw_fractions)
-            temporary.replace(cache)
-        return start, partial_totals, partial_fractions, partial_raw_fractions
-
-    starts = range(0, len(polygons), chunk_size)
-    batch_totals = np.zeros((len(starts), len(counties)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(batch, start) for start in starts]
-        for future in tqdm(as_completed(futures), total=len(starts), desc="Recreation batches", unit="batch"):
-            start, partial_totals, partial_fractions, partial_raw_fractions = future.result()
-            batch_totals[start // chunk_size] = partial_totals
-            fractions[start:start + len(partial_fractions)] = partial_fractions
-            raw_fractions[start:start + len(partial_raw_fractions)] = partial_raw_fractions
-    # Progress follows completed batches, but totals reduce in stable source order.
-    totals = batch_totals.sum(axis=0)
-    close(float(totals.sum()), float(np.dot(values, fractions)), "Recreation allocation")
-    corrected = raw_fractions > 1
-    if corrected.any():
-        logging.info("Capped numerical recreation coverage excess for %s polygons; max raw fraction %.9f",
-                     int(corrected.sum()), float(raw_fractions.max()))
-    audit = pd.DataFrame({"source_key": polygons[id_field].astype(str).to_numpy(),
-                          "input_value": values, "raw_allocated_fraction": raw_fractions,
-                          "allocated_fraction": fractions,
-                          "allocated_value": values * fractions,
-                          "unallocated_value": values * (1 - fractions),
-                          "coverage_correction_value": values * (raw_fractions - fractions)})
-    return pd.Series(totals, index=counties.GEOID), audit
 
 
 def input_weights(path, ids, prefix):
@@ -876,7 +742,7 @@ def write_output(base_path, output, layer, geom, additions, tables, removed_fiel
             raise
 
 
-def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
+def compute_task(task, paths, base, crosswalk, geometry_workers):
     """Compute one independent service family in a worker process.
 
     Args:
@@ -884,14 +750,12 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
         paths: Source keys mapped to resolved local input paths.
         base: Raw county attributes indexed by GEOID.
         crosswalk: Historical Connecticut county allocation weights.
-        geometry_workers: Threads for polygon intersection batches.
-        chunk_dir: Optional resumable recreation batch directory.
+        geometry_workers: Threads for mangrove intersections.
 
     Returns:
         Unadjusted county values, statuses, source metadata and allocation audits.
     """
     ids = base.index
-    recreation_audit = pd.DataFrame()
     mangrove_audit = pd.DataFrame()
     coral_audit = pd.DataFrame()
     summary_fields = pd.DataFrame(index=ids)
@@ -922,7 +786,7 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
         metadata.append(row)
         logging.info("%s: %s populated counties; original total %.3f", service, row["populated_counties"], row["original_total"])
 
-    def county_add(service, frame, key, field, source, **options):
+    def county_add(service, frame, key, field, source, *, use_crosswalk=True, **options):
         """Join tabular county values with service-specific source policies.
 
         Args:
@@ -931,9 +795,10 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
             key: Source county identifier column.
             field: Source valuation column.
             source: Input key in sources.csv.
+            use_crosswalk: Allocate historical Connecticut rows when present.
             **options: Aggregation and missing-value options for county_values.
         """
-        method = "FIPS join; historical CT allocated by land area"
+        method = "FIPS join; historical CT allocated by land area" if use_crosswalk else "direct GEOID join"
         if service == "timber":
             # Clamp individual source county rents BEFORE the CT crosswalk:
             # negative source rents must not cancel another county's positive rent.
@@ -946,7 +811,9 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
                            "reason": "negative_source_clamped_zero", "value": float(value)}
                           for county_id, value in zip(frame.loc[negative, key], raw_rent[negative]))
             method += "; negative source rents clamped to zero before allocation"
-        values, status, problems, audit = county_values(frame, key, field, ids, crosswalk, **options)
+        values, status, problems, audit = county_values(
+            frame, key, field, ids, crosswalk if use_crosswalk else crosswalk.iloc[:0], **options,
+        )
         if service == "timber":
             audit.update({"raw_input_known_total": float(raw_rent.sum()),
                           "negative_source_count": int(negative.sum()),
@@ -1080,20 +947,13 @@ def compute_task(task, paths, base, crosswalk, geometry_workers, chunk_dir):
                                "reason": "missing_source_value" if pd.isna(row.input_value) else "no_county_intersection",
                                "value": None if pd.isna(row.input_value) else float(row.input_value)})
     if task == "recreation":
-        logging.info("Reading county and recreation geometry")
-        counties = gpd.read_file(paths["base"], columns=["GEOID"])
-        counties.GEOID = counties.GEOID.map(fips)
-        polygons = gpd.read_file(paths["recreation"], columns=["siteid", "val_2024"])
-        recreation, recreation_audit = polygon_values(counties, polygons, "val_2024", "siteid", workers=geometry_workers, checkpoint_dir=chunk_dir)
-        add("recreation", recreation, pd.Series("polygon_area_allocation", index=ids), "recreation", "val_2024",
-            "EPSG:6933 intersection area / full source polygon area; small numerical excess capped; uncovered value retained in audit",
-            {"input_known_total": float(recreation_audit.input_value.sum()),
-             "unmatched_total": float(recreation_audit.unallocated_value.sum()),
-             "coverage_correction_total": float(recreation_audit.coverage_correction_value.sum()),
-             "coverage_corrected_polygons": int((recreation_audit.raw_allocated_fraction > 1).sum()),
-             "max_raw_allocated_fraction": float(recreation_audit.raw_allocated_fraction.max())})
+        logging.info("Join county recreation values by GEOID")
+        recreation = pd.read_csv(
+            paths["recreation"], usecols=["GEOID", "county_cs_2024usd"], dtype={"GEOID": str},
+        )
+        county_add("recreation", recreation, "GEOID", "county_cs_2024usd", "recreation", use_crosswalk=False)
     return {"originals": originals, "statuses": statuses, "metadata": metadata,
-            "issues": issues, "checks": checks, "recreation_audit": recreation_audit,
+            "issues": issues, "checks": checks,
             "mangrove_audit": mangrove_audit, "coral_audit": coral_audit,
             "summary_fields": summary_fields}
 
@@ -1113,8 +973,6 @@ def save_checkpoint(path, signature, result):
             if len(result.get("summary_fields", pd.DataFrame()).columns):
                 result["summary_fields"].to_sql("summary_fields", con, index_label="GEOID")
             pd.concat(result["statuses"], ignore_index=True).to_sql("statuses", con, index=False)
-            if len(result["recreation_audit"].columns):
-                result["recreation_audit"].to_sql("recreation", con, index=False)
             if len(result.get("mangrove_audit", pd.DataFrame()).columns):
                 result["mangrove_audit"].to_sql("mangroves", con, index=False)
             if len(result.get("coral_audit", pd.DataFrame()).columns):
@@ -1149,8 +1007,6 @@ def load_checkpoint(path, signature):
         values = pd.read_sql_query("SELECT * FROM valuations", con).set_index("GEOID")
         result["originals"] = {c: values[c] for c in values}
         result["statuses"] = [pd.read_sql_query("SELECT * FROM statuses", con)]
-        has_recreation = con.execute("SELECT 1 FROM sqlite_master WHERE name='recreation'").fetchone()
-        result["recreation_audit"] = pd.read_sql_query("SELECT * FROM recreation", con) if has_recreation else pd.DataFrame()
         has_mangroves = con.execute("SELECT 1 FROM sqlite_master WHERE name='mangroves'").fetchone()
         result["mangrove_audit"] = pd.read_sql_query("SELECT * FROM mangroves", con) if has_mangroves else pd.DataFrame()
         has_corals = con.execute("SELECT 1 FROM sqlite_master WHERE name='corals'").fetchone()
@@ -1169,7 +1025,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         config_dir: Source/factor/crosswalk CSVs, export_rules.yaml and derived_metrics.yaml.
         output: Optional new GeoPackage path; CSV uses the same basename.
         workers: Independent ecosystem-service worker processes.
-        geometry_workers: Intersection threads per recreation or mangrove task.
+        geometry_workers: Intersection threads for the mangrove task.
         resume: Reuse matching validated checkpoints when available.
 
     Returns:
@@ -1274,8 +1130,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
                 results[task] = load_checkpoint(cache, signature)
                 logging.info("Resumed completed service: %s", task)
             else:
-                chunk_dir = cache_root / f"recreation_chunks_{signature}" if task == "recreation" and resume else None
-                future = pool.submit(compute_task, task, paths, base, crosswalk, geometry_workers, chunk_dir)
+                future = pool.submit(compute_task, task, paths, base, crosswalk, geometry_workers)
                 pending[future] = (task, signature, cache)
         failures = []
         for future in tqdm(as_completed(pending), total=len(dependencies), initial=len(results), desc="Ecosystem service groups", unit="group"):
@@ -1297,7 +1152,6 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         metadata.extend(result["metadata"])
         issues.extend(result["issues"])
         checks.extend(result["checks"])
-    recreation_audit = results["recreation"]["recreation_audit"]
     if set(originals) != set(factors.index):
         raise ValueError("Adjustment factor configuration does not exactly match integrated services")
     summary_frames = []
@@ -1343,7 +1197,6 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "integration_county_status": pd.concat(statuses, ignore_index=True),
         "integration_source_issues": pd.DataFrame(issues, columns=["service", "source_key", "reason", "value"]),
         "integration_state_checks": pd.DataFrame(checks),
-        "integration_recreation_allocation": recreation_audit,
         "integration_mangrove_allocation": results["mangroves"]["mangrove_audit"],
         "integration_coral_allocation": results["corals"]["coral_audit"],
         "integration_ct_crosswalk": crosswalk,
@@ -1400,8 +1253,8 @@ def main():
     parser.add_argument("--config-dir", type=Path, default=CONFIG)
     parser.add_argument("--output", type=Path, help="New .gpkg path; matching .csv is automatic; neither may already exist")
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1), help="Independent service processes (default: up to 8)")
-    parser.add_argument("--geometry-workers", type=int, default=min(8, os.cpu_count() or 1), help="Intersection threads per recreation or mangrove task (default: up to 8)")
-    parser.add_argument("--no-resume", action="store_true", help="Recompute services and recreation batches instead of reusing checkpoints")
+    parser.add_argument("--geometry-workers", type=int, default=min(8, os.cpu_count() or 1), help="Mangrove intersection threads (default: up to 8)")
+    parser.add_argument("--no-resume", action="store_true", help="Recompute services instead of reusing checkpoints")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     output = run(args.data_root.resolve(), args.config_dir.resolve(), args.output.resolve() if args.output else None,

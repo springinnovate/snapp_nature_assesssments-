@@ -10,14 +10,13 @@ from unittest.mock import patch
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import shapely
 import yaml
-from shapely.geometry import Polygon, box
+from shapely.geometry import box
 from osgeo import ogr
 
 from build_county_ecosystem_service_valuations_2026 import (
     NON_SUM_FIELD, adjusted_county_fields, load_export_rules, plan_county_export,
-    air_quality_summary, county_values, fips, numbers, polygon_values,
+    air_quality_summary, compute_task, county_values, fips, numbers,
     read_attributes, sha256, state_values, validate_crosswalk, write_output,
     load_checkpoint, run, save_checkpoint,
 )
@@ -233,54 +232,39 @@ class CountyIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already an integrated"):
                 run(root, config, workers=1, geometry_workers=1)
 
-    def test_polygon_allocation_keeps_uncovered_fraction(self):
-        counties = gpd.GeoDataFrame({"GEOID": ["01001", "01003"]}, geometry=[box(0, 0, 1, 1), box(1, 0, 3, 1)], crs=6933)
-        polygons = gpd.GeoDataFrame({"siteid": ["a", "b"], "value": [40.0, 10.0]}, geometry=[box(0, 0, 4, 1), box(5, 0, 6, 1)], crs=6933)
-        values, audit = polygon_values(counties, polygons, "value", "siteid", chunk_size=1)
-        self.assertEqual(values.to_list(), [10, 20])
-        self.assertEqual(audit.unallocated_value.to_list(), [10, 10])
-        overlap = gpd.GeoDataFrame({"GEOID": ["01001", "01003"]}, geometry=[box(0, 0, 4, 1)] * 2, crs=6933)
-        with self.assertRaises(ValueError):
-            polygon_values(overlap, polygons, "value", "siteid")
-
-    def test_hexagon_crossing_county_boundary_distributes_value_by_area(self):
-        """A symmetric boundary-crossing hexagon assigns half its value per county."""
-        counties = gpd.GeoDataFrame(
-            {"GEOID": ["01001", "01003"]},
-            geometry=[box(-2, -2, 0, 2), box(0, -2, 2, 2)], crs=6933)
-        hexagon = Polygon([(-1, 0), (-0.5, 1), (0.5, 1), (1, 0), (0.5, -1), (-0.5, -1)])
-        polygons = gpd.GeoDataFrame({"siteid": ["hex"], "value": [120.0]},
-                                   geometry=[hexagon], crs=6933)
-        values, audit = polygon_values(counties, polygons, "value", "siteid", workers=2)
-        np.testing.assert_allclose(values, [60, 60])
-        self.assertEqual(audit.allocated_fraction.iloc[0], 1)
-        self.assertEqual(audit.unallocated_value.iloc[0], 0)
-
-    def test_small_coverage_excess_is_capped_with_auditable_correction(self):
-        """Tiny excess preserves county shares and uncovered source value."""
-        counties = gpd.GeoDataFrame(
-            {"GEOID": ["01001", "01003"]},
-            geometry=[box(0, 0, 1.000004, 1), box(1, 0, 2, 1)], crs=6933)
-        polygons = gpd.GeoDataFrame(
-            {"siteid": ["covered", "partial"], "value": [100.0, 80.0]},
-            geometry=[box(0, 0, 2, 1), box(0, 2, 4, 3)], crs=6933)
+    def test_recreation_csv_joins_current_geoids_and_reports_unmatched(self):
+        """Use county dollar totals without allocating historical CT values."""
+        source = pd.DataFrame({
+            "GEOID": ["01001", "09001", "09110", "01003"],
+            "county_cs_2024usd": [0.0, 400.0, 100.0, np.nan],
+            "county_visits_2024": [9999, 9999, 9999, 9999],
+        })
+        ids = self.ids.append(pd.Index(["01003"], name="GEOID"))
         with tempfile.TemporaryDirectory() as temp:
-            values, audit = polygon_values(counties, polygons, "value", "siteid",
-                                            chunk_size=1, workers=2, checkpoint_dir=Path(temp))
-            self.assertAlmostEqual(values.sum(), 100)
-            self.assertAlmostEqual(values.iloc[0] / values.iloc[1], 1.000004)
-            self.assertAlmostEqual(audit.raw_allocated_fraction.iloc[0], 1.000002)
-            self.assertEqual(audit.allocated_fraction.iloc[0], 1)
-            self.assertAlmostEqual(audit.coverage_correction_value.iloc[0], 0.0002)
-            self.assertEqual(audit.unallocated_value.to_list(), [0, 80])
-            with patch("shapely.intersection", side_effect=AssertionError("should resume")):
-                resumed_values, resumed_audit = polygon_values(
-                    counties, polygons, "value", "siteid", chunk_size=1, checkpoint_dir=Path(temp))
-            pd.testing.assert_series_equal(values, resumed_values)
-            pd.testing.assert_frame_equal(audit, resumed_audit)
-        counties.loc[0, "geometry"] = box(0, 0, 1.001, 1)
-        with self.assertRaisesRegex(ValueError, "covered.*1.000500000"):
-            polygon_values(counties, polygons, "value", "siteid")
+            path = Path(temp) / "recreation.csv"
+            source.to_csv(path, index=False)
+            result = compute_task("recreation", {"recreation": path}, pd.DataFrame(index=ids), self.crosswalk, 1)
+        self.assertEqual(set(result["originals"]), {"recreation"})
+        values = result["originals"]["recreation"]
+        self.assertEqual(values.index.to_list(), ids.to_list())
+        np.testing.assert_allclose(values, [100.0, np.nan, 0.0, np.nan])
+        self.assertIn(
+            {"service": "recreation", "source_key": "09001", "reason": "unmatched_county", "value": 400.0},
+            result["issues"],
+        )
+        self.assertEqual(result["metadata"][0]["source_field"], "county_cs_2024usd")
+        self.assertEqual(result["metadata"][0]["input_known_total"], 500.0)
+        self.assertEqual(result["metadata"][0]["unmatched_total"], 400.0)
+
+    def test_recreation_csv_rejects_duplicate_county_totals(self):
+        """Duplicate county rows must not be silently summed or dropped."""
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "recreation.csv"
+            pd.DataFrame({"GEOID": ["01001", "01001"], "county_cs_2024usd": [100.0, 200.0],
+                          "county_visits_2024": [10, 20]}).to_csv(path, index=False)
+            with self.assertRaisesRegex(ValueError, "Duplicate"):
+                compute_task("recreation", {"recreation": path},
+                             pd.DataFrame(index=self.ids), self.crosswalk, 1)
 
     def test_gpkg_keeps_geometry_source_and_attributes_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -369,7 +353,6 @@ class CountyIntegrationTests(unittest.TestCase):
                 "originals": {"test": pd.Series([12.0, np.nan], index=["01001", "01003"])},
                 "statuses": [pd.DataFrame({"GEOID": ["01001", "01003"], "service": ["test"] * 2, "status": ["source", "missing"]})],
                 "metadata": [{"service": "test"}], "issues": [], "checks": [],
-                "recreation_audit": pd.DataFrame(),
                 "summary_fields": pd.DataFrame({"sum_dollars_annual": [12.0, np.nan]},
                                                index=pd.Index(["01001", "01003"], name="GEOID")),
             }
@@ -380,33 +363,6 @@ class CountyIntegrationTests(unittest.TestCase):
             pd.testing.assert_frame_equal(result["summary_fields"], loaded["summary_fields"])
             with self.assertRaises(ValueError):
                 load_checkpoint(path, "changed-input")
-
-    def test_recreation_recovers_completed_batches_after_failure(self):
-        counties = gpd.GeoDataFrame({"GEOID": ["01001"]}, geometry=[box(0, 0, 4, 1)], crs=6933)
-        polygons = gpd.GeoDataFrame({"siteid": ["a", "b", "c"], "value": [10.0, 20.0, 30.0]},
-                                   geometry=[box(i, 0, i + 1, 1) for i in range(3)], crs=6933)
-        original_intersection = shapely.intersection
-        calls = 0
-
-        def fail_second(*args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise RuntimeError("simulated interrupted batch")
-            return original_intersection(*args, **kwargs)
-
-        with tempfile.TemporaryDirectory() as temp:
-            cache = Path(temp)
-            with patch("shapely.intersection", side_effect=fail_second):
-                with self.assertRaises(RuntimeError):
-                    polygon_values(counties, polygons, "value", "siteid", chunk_size=1, checkpoint_dir=cache)
-            self.assertTrue((cache / "000000000.npz").exists())
-            with patch("shapely.intersection", wraps=original_intersection) as resumed:
-                values, audit = polygon_values(counties, polygons, "value", "siteid", chunk_size=1, workers=2, checkpoint_dir=cache)
-                self.assertLess(resumed.call_count, 3)
-            self.assertEqual(values["01001"], 60)
-            self.assertEqual(audit.unallocated_value.sum(), 0)
-
 
 class CountyExportRuleTests(unittest.TestCase):
     """Configured field policy preserves values, attribution, and run provenance."""

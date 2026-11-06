@@ -57,7 +57,7 @@ Paths in the table are relative to the repository's `data/` directory.
 | Inland fisheries | `analysis_inputs/ecosystem_services/inland_fisheries/Harvest_table_with_value.csv` |
 | Urban heat | `analysis_inputs/ecosystem_services/urban_heat/HEAT_all_tracts_2021.csv` |
 | Physical health | `analysis_inputs/ecosystem_services/physical_health/hypertension_linear_us_counties_all.gpkg` |
-| Recreation | `analysis_inputs/recreation/usa_nature_assessment_recreation__snapp_estimates.gpkg` |
+| County recreation | `analysis_inputs/recreation/2026_11_02/usa_nature_assessment_recreation_20261102.csv` |
 | Mangrove coastal flood protection | `analysis_inputs/ecosystem_services/mangroves/ucsc_cwon_studyunits.gpkg` |
 | Coral coastal protection | `analysis_inputs/ecosystem_services/aeb_coral.gpkg` |
 
@@ -211,37 +211,22 @@ A supplied value without positive allocation support stops the analysis rather
 than being distributed arbitrarily. County allocations are checked against
 each supplied state total.
 
-### Recreation polygon allocation
+### County recreation values
 
-Recreation values come from the source polygons' `val_2024` field in 2024 USD.
-A polygon's value is distributed among counties in proportion to overlap area:
+The recreation CSV contains county estimates for recreational use of protected
+areas in 2024. Keep the supplied
+`usa_nature_assessment_recreation_readme_20261102.txt` beside the CSV locally
+and follow its use and distribution terms.
 
-```text
-county contribution = polygon value × area(polygon ∩ county) / full polygon area
-county recreation value = sum of its polygon contributions
-```
+The builder joins `county_cs_2024usd` to the county layer on five-character
+`GEOID`, preserving leading zeroes. The field is the estimated annual use
+value of visitation in 2024 USD. A factor of 1 gives `recreation_adj`;
+`recreation_adj_factor` records that factor. `county_visits_2024` counts
+visitor-days and is not used in the valuation.
 
-Areas are calculated in the global equal-area projection EPSG:6933, including
-Alaska, Hawaii, and the territories. Geometries are repaired for these area
-calculations; the original county geometries are retained in the output.
-The denominator is the full repaired source-polygon area. Value outside the
-county footprint is recorded as unallocated, not redistributed among the
-intersecting counties.
-
-This method assumes uniform value within each source polygon. A $100 hexagon
-with 30% of its area in one county and 70% in another contributes $30 and $70.
-If only 80% of the hexagon intersects the county footprint, only $80 is allocated.
-
-Numerical error in intersections of small slivers can produce summed county
-shares slightly above one. Excess fractions of at most `1e-5` (0.001% of the
-source area) are corrected by proportionally scaling that polygon's county
-contributions to sum to one. Larger excesses stop the analysis and identify
-the affected source polygons. The allocation table records the raw fraction,
-corrected fraction, correction value, and unallocated value.
-
-A county with no intersecting recreation polygon receives zero. This is a
-consequence of the polygon coverage and aggregation method, not evidence of
-measured zero recreational value.
+Counties without a matching value have a null recreation estimate. A supplied
+zero remains zero. See `integration_sources` for the CSV used in a run and
+`integration_county_status` for its county coverage.
 
 ### Mangrove study-unit allocation
 
@@ -291,10 +276,7 @@ zero under this allocation convention.
 
 The county total is multiplied by 1.182 and exported as
 `sum_mangrove_coastal_flood_protection_value_adj`, with
-`mangroves_adj_factor` retained separately. No hectare multiplication is
-applied. Unlike recreation, this method allocates the entire known study-unit
-value whenever at least one positive-area county intersection exists;
-recreation continues to use the full source-polygon area as its denominator.
+`mangroves_adj_factor` retained separately. No hectare multiplication is applied.
 
 The valuation export excludes `sum_mangrove_CONUS` and its adjusted variant:
 they represent categorical land cover, not monetary values.
@@ -452,7 +434,8 @@ There are specific zero conventions:
 - Urban-heat accounting-format `$ -` cells are interpreted as zero.
 - Fisheries counties with zero allocation weight receive zero within states
   that have numeric source values.
-- Recreation counties without intersecting source polygons receive zero.
+- Recreation counties without a matched value remain null; source zeros
+  remain zero.
 - Coral counties without assigned points receive zero; assigned null-valued
   points instead propagate null totals.
 - Mangrove counties without positive-area study-unit intersections receive zero;
@@ -553,8 +536,8 @@ service adjustments; a county mask update uses the areas it has just calculated.
 ## Quality checks and provenance
 
 The workflow checks identifiers and allocation support, reconciles state
-fisheries, recreation, mangrove, and coral source totals, and verifies that the output preserves
-county geometries and retained attributes. Source-file hashes are checked
+fisheries, mangrove, and coral source totals, and verifies that the output
+preserves county geometries and retained attributes. Source-file hashes are checked
 before publication. CSV and GeoPackage attributes are compared for matching
 fields, order, and values.
 
@@ -567,7 +550,6 @@ The GeoPackage includes supporting tables for evaluating the estimates:
 | Is a county estimate observed, allocated, zero-filled, or missing? | `integration_county_status` |
 | Which records were unmatched or contributed only to an incomplete estimate? | `integration_source_issues` |
 | Do county fisheries allocations reproduce their state totals? | `integration_state_checks` |
-| How much recreation value is allocated, corrected, or outside the county footprint? | `integration_recreation_allocation` |
 | Which mangrove study units were allocated, and which had no county-intersection support? | `integration_mangrove_allocation` |
 | Which county received each coral point, at what distance, and were there ties? | `integration_coral_allocation` |
 | Which countries' mangrove study units were selected, and how many were excluded? | `integration_services` |
