@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 import geopandas as gpd
 import pandas as pd
 import pyogrio
-from shapely.geometry import MultiPolygon, box
+from shapely.geometry import MultiPolygon, Point, box
 
 import run_six_zone_assessment as wrapper
 
@@ -33,6 +33,7 @@ class SixZoneAssessmentTests(unittest.TestCase):
         self.frozen = self.zonal_config.parent / "runs" / f"snapp_six_zone_{self.run_id}.yaml"
         self.runner = self.root / "runner.py"
         self.bbb = self.root / "bbb_geometry.gpkg"
+        self.land_mask = self.root / "county_land.gpkg"
         self.county = gpd.GeoDataFrame(
             {"GEOID": ["01001"], "ALAND": [100]},
             geometry=[MultiPolygon([box(0, 0, 10, 10)])], crs="EPSG:6933",
@@ -48,6 +49,7 @@ class SixZoneAssessmentTests(unittest.TestCase):
         )
         pyogrio.write_dataframe(reference_frame, reference, layer="coral_reference")
         pyogrio.write_dataframe(self.county[["GEOID", "geometry"]], self.bbb, layer="bbb_input")
+        pyogrio.write_dataframe(self.county[["GEOID", "geometry"]], self.land_mask, layer="county_land_mask")
         pyogrio.write_dataframe(
             self.county.assign(Mang_Type="FED", Des_Tp="NP", GAP_Sts="1"),
             padus, layer="padus_input",
@@ -61,6 +63,7 @@ class SixZoneAssessmentTests(unittest.TestCase):
             path.write_text("fixture\n", encoding="utf-8")
         self.args = [
             "--runner", str(self.runner), "--bbb-by-county", str(self.bbb),
+            "--land-mask", str(self.land_mask),
             "--padus-path", str(padus), "--padus-layer", "padus_input",
             "--counties", str(counties), "--run-id", self.run_id,
         ]
@@ -78,6 +81,8 @@ class SixZoneAssessmentTests(unittest.TestCase):
         if script.name == "prepare_assessment_zones.py":
             self.assertEqual(command[command.index("--bbb-by-county") + 1], str(self.bbb))
             self.assertEqual(command[command.index("--bbb-layer") + 1], "bbb_input")
+            self.assertEqual(command[command.index("--land-mask") + 1], str(self.land_mask))
+            self.assertEqual(command[command.index("--land-mask-layer") + 1], "county_land_mask")
             self.assertEqual(Path(command[command.index("--output-root") + 1]), self.work.parent)
             outputs = {}
             for product in wrapper.ZONE_PRODUCTS:
@@ -157,6 +162,7 @@ class SixZoneAssessmentTests(unittest.TestCase):
         self.assertEqual(manifest["status"], "complete")
         self.assertEqual(manifest["geographic_scope"], "CONUS")
         self.assertEqual(manifest["zone_inputs"]["bbb_by_county"], [str(self.bbb), "bbb_input"])
+        self.assertEqual(manifest["zone_inputs"]["land_mask"], [str(self.land_mask), "county_land_mask"])
         self.assertEqual(self.calls, ["prepare_assessment_zones.py", "runner.py"])
         self.assertEqual(list(manifest["stages"].items()), [
             ("Prepare six assessment zones", "complete"),
@@ -192,6 +198,16 @@ class SixZoneAssessmentTests(unittest.TestCase):
     def test_validate_only_writes_no_run_artifacts(self) -> None:
         """Check input metadata without launching any stage or writing results."""
         self.assertIsNone(self.run_wrapper("--validate-only"))
+        self.assertEqual(self.calls, [])
+        for path in (self.results, self.work, self.frozen):
+            self.assertFalse(path.exists())
+
+    def test_preflight_rejects_nonpolygon_land_mask(self) -> None:
+        """Stop before creating run artifacts if the selected mask layer is not polygonal."""
+        invalid = gpd.GeoDataFrame({"GEOID": ["01001"]}, geometry=[Point(5, 5)], crs=self.county.crs)
+        pyogrio.write_dataframe(invalid, self.land_mask, layer="not_a_mask")
+        with self.assertRaisesRegex(ValueError, "must be a polygon land-mask layer"):
+            self.run_wrapper("--land-mask-layer", "not_a_mask")
         self.assertEqual(self.calls, [])
         for path in (self.results, self.work, self.frozen):
             self.assertFalse(path.exists())

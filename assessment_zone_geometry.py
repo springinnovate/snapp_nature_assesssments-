@@ -22,9 +22,9 @@ ZONE_PRODUCTS = (
 _M2_PER_HA = 10_000.0
 _ABS_AREA_TOL_M2 = 0.01
 _REL_AREA_TOL = 1e-10
-# Allow one square metre or one part per million for ALAND rounding.
-_ABS_LAND_TOL_M2 = 1.0
-_REL_LAND_TOL = 1e-6
+# Census ATOTAL and ALAND are published integer areas. The projected geometry
+# can differ slightly because it represents each segment as a straight line.
+MAX_LAND_MASK_ERROR_PCT = 0.01
 
 
 def _clip_union(candidates: Iterable[Geometry], mask: Geometry) -> Geometry | None:
@@ -57,12 +57,14 @@ def build_county_zones(
     county_land_area_m2: float,
     padus_candidates: Iterable[tuple[Geometry, str, bool, bool]],
     bbb_candidates: Iterable[Geometry],
+    *,
+    county_land_mask: Geometry,
 ) -> dict[str, list[dict[str, object]]]:
     """Build all six zone products and county area checks for one county.
 
-    County geometry is not altered to exclude water. The supplied footprint
-    polygons are assumed to be land-only, so their clipped union areas are
-    divided by the county's land area (ALAND), not its polygon area.
+    County and footprint geometries retain water for spatial analysis. Only
+    land hectares and shares use the intersection with Census land faces.
+    Shares use the county's ALAND, not its full polygon area.
     Per-manager zones retain their original labels; overlap is measured as
     the excess of summed areas over the union area, not assigned by precedence.
 
@@ -74,14 +76,15 @@ def build_county_zones(
             conservation flag) records; normalized manager labels must be
             nonempty, including any explicit unknown category.
         bbb_candidates: Candidate BBB polygons for this county.
+        county_land_mask: Dissolved Census land faces for this GEOID in EPSG:6933.
 
     Returns:
         Rows keyed by product name. The counties product has exactly one row.
         A footprint product without positive county overlap has no rows.
 
     Raises:
-        ValueError: County ALAND is invalid, a participating manager label
-            is missing, or a geometry area is inconsistent.
+        ValueError: County ALAND or its land mask is invalid, a participating
+            manager label is missing, or a geometry area is inconsistent.
     """
     county_area = float(county_geom.area)
     if not isfinite(county_area) or county_area <= 0:
@@ -89,7 +92,20 @@ def build_county_zones(
     if not isfinite(county_land_area_m2) or county_land_area_m2 <= 0:
         raise ValueError(f"County {geoid} must have finite positive ALAND: {county_land_area_m2}")
     county_tol = max(_ABS_AREA_TOL_M2, county_area * _REL_AREA_TOL)
-    land_tol = max(_ABS_LAND_TOL_M2, county_land_area_m2 * _REL_LAND_TOL)
+    mask_area = float(county_land_mask.area)
+    if not isfinite(mask_area) or mask_area <= 0 or not county_land_mask.is_valid:
+        raise ValueError(f"County {geoid} must have a valid positive-area land mask")
+    mask_tol = max(_ABS_AREA_TOL_M2, mask_area * _REL_AREA_TOL)
+    if not shapely.covers(county_geom, county_land_mask):
+        outside = shapely.difference(county_land_mask, county_geom).area
+        if outside > mask_tol:
+            raise ValueError(f"County {geoid} land mask extends outside its county by {outside:.6f} m²")
+    if abs(mask_area - county_land_area_m2) > county_land_area_m2 * MAX_LAND_MASK_ERROR_PCT / 100:
+        raise ValueError(
+            f"County {geoid} land mask area {mask_area:.6f} m² differs from ALAND "
+            f"{county_land_area_m2:.6f} m² by more than {MAX_LAND_MASK_ERROR_PCT}%"
+        )
+    shapely.prepare(county_land_mask)
 
     county_row = {
         "GEOID": geoid,
@@ -120,30 +136,28 @@ def build_county_zones(
         """Compute a land-only measure and share for a retained footprint.
 
         Args:
-            geometry: County-clipped zone geometry assumed to be land-only.
+            geometry: County-clipped zone geometry, including any water.
             product: Zone product label for diagnostic errors.
 
         Returns:
             Attributes and geometry for the output zone.
 
         Raises:
-            ValueError: A footprint's area is inconsistent or exceeds ALAND.
+            ValueError: A footprint's total or land area is inconsistent.
         """
         area = float(geometry.area)
         if not isfinite(area) or not 0 < area <= county_area + county_tol:
             raise ValueError(f"County {geoid} has inconsistent {product} footprint area: {area}")
-        if area > county_land_area_m2 + land_tol:
-            raise ValueError(
-                f"County {geoid} {product} footprint area {area:.6f} m² "
-                f"exceeds ALAND {county_land_area_m2:.6f} m² "
-                f"(tolerance {land_tol:.6f} m²)"
-            )
-        # Retain measured geometry area; bound the share only for rounding.
+        land_area = area if shapely.covers(county_land_mask, geometry) else geometry.intersection(county_land_mask).area
+        if not isfinite(land_area) or not 0 <= land_area <= min(area + county_tol, mask_area + mask_tol):
+            raise ValueError(f"County {geoid} has inconsistent {product} land area: {land_area}")
+        # Only the share is bounded, and only after checking the entire mask's
+        # agreement with ALAND. Preserve the measured hectares for auditing.
         return {
             "GEOID": geoid,
             "geometry": geometry,
-            "area_ha_land": area / _M2_PER_HA,
-            "county_land_share": min(1.0, area / county_land_area_m2),
+            "area_ha_land": land_area / _M2_PER_HA,
+            "county_land_share": min(1.0, land_area / county_land_area_m2),
         }
 
     for footprint, managers in pieces.items():
