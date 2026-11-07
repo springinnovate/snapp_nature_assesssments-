@@ -109,6 +109,8 @@ def load_and_prepare_rasters(
     config_path: Path,
     raster_dir: Path,
     derived_raster_dir: Path,
+    *,
+    apply_scale: bool = True,
 ) -> tuple[list[RasterInput], list[str]]:
     """Validate the inline inventory and create run-specific scaled VRTs.
 
@@ -116,6 +118,8 @@ def load_and_prepare_rasters(
         config_path: Reviewed .yaml with [project].raster_inventory.
         raster_dir: Downloaded source TIFF directory.
         derived_raster_dir: New run-specific directory for scaled VRTs.
+        apply_scale: Create scaled VRTs when configured. If False, use source
+            pixels so the downstream valuation can apply adjustments once.
 
     Returns:
         Selected rasters and reasons excluded inventory entries are blocked.
@@ -146,6 +150,8 @@ def load_and_prepare_rasters(
         scale = float(entry.get("scale", 1.0))
         if not math.isfinite(scale) or scale <= 0:
             raise ValueError(f"Raster '{label}' requires a finite positive scale.")
+        if not apply_scale:
+            scale = 1.0
         selected_path = source_path
         if scale != 1.0:
             derived_filename = str(entry.get("derived_filename", "")).strip()
