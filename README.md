@@ -301,6 +301,54 @@ feature domains:
 Saltwater, estuarine, canal, ditch, playa, and ice-mass classes are not included
 unless the rule is changed explicitly in the script.
 
+#### Prepare the six assessment zones and check county land areas
+
+Supply the PAD-US VectorAnalysis polygons, an existing BBB county-cut
+GeoPackage, and a **land-only** polygon layer covering every input county.
+Use a mask aligned to the county vintage, such as land faces from the
+[2024 TIGER/Line topological faces](https://www2.census.gov/geo/pdfs/maps-data/data/tiger/tgrshp2024/TGRSHP2024_TechDoc.pdf)
+for the 2024 county boundaries. Include Puerto Rico and the U.S. Virgin Islands
+if they are in your county input. The USA boundary and the freshwater layer
+are not land-only masks.
+
+```powershell
+python prepare_assessment_zones.py `
+  --padus-path '<PAD-US-VectorAnalysis.gdb>' `
+  --padus-layer 'PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP' `
+  --land-mask '<county-land-only.gpkg>' `
+  --bbb-by-county '<existing-BBB-county-cut.gpkg>' `
+  --run-id 'assessment-2026'
+```
+
+Use `--counties` for an alternate county boundary with unique five-digit
+`GEOID` values and Census `ALAND` in square metres. For multi-layer inputs,
+select the desired layer with `--counties-layer`, `--land-mask-layer`, or
+`--bbb-layer`. Use a fresh run ID, and set `--workers` to control concurrent
+county geometry work (default: 4).
+
+Find the prepared GeoPackages under
+`data/processing_outputs/assessment_runs/<run-id>/zonal_units/`, one per
+product directory: `counties`, `public_lands_by_county`,
+`public_lands_by_county_and_manager_type`, `conservation_lands_by_county`,
+`conservation_lands_by_county_and_manager_type`, and `bbb_lands_by_county`.
+Use `zone_manifest.json` for input and output paths and `county_area_qa.csv`
+for per-county area checks.
+
+Public zones use the configured public-land rule. Conservation zones
+independently include `GAP_Sts` codes 1, 2, and 3. Manager zones use
+`GEOID` and `Mang_Type`; missing conservation manager codes are labeled
+`UNSPECIFIED`. The county-level footprints are unions of the manager zones.
+Review any reported cross-manager overlap before adding manager values.
+
+The zone geometry retains water for spatial analysis. Land area fields,
+county percentages, and `county_land_share` use only the land-mask
+intersection, with overlapping pieces counted once. The command stops before
+publishing zones if a county has no mask coverage or its measured land area
+differs from `ALAND` by more than the larger of 1 hectare and 2 percent.
+Use `--max-land-area-error-pct` to set the relative tolerance for an
+independently validated mask. This command prepares geometry and area checks;
+it does not calculate ecosystem-service valuations.
+
 ### Zonal Statistics
 
 #### Ecosystem-service TIFF zonals
