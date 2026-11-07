@@ -43,7 +43,8 @@ zonals and NLCD areas. Check the county input paths in
 [`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml).
 
 Pass the toolkit runner path and the GeoPackage from the BBB run to reuse.
-The matching CSV must be beside the GeoPackage with the same filename stem:
+The matching CSV must be beside the GeoPackage with the same filename stem,
+ending in the source run's `_YYYYMMDD_HHMMSS` timestamp:
 
 ```powershell
 python run_snapp_assessment.py `
@@ -58,8 +59,14 @@ control toolkit parallelism. Use `--workers` and `--geometry-workers` for the
 county builder.
 
 Find the matched CSV and GeoPackage pairs under
-`data/analysis_results/assessment_runs/<run-id>/` in `counties/`,
-`padus_all_lands/`, `padus_public_lands/`, and `bbb_candidate_blm_lands/`.
+`data/analysis_results/assessment_runs/<run-id>/`. Each filename starts with
+its product directory name:
+
+- `counties/counties_<run-id>.{csv,gpkg}`
+- `padus_all_lands/padus_all_lands_<zonal-timestamp>.{csv,gpkg}`
+- `padus_public_lands/padus_public_lands_<zonal-timestamp>.{csv,gpkg}`
+- `bbb_candidate_blm_lands/bbb_candidate_blm_lands_<source-timestamp>.{csv,gpkg}`
+
 Keep `run_manifest.json` in that run directory with the results. Intermediates
 go under `data/processing_outputs/assessment_runs/<run-id>/`; the frozen zonal
 config is `data/workflow_assets/zonal_stats/runs/snapp_assessment_<run-id>.yaml`.
@@ -388,7 +395,7 @@ job name and timestamp. Specify `--results-dir` when preparing the config to
 keep each run's outputs in its own directory. The default is
 `data/analysis_results/zonal_statistics/`; each footprint has a subdirectory.
 For example, the all-lands pair is
-`padus_all_lands/pad_ecosystem_services_<timestamp>.{csv,gpkg}` within the
+`padus_all_lands/padus_all_lands_<timestamp>.{csv,gpkg}` within the
 selected results directory. Keep the run config with the files.
 
 #### Raster and vector configuration

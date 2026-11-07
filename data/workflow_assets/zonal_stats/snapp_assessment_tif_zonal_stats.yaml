@@ -42,7 +42,7 @@ agg_field = GEOID
 operations = sum, mean, area_ha_valid, proportion_valid_nonzero
 results_subdir = counties
 
-[job:pad_ecosystem_services]
+[job:padus_all_lands]
 zone_key = all
 label = PAD-US all lands by county
 vector_pattern = padus_all_lands_by_county/padus_all_lands_clipped_by_county_*.gpkg
@@ -51,7 +51,7 @@ agg_field = GEOID
 operations = sum, mean, area_ha_valid, proportion_valid_nonzero
 results_subdir = padus_all_lands
 
-[job:public_ecosystem_services]
+[job:padus_public_lands]
 zone_key = public
 label = PAD-US public lands by county
 vector_pattern = padus_public_lands_by_county/padus_public_lands_clipped_by_county_*.gpkg
@@ -78,7 +78,7 @@ agg_field = GEOID
 operations = sum, mean, area_ha_valid, proportion_valid_nonzero
 results_subdir = blm_lands_excluding_federally_protected_areas
 
-[job:bbb_candidate_ecosystem_services]
+[job:bbb_candidate_blm_lands]
 zone_key = bbb-candidates
 label = BBB candidate BLM lands by county
 vector_pattern = bbb_candidate_blm_lands_by_county/bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county_*.gpkg

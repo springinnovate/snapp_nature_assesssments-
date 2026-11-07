@@ -22,9 +22,9 @@ PADUS_ANALYSIS_PATH = Path(
     "/PADUS4_1VectorAnalysis_PADUS_Only.gdb"
 )
 PADUS_ANALYSIS_LAYER = "PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP"
-PADUS_JOBS = {
-    "all": ("padus_all_lands", "pad_ecosystem_services"),
-    "public": ("padus_public_lands", "public_ecosystem_services"),
+PADUS_PRODUCTS = {
+    "all": "padus_all_lands",
+    "public": "padus_public_lands",
 }
 
 
@@ -39,7 +39,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runner", required=True, type=Path, help="Path to zonal_stats_toolkit/runner.py")
-    parser.add_argument("--bbb-results", required=True, type=Path, help="Existing BBB GPKG with matching CSV")
+    parser.add_argument(
+        "--bbb-results", required=True, type=Path,
+        help="Existing BBB GPKG and matching CSV ending in _YYYYMMDD_HHMMSS",
+    )
     parser.add_argument("--padus-path", type=Path, default=PADUS_ANALYSIS_PATH)
     parser.add_argument("--padus-layer", default=PADUS_ANALYSIS_LAYER)
     parser.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
@@ -118,6 +121,9 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     runner = (root / args.runner).resolve()
     padus = (root / args.padus_path).resolve()
     bbb_pair = require_pair((root / args.bbb_results).resolve())
+    bbb_timestamp = re.search(r"_(\d{8}_\d{6})$", bbb_pair[1].stem)
+    if bbb_timestamp is None:
+        raise ValueError(f"BBB results must have a _YYYYMMDD_HHMMSS timestamp: {bbb_pair[1]}")
     county_config = data / "workflow_assets/county_integration"
     zonal_config = data / "workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml"
     with (county_config / "sources.csv").open(encoding="utf-8-sig", newline="") as stream:
@@ -153,7 +159,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
 
     prep_script = root / "prepare_padus_all_and_public_lands.py"
     prep_args = [
-        "--padus-path", str(padus), "--padus-layer", args.padus_layer, "--products", *PADUS_JOBS,
+        "--padus-path", str(padus), "--padus-layer", args.padus_layer, "--products", *PADUS_PRODUCTS,
     ]
     print("Checking the PAD-US layer and selected rules.", flush=True)
     subprocess.run([sys.executable, str(prep_script), *prep_args, "--validate-only"], cwd=root, check=True)
@@ -197,7 +203,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     try:
         run_stage("Prepare all/public PAD-US", prep_script, *prep_args, "--output-dir", str(clipped))
         cuts = {}
-        for product, (folder, _) in PADUS_JOBS.items():
+        for product, folder in PADUS_PRODUCTS.items():
             source = only_output(clipped / f"{product}_lands", f"{folder}_clipped_to_usa_*.gpkg")
             destination = zones / f"{folder}_by_county"
             run_stage(f"Cut {product} lands by county", root / "cut_and_flatten_by_county.py",
@@ -216,13 +222,13 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         with frozen_config.open(encoding="utf-8") as stream:
             frozen.read_file(stream)
         if {section for section in frozen.sections() if section.startswith("job:")} != {
-            f"job:{stem}" for _, stem in PADUS_JOBS.values()
+            f"job:{folder}" for folder in PADUS_PRODUCTS.values()
         }:
             raise ValueError("Frozen config must contain exactly the all-land and public-land jobs")
-        for product, (folder, stem) in PADUS_JOBS.items():
-            job = frozen[f"job:{stem}"]
-            expected = {"agg_vector": cuts[product], "output_csv": results / folder / f"{stem}.csv",
-                        "output_gpkg": results / folder / f"{stem}.gpkg"}
+        for product, folder in PADUS_PRODUCTS.items():
+            job = frozen[f"job:{folder}"]
+            expected = {"agg_vector": cuts[product], "output_csv": results / folder / f"{folder}.csv",
+                        "output_gpkg": results / folder / f"{folder}.gpkg"}
             if any((frozen_config.parent / job[key]).resolve() != path.resolve()
                    for key, path in expected.items()):
                 raise ValueError(f"Frozen config paths for {product} do not match this run")
@@ -231,11 +237,11 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             "Run all/public zonals", runner, str(frozen_config),
             "--job-workers", str(args.job_workers), "--raster-workers", str(args.raster_workers),
         )
-        for folder, stem in PADUS_JOBS.values():
-            pair = require_pair(only_output(results / folder, f"{stem}_*.gpkg"))
+        for folder in PADUS_PRODUCTS.values():
+            pair = require_pair(only_output(results / folder, f"{folder}_*.gpkg"))
             manifest["outputs"][folder] = [str(path) for path in pair]
 
-        counties = results / "counties" / f"snapp_ecosystem_services_counties_{args.run_id}.gpkg"
+        counties = results / "counties" / f"counties_{args.run_id}.gpkg"
         run_stage(
             "Build whole-county valuations", root / "build_county_ecosystem_service_valuations_2026.py",
             "--data-root", str(data),
@@ -246,10 +252,11 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
 
         bbb_dir = results / "bbb_candidate_blm_lands"
         bbb_dir.mkdir()
-        for path in bbb_pair:
-            shutil.copy2(path, bbb_dir / path.name)
-        manifest["outputs"]["bbb_candidate_blm_lands"] = [
-            str(path) for path in require_pair(bbb_dir / bbb_pair[1].name)
+        bbb_output = bbb_dir / f"{bbb_dir.name}_{bbb_timestamp[1]}.gpkg"
+        for source, destination in zip(bbb_pair, (bbb_output.with_suffix(".csv"), bbb_output)):
+            shutil.copy2(source, destination)
+        manifest["outputs"][bbb_dir.name] = [
+            str(path) for path in require_pair(bbb_output)
         ]
         manifest["status"] = "complete"
     except (Exception, KeyboardInterrupt) as error:
