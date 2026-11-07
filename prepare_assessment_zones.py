@@ -18,7 +18,7 @@ import shapely
 from tqdm import tqdm
 
 from assessment_geography import CONUS_STATE_FIPS, county_bounds_in_crs
-from assessment_zone_geometry import ZONE_PRODUCTS, build_county_zones
+from assessment_zone_geometry import MAX_LAND_MASK_ERROR_PCT, ZONE_PRODUCTS, build_county_zones
 from geometry_utils import repair_polygonal_geometry
 from padus_land_rules import load_rule_config
 
@@ -154,6 +154,7 @@ def prepare_zones(args: argparse.Namespace) -> Path:
         raise ValueError("The public_land rule for zone preparation must use physical PAD-US fields")
     sources = {
         "counties": (args.counties, args.counties_layer, {"GEOID", "ALAND"}),
+        "land_mask": (args.land_mask, args.land_mask_layer, {"GEOID"}),
         "padus": (args.padus_path, args.padus_layer, {"Mang_Type", "GAP_Sts", *rule_fields}),
         "bbb_by_county": (args.bbb_by_county, args.bbb_layer, {"GEOID"}),
     }
@@ -174,12 +175,22 @@ def prepare_zones(args: argparse.Namespace) -> Path:
                 unknown = set(ids.loc[in_scope]).difference(frames["counties"]["GEOID"])
                 if unknown:
                     raise ValueError(f"BBB includes CONUS GEOIDs not found in counties: {', '.join(sorted(unknown)[:10])}")
+            if label == "land_mask":
+                expected = set(frames["counties"]["GEOID"])
+                supplied = set(ids.loc[in_scope])
+                if supplied != expected:
+                    missing = ', '.join(sorted(expected - supplied)[:10]) or 'none'
+                    extra = ', '.join(sorted(supplied - expected)[:10]) or 'none'
+                    raise ValueError(f"County land mask GEOIDs do not match counties; missing: {missing}; extra: {extra}")
             frame = frame.assign(GEOID=ids).loc[in_scope].copy()
             if label == "counties" and frame.empty:
                 raise ValueError("No CONUS counties in the supplied county layer")
         provenance[label] = {"path": str(path.resolve()), "layer": resolved_layer, "rows": len(frame)}
         if label != "padus":
             provenance[label]["rows_before_scope"] = read_rows
+        if label == "land_mask" and path.is_file():
+            with path.open("rb") as mask_file:
+                provenance[label]["sha256"] = hashlib.file_digest(mask_file, "sha256").hexdigest()
         frames[label] = frame
 
     county_input = frames["counties"]
@@ -217,6 +228,7 @@ def prepare_zones(args: argparse.Namespace) -> Path:
     padus_shapes = frames["padus"].geometry.to_numpy()
     padus_index = frames["padus"].sindex
     bbb_shapes = dict(zip(frames["bbb_by_county"]["GEOID"], frames["bbb_by_county"].geometry))
+    land_shapes = dict(zip(frames["land_mask"]["GEOID"], frames["land_mask"].geometry))
     county_shapes = counties.geometry.to_numpy()
     county_ids = counties["GEOID"].to_numpy()
     county_attributes = counties.drop(columns=counties.geometry.name).to_dict("records")
@@ -232,6 +244,7 @@ def prepare_zones(args: argparse.Namespace) -> Path:
         return build_county_zones(
             geoid, county, aland[index], candidates,
             [bbb_shapes[geoid]] if geoid in bbb_shapes else [],
+            county_land_mask=land_shapes[geoid],
         )
 
     rows = {product: [] for product in ZONE_PRODUCTS}
@@ -242,9 +255,12 @@ def prepare_zones(args: argparse.Namespace) -> Path:
             total=len(counties), desc="Build and check county zones", unit="county",
         )):
             county = zones["counties"][0]
+            mask_area = land_shapes[county["GEOID"]].area
             area_qa.append({
                 "GEOID": county["GEOID"],
                 "area_ha_county_polygon": county_shapes[index].area / 10_000,
+                "area_ha_county_land_mask": mask_area / 10_000,
+                "area_ha_county_land_mask_minus_aland": (mask_area - aland[index]) / 10_000,
                 **{field: county[field] for field in COUNTY_AREA_FIELDS},
             })
             zones["counties"][0] = county_attributes[index] | county
@@ -265,8 +281,10 @@ def prepare_zones(args: argparse.Namespace) -> Path:
         "conservation_gap_codes": CONSERVATION_GAP_CODES,
         "land_area_method": {
             "denominator": "Census ALAND (square metres)",
-            "numerator": "Unioned footprint area clipped to county in EPSG:6933",
-            "footprints_assumed_land_only": True,
+            "numerator": "Area of county-clipped union intersected with the Census land mask in EPSG:6933",
+            "max_land_mask_error_pct": MAX_LAND_MASK_ERROR_PCT,
+            "zone_geometries_masked_to_land": False,
+            "manager_overlap_basis": "Full county-clipped zone geometries (land and water)",
         },
         "county_area_qa": str(output / "county_area_qa.csv"),
         "outputs": {},
@@ -309,6 +327,8 @@ def main(argv: list[str] | None = None) -> None:
         ROOT / "data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg"
     ))
     parser.add_argument("--counties-layer")
+    parser.add_argument("--land-mask", type=Path, required=True, help="Census county land masks keyed by GEOID")
+    parser.add_argument("--land-mask-layer", help="Layer name if the land-mask GeoPackage has multiple layers")
     parser.add_argument("--bbb-by-county", type=Path, required=True, help="Existing BBB polygon zones with unique GEOIDs")
     parser.add_argument("--bbb-layer")
     parser.add_argument("--rules", type=Path, default=ROOT / "config/padus_land_rules.rules")

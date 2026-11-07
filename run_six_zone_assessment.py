@@ -46,6 +46,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--padus-layer", default=PADUS_ANALYSIS_LAYER)
     parser.add_argument("--counties", type=Path, default=COUNTY_PATH)
     parser.add_argument("--counties-layer")
+    parser.add_argument("--land-mask", type=Path, required=True, help="Census county land polygons keyed by GEOID")
+    parser.add_argument("--land-mask-layer", help="Layer in the land-mask file")
     parser.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
     parser.add_argument("--job-workers", type=int, default=2)
     parser.add_argument("--raster-workers", type=int, default=2)
@@ -93,6 +95,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     vector_inputs = {
         "padus": (args.padus_path, args.padus_layer, {"Mang_Type", "Des_Tp", "GAP_Sts"}),
         "counties": (args.counties, args.counties_layer, {"GEOID", "ALAND"}),
+        "land_mask": (args.land_mask, args.land_mask_layer, {"GEOID"}),
         "bbb_by_county": (args.bbb_by_county, args.bbb_layer, {"GEOID"}),
         # Keep the original national reference even if --counties is already
         # a CONUS subset; overseas coral points must not move to the mainland.
@@ -111,6 +114,8 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         info = pyogrio.read_info(path, layer=layer)
         if fields.difference(info["fields"]) or not info["crs"]:
             raise ValueError(f"{path} / {layer} must have a CRS and the fields {sorted(fields)}")
+        if key == "land_mask" and info["geometry_type"] not in {"Polygon", "MultiPolygon"}:
+            raise ValueError(f"{path} / {layer} must be a polygon land-mask layer")
         input_paths[key] = (str(path), str(layer))
     if args.validate_only:
         print("Six-zone CONUS assessment inputs validated; no run files written.", flush=True)
@@ -161,6 +166,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             sys.executable, "-B", str(root / "prepare_assessment_zones.py"),
             "--padus-path", input_paths["padus"][0], "--padus-layer", input_paths["padus"][1],
             "--counties", input_paths["counties"][0], "--counties-layer", input_paths["counties"][1],
+            "--land-mask", input_paths["land_mask"][0], "--land-mask-layer", input_paths["land_mask"][1],
             "--bbb-by-county", input_paths["bbb_by_county"][0], "--bbb-layer", input_paths["bbb_by_county"][1],
             "--rules", str(root / "config/padus_land_rules.rules"),
             "--run-id", args.run_id, "--output-root", str(work.parent), "--workers", str(args.workers),

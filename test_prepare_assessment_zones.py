@@ -1,6 +1,7 @@
 """Exercise assessment-zone CLI outputs using known equal-area geometry."""
 
 import csv
+import hashlib
 import json
 
 import geopandas as gpd
@@ -64,12 +65,14 @@ def zone_inputs(tmp_path):
         CLI arguments, output paths, and fixture paths for the test to modify.
     """
     counties = tmp_path / "counties.gpkg"
+    land_mask = tmp_path / "land_mask.gpkg"
     padus = tmp_path / "padus.gpkg"
     bbb = tmp_path / "bbb.gpkg"
     output_root = tmp_path / "assessment runs"
     county_boxes = [box(x, 0, x + 1000, 1000) for x in range(0, 3000, 1000)]
     ids = ["01001", "01003", "01005"]
     write_layer(counties, {"GEOID": ids, "ALAND": [800000] * 3, "NAME": ["One", "Two", "Three"]}, county_boxes)
+    write_layer(land_mask, {"GEOID": ids}, [box(x, 0, x + 1000, 800) for x in range(0, 3000, 1000)])
     write_layer(
         padus,
         {
@@ -90,6 +93,7 @@ def zone_inputs(tmp_path):
     )
     args = [
         "--counties", str(counties), "--padus-path", str(padus),
+        "--land-mask", str(land_mask),
         "--bbb-by-county", str(bbb), "--output-root", str(output_root), "--run-id", RUN_ID,
         "--workers", "1",
     ]
@@ -98,7 +102,7 @@ def zone_inputs(tmp_path):
 
 def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
     """Verify land numerators, Census denominators, and independent land rules."""
-    args, zones, _, _, county_boxes = zone_inputs
+    args, zones, county_path, _, county_boxes = zone_inputs
     main(args)
 
     expected = {
@@ -169,6 +173,8 @@ def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
     for geoid, row in qa_rows.items():
         assert float(row["area_ha_county_land"]) == pytest.approx(80)
         assert float(row["area_ha_county_polygon"]) == pytest.approx(100)
+        assert float(row["area_ha_county_land_mask"]) == pytest.approx(80)
+        assert float(row["area_ha_county_land_mask_minus_aland"]) == pytest.approx(0)
         assert float(row["area_ha_public_manager_overlap"]) == pytest.approx(15 if geoid == "01001" else 0)
         assert float(row["area_ha_conservation_manager_overlap"]) == pytest.approx(0 if geoid == "01005" else 15)
         assert not any(
@@ -176,8 +182,12 @@ def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
         )
     manifest = json.loads((zones / "zone_manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_id"] == RUN_ID
-    assert set(manifest["inputs"]) == {"counties", "padus", "bbb_by_county"}
-    assert manifest["land_area_method"]["footprints_assumed_land_only"] is True
+    assert set(manifest["inputs"]) == {"counties", "land_mask", "padus", "bbb_by_county"}
+    assert manifest["inputs"]["land_mask"]["layer"] == "land_mask"
+    assert manifest["inputs"]["land_mask"]["sha256"] == hashlib.sha256(
+        county_path.with_name("land_mask.gpkg").read_bytes()
+    ).hexdigest()
+    assert manifest["land_area_method"]["zone_geometries_masked_to_land"] is False
     assert set(manifest["outputs"]) == {"counties", *expected, *manager_expected}
     assert manifest["counties_with_manager_overlap"] == {
         "area_ha_public_manager_overlap": 1,
@@ -227,8 +237,8 @@ def test_invalid_aland_does_not_publish(zone_inputs, aland):
     assert not zones.exists()
 
 
-def test_union_materially_larger_than_aland_does_not_publish(zone_inputs):
-    """Reject a county union larger than ALAND even if each manager fits."""
+def test_mask_materially_different_from_aland_does_not_publish(zone_inputs):
+    """Reject a mask whose measured area cannot be reconciled with ALAND."""
     args, zones, counties, _, county_boxes = zone_inputs
     counties.unlink()
     write_layer(
@@ -241,18 +251,33 @@ def test_union_materially_larger_than_aland_does_not_publish(zone_inputs):
     assert not zones.exists()
 
 
+def test_missing_land_mask_county_does_not_publish(zone_inputs):
+    """Require an explicit land mask for every in-scope county."""
+    args, zones, counties, _, _ = zone_inputs
+    land_mask = counties.with_name("land_mask.gpkg")
+    land_mask.unlink()
+    write_layer(land_mask, {"GEOID": ["01001"]}, [box(0, 0, 1000, 800)])
+    with pytest.raises(ValueError, match="County land mask GEOIDs.*missing: 01003, 01005"):
+        main(args)
+    assert not zones.exists()
+
+
 def test_conus_scope_filters_before_projection_and_keeps_unlabeled_padus(zone_inputs, monkeypatch):
     """Keep mainland and DC rows without projecting distant multipart pieces."""
     args, zones, counties, padus, county_boxes = zone_inputs
     bbb = counties.with_name("bbb.gpkg")
+    land_mask = counties.with_name("land_mask.gpkg")
     included_ids = ["01001", "11001"]
     excluded_ids = ["02020", "15001", "72001", "78010"]
     remote_counties = [box(x, 0, x + 1000, 1000) for x in range(1_000_000, 5_000_000, 1_000_000)]
-    for path in (counties, padus, bbb):
+    for path in (counties, land_mask, padus, bbb):
         path.unlink()
     write_layer(
         counties, {"GEOID": included_ids + excluded_ids, "ALAND": [800000, 800000, *([None] * 4)]},
         [*county_boxes[:2], *remote_counties],
+    )
+    write_layer(land_mask, {"GEOID": included_ids + excluded_ids},
+        [box(0, 0, 1000, 800), box(1000, 0, 2000, 800), *remote_counties],
     )
     mainland, district = box(0, 0, 500, 400), box(1000, 0, 1500, 400)
     write_layer(
@@ -281,12 +306,12 @@ def test_conus_scope_filters_before_projection_and_keeps_unlabeled_padus(zone_in
     assert len(padus_before_projection) == 2
     assert tuple(padus_before_projection.total_bounds) == pytest.approx((0, 0, 1500, 400))
     assert sorted(padus_before_projection.geometry.area) == pytest.approx([200_000, 200_000])
-    for label in ("counties", "bbb_by_county"):
+    for label in ("counties", "land_mask", "bbb_by_county"):
         assert set(projected_inputs[label]["GEOID"]) == set(included_ids)
 
     manifest = json.loads((zones / "zone_manifest.json").read_text(encoding="utf-8"))
     assert manifest["geographic_scope"] == "CONUS"
-    for label in ("counties", "bbb_by_county"):
+    for label in ("counties", "land_mask", "bbb_by_county"):
         assert manifest["inputs"][label]["rows_before_scope"] == 6
         assert manifest["inputs"][label]["rows"] == 2
     for product in manifest["outputs"]:

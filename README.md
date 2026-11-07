@@ -35,7 +35,8 @@ environment:
 ## Run the six-zone CONUS assessment
 
 From the repository root, use the geospatial Python environment and point
-the command at the zonal toolkit and the **BBB county geometry** GeoPackage.
+the command at the zonal toolkit, the **BBB county geometry** GeoPackage,
+and a [Census county land mask](#prepare-the-census-county-land-mask).
 This command prepares the zones, computes fresh raster zonals for all six
 products, and integrates the tabular and spatial valuations.
 
@@ -45,13 +46,14 @@ the U.S. Virgin Islands, and other territories are excluded from all six
 outputs. PAD-US is subset in its native CRS before projection.
 
 ```cmd
-python run_six_zone_assessment.py --runner "D:\repositories\zonal_stats_toolkit\runner.py" --bbb-by-county "data\analysis_inputs\zonal_units\bbb_candidate_blm_lands_by_county\bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county_2026_08_09_18_45_22.gpkg"
+python run_six_zone_assessment.py --runner "D:\repositories\zonal_stats_toolkit\runner.py" --bbb-by-county "data\analysis_inputs\zonal_units\bbb_candidate_blm_lands_by_county\bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county_2026_08_09_18_45_22.gpkg" --land-mask "data\analysis_inputs\boundaries\county_land\tl_2024_us_county_land_conus.gpkg"
 ```
 
-Add `--validate-only` to check input paths, vector fields, and the TIFF
+Add `--validate-only` to check input paths, vector metadata, and the TIFF
 inventory without writing run files. Use `--run-id` to name a new run,
 `--padus-path` and `--padus-layer` to select a different PAD-US source, and
 `--job-workers` and `--raster-workers` to control toolkit parallelism.
+If the land-mask file has multiple spatial layers, specify `--land-mask-layer`.
 Use `--workers` for zone preparation and county table joins and
 `--geometry-workers` for fisheries and coastal measurement. Child processes
 default to one OpenBLAS/OpenMP thread when those limits are not already set.
@@ -72,10 +74,10 @@ area QA, raw raster results, and toolkit work files stay under
 `data/processing_outputs/assessment_runs/<run-id>/`. Keep the frozen config
 under `data/workflow_assets/zonal_stats/runs/` with the run records.
 
-Footprint land shares use unioned, county-clipped area divided by Census
-`ALAND`, assuming the footprint inputs are land-only. County-level services
-other than recreation are allocated by that share. Fisheries use eligible
-shoreline length or freshwater area and fixed state denominators; Great Lakes
+Footprint land shares divide the area within the Census land mask by Census
+`ALAND`. Those shares allocate county-level services other than recreation
+and fisheries; the mask does not change the zone geometries. Fisheries use
+eligible shoreline length or freshwater area and fixed state denominators; Great Lakes
 shorelines are excluded from marine weights and the five lakes are excluded
 from inland weights. Only CONUS state totals enter the allocation. Coral points
 are assigned against the original unfiltered county reference; only CONUS
@@ -153,6 +155,7 @@ The main input paths are:
 | Input | Path |
 | --- | --- |
 | USA boundary | `data/analysis_inputs/boundaries/usa_boundary/usa_vector.gpkg` |
+| Census county land mask (six-zone assessment) | `data/analysis_inputs/boundaries/county_land/tl_2024_us_county_land_conus.gpkg` |
 | Counties | `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` |
 | PAD-US geodatabase | `data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb` |
 | Ecosystem service rasters | `data/analysis_inputs/ecosystem_services` (selected in `data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml`) |
@@ -368,11 +371,26 @@ feature domains:
 Saltwater, estuarine, canal, ditch, playa, and ice-mass classes are not included
 unless the rule is changed explicitly in the script.
 
+#### Prepare the Census county land mask
+
+Put the official 2024 Census TIGER/Line Faces ZIP archives, named
+`tl_2024_<GEOID>_faces.zip`, in a single directory, one per CONUS county.
+Use the same county release for mask preparation and the assessment.
+
+```powershell
+python prepare_census_county_land_mask.py --faces-dir 'data/analysis_inputs/boundaries/census_faces/2024'
+```
+
+Add `--download-missing` to fetch missing official archives into that directory.
+Use `--counties` and `--counties-layer` to select a different county input
+from the same Census release. The command writes the reusable `county_land_mask`
+layer in `data/analysis_inputs/boundaries/county_land/tl_2024_us_county_land_conus.gpkg`.
+Keep its matching `_qa.csv` and `_manifest.json` files with the GeoPackage.
+
 #### Prepare the six CONUS assessment zones and check county land areas
 
 Supply the PAD-US VectorAnalysis polygons and an existing BBB county-cut
-GeoPackage. Treat both footprint inputs as land-only. Use Census `ALAND`
-for the county land area; no separate land mask is required.
+GeoPackage, plus the [Census county land mask](#prepare-the-census-county-land-mask).
 County and BBB inputs are filtered by their `GEOID` state prefix. The PAD-US
 input is subset to the selected county extent in its native CRS before
 projection, then clipped by county. Use the original county release or a
@@ -383,14 +401,15 @@ python prepare_assessment_zones.py `
   --padus-path '<PAD-US-VectorAnalysis.gdb>' `
   --padus-layer 'PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP' `
   --bbb-by-county '<existing-BBB-county-cut.gpkg>' `
+  --land-mask 'data/analysis_inputs/boundaries/county_land/tl_2024_us_county_land_conus.gpkg' `
   --run-id 'assessment-2026'
 ```
 
 Use `--counties` for an alternate county boundary with unique five-digit
 `GEOID` values and Census `ALAND` in square metres. For multi-layer inputs,
-select the desired layer with `--padus-layer`, `--counties-layer`, or
-`--bbb-layer`. Use a fresh run ID, and set `--workers` to control concurrent
-county geometry work (default: 4).
+select the desired layer with `--padus-layer`, `--counties-layer`,
+`--bbb-layer`, or `--land-mask-layer`. Use a fresh run ID and set `--workers`
+to control concurrent county geometry work (default: 4).
 
 Find the prepared GeoPackages under
 `data/processing_outputs/assessment_runs/<run-id>/zonal_units/`, one per
@@ -406,15 +425,14 @@ independently include `GAP_Sts` codes 1, 2, and 3. Manager zones use
 `UNSPECIFIED`. The county-level footprints are unions of the manager zones.
 Review any reported cross-manager overlap before adding manager values.
 
-County geometries retain their original water coverage. The area and share
-calculation divides the clipped, unioned footprint area by `ALAND`, not the
-full county polygon area. The QA CSV includes both county areas to make this
-distinction visible. The command stops before publishing if `ALAND` is missing
-or invalid, or if a footprint exceeds it by more than the larger of 1 m²
-and one part per million of `ALAND`. Within that rounding tolerance, shares
-are capped at 100% without changing the measured area. Passing this check
-does not verify the land-only assumption. This command prepares geometry and
-area checks; it does not calculate ecosystem-service valuations.
+County and footprint geometries retain their water coverage for raster zonals
+and spatial services. For each footprint, the land area is the intersection
+with the matching county's Census land mask, and the share divides that area
+by Census `ALAND`, not the full county polygon area. A water-only footprint
+has zero land area and share without losing its geometry. The QA CSV records
+county areas and the land-mask comparison used to check the denominator.
+This command prepares geometry and area checks; it does not calculate
+ecosystem-service valuations.
 
 ### Zonal Statistics
 
