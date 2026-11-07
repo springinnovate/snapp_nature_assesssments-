@@ -2,7 +2,6 @@
 
 import csv
 import json
-from pathlib import Path
 
 import geopandas as gpd
 import pytest
@@ -55,7 +54,7 @@ def assert_footprint(geometry, expected):
 
 @pytest.fixture
 def zone_inputs(tmp_path):
-    """Build a three-county run with overlap, water and leading-zero IDs.
+    """Build land-only footprints in counties that are larger than their ALAND.
 
     Args:
         tmp_path: A fresh test directory supplied by pytest.
@@ -64,15 +63,12 @@ def zone_inputs(tmp_path):
         CLI arguments, output paths, and fixture paths for the test to modify.
     """
     counties = tmp_path / "counties.gpkg"
-    land = tmp_path / "land.gpkg"
     padus = tmp_path / "padus.gpkg"
     bbb = tmp_path / "bbb.gpkg"
     output_root = tmp_path / "assessment runs"
     county_boxes = [box(x, 0, x + 1000, 1000) for x in range(0, 3000, 1000)]
     ids = ["01001", "01003", "01005"]
     write_layer(counties, {"GEOID": ids, "ALAND": [800000] * 3, "NAME": ["One", "Two", "Three"]}, county_boxes)
-    # Both land polygons cover the same strip at x=1100..1300; coverage is a union.
-    write_layer(land, {"id": [1, 2]}, [box(0, 0, 1300, 800), box(1100, 0, 3000, 800)])
     write_layer(
         padus,
         {
@@ -81,58 +77,58 @@ def zone_inputs(tmp_path):
             "GAP_Sts": ["1", "2", "3", "2", "1", "4", "4", "1"],
         },
         [
-            box(0, 0, 600, 1000), box(400, 0, 1200, 1000), box(1200, 0, 1400, 1000),
-            box(1300, 0, 1700, 1000), box(1600, 0, 1800, 1000), box(1800, 0, 1900, 1000),
-            box(1900, 750, 2000, 1000), box(200, 0, 400, 1000),
+            box(0, 0, 600, 750), box(400, 0, 1200, 750), box(1200, 0, 1400, 750),
+            box(1300, 0, 1700, 750), box(1600, 0, 1800, 750), box(1800, 0, 1900, 750),
+            box(1900, 500, 2000, 750), box(200, 0, 400, 750),
         ],
     )
     write_layer(
         bbb,
         {"GEOID": ["01001", "01003"]},
-        [box(800, 500, 1200, 900), box(900, 0, 1400, 1000)],
+        [box(800, 500, 1200, 750), box(900, 0, 1400, 750)],
     )
     args = [
-        "--counties", str(counties), "--padus-path", str(padus), "--land-mask", str(land),
+        "--counties", str(counties), "--padus-path", str(padus),
         "--bbb-by-county", str(bbb), "--output-root", str(output_root), "--run-id", RUN_ID,
         "--workers", "1",
     ]
-    return args, output_root / RUN_ID / "zonal_units", counties, land, county_boxes
+    return args, output_root / RUN_ID / "zonal_units", counties, padus, county_boxes
 
 
-def test_six_products_keep_coastal_water_but_measure_land_only(zone_inputs):
-    """Verify footprints, denominators, and independent public/conservation logic."""
+def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
+    """Verify land numerators, Census denominators, and independent land rules."""
     args, zones, _, _, county_boxes = zone_inputs
     main(args)
 
     expected = {
         "public_lands_by_county": {
-            "01001": (box(0, 0, 1000, 1000), 80),
-            "01003": (unary_union([box(1000, 0, 1400, 1000), box(1900, 750, 2000, 1000)]), 32.5),
+            "01001": (box(0, 0, 1000, 750), 75),
+            "01003": (unary_union([box(1000, 0, 1400, 750), box(1900, 500, 2000, 750)]), 32.5),
         },
         "conservation_lands_by_county": {
-            "01001": (box(0, 0, 1000, 1000), 80),
-            "01003": (box(1000, 0, 1800, 1000), 64),
+            "01001": (box(0, 0, 1000, 750), 75),
+            "01003": (box(1000, 0, 1800, 750), 60),
         },
         "bbb_lands_by_county": {
-            "01001": (box(800, 500, 1000, 900), 6),
-            "01003": (box(1000, 0, 1400, 1000), 32),
+            "01001": (box(800, 500, 1000, 750), 5),
+            "01003": (box(1000, 0, 1400, 750), 30),
         },
     }
     manager_common = {
-        ("01001", "FED"): (box(0, 0, 600, 1000), 48),
-        ("01001", "STAT"): (box(400, 0, 1000, 1000), 48),
-        ("01003", "STAT"): (box(1000, 0, 1200, 1000), 16),
-        ("01003", "UNK"): (box(1200, 0, 1400, 1000), 16),
+        ("01001", "FED"): (box(0, 0, 600, 750), 45),
+        ("01001", "STAT"): (box(400, 0, 1000, 750), 45),
+        ("01003", "STAT"): (box(1000, 0, 1200, 750), 15),
+        ("01003", "UNK"): (box(1200, 0, 1400, 750), 15),
     }
     manager_expected = {
         "public_lands_by_county_and_manager_type": {
             **manager_common,
-            ("01003", "LOC"): (box(1900, 750, 2000, 1000), 0.5),
+            ("01003", "LOC"): (box(1900, 500, 2000, 750), 2.5),
         },
         "conservation_lands_by_county_and_manager_type": {
             **manager_common,
-            ("01003", "NGO"): (box(1300, 0, 1700, 1000), 32),
-            ("01003", "PVT"): (box(1600, 0, 1800, 1000), 16),
+            ("01003", "NGO"): (box(1300, 0, 1700, 750), 30),
+            ("01003", "PVT"): (box(1600, 0, 1800, 750), 15),
         },
     }
     assert {path.name for path in zones.iterdir() if path.is_dir()} == {
@@ -170,15 +166,22 @@ def test_six_products_keep_coastal_water_but_measure_land_only(zone_inputs):
         qa_rows = {row["GEOID"]: row for row in csv.DictReader(qa_file)}
     assert set(qa_rows) == set(ids)
     for geoid, row in qa_rows.items():
-        assert row["land_area_check_passed"] == "True"
-        assert float(row["land_area_error_ha"]) == pytest.approx(0)
-        assert float(row["area_ha_public_manager_land_overlap"]) == pytest.approx(16 if geoid == "01001" else 0)
-        assert float(row["area_ha_conservation_manager_land_overlap"]) == pytest.approx(0 if geoid == "01005" else 16)
+        assert float(row["area_ha_county_land"]) == pytest.approx(80)
+        assert float(row["area_ha_county_polygon"]) == pytest.approx(100)
+        assert float(row["area_ha_public_manager_overlap"]) == pytest.approx(15 if geoid == "01001" else 0)
+        assert float(row["area_ha_conservation_manager_overlap"]) == pytest.approx(0 if geoid == "01005" else 15)
+        assert not any(
+            field.startswith("land_area_error_") or field.endswith("_manager_land_overlap") for field in row
+        )
     manifest = json.loads((zones / "zone_manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_id"] == RUN_ID
+    assert set(manifest["inputs"]) == {"counties", "padus", "bbb_by_county"}
+    assert manifest["land_area_method"]["footprints_assumed_land_only"] is True
     assert set(manifest["outputs"]) == {"counties", *expected, *manager_expected}
-    assert manifest["counties_with_manager_overlap"]["area_ha_public_manager_land_overlap"] == 1
-    assert manifest["counties_with_manager_overlap"]["area_ha_conservation_manager_land_overlap"] == 2
+    assert manifest["counties_with_manager_overlap"] == {
+        "area_ha_public_manager_overlap": 1,
+        "area_ha_conservation_manager_overlap": 2,
+    }
 
 
 def test_existing_run_is_not_overwritten(zone_inputs):
@@ -195,36 +198,43 @@ def test_existing_run_is_not_overwritten(zone_inputs):
 
 def test_empty_public_layer_and_missing_conservation_manager(zone_inputs):
     """Write empty products with a usable schema and keep unassigned conservation land."""
-    args, zones, _, _, _ = zone_inputs
-    padus = Path(args[args.index("--padus-path") + 1])
+    args, zones, _, padus, _ = zone_inputs
     padus.unlink()
     write_layer(padus, {"Mang_Type": [None], "Des_Tp": ["ACC"], "GAP_Sts": [3]},
-                [box(0, 0, 400, 1000)])
+                [box(0, 0, 400, 750)])
     main(args)
     public = read_product(zones, "public_lands_by_county_and_manager_type")
     assert public.empty
     assert set(public.columns) == {"GEOID", "Mang_Type", "area_ha_land", "county_land_share", "geometry"}
     conservation = read_product(zones, "conservation_lands_by_county_and_manager_type")
     assert list(conservation["Mang_Type"]) == ["UNSPECIFIED"]
-    assert conservation.loc[0, "area_ha_land"] == pytest.approx(32)
+    assert conservation.loc[0, "area_ha_land"] == pytest.approx(30)
 
 
-@pytest.mark.parametrize("invalid_input", ["missing_county_land", "aland_mismatch"])
-def test_invalid_land_denominator_does_not_publish(zone_inputs, invalid_input):
-    """Reject zero or substantially inconsistent county land measurements."""
-    args, zones, counties, land, county_boxes = zone_inputs
-    if invalid_input == "missing_county_land":
-        land.unlink()
-        write_layer(land, {"id": [1]}, [box(0, 0, 2000, 800)])
-        message = "01005 has no positive land-mask coverage"
-    else:
-        counties.unlink()
-        write_layer(
-            counties,
-            {"GEOID": ["01001", "01003", "01005"], "ALAND": [700000, 800000, 800000]},
-            county_boxes,
-        )
-        message = "Land mask disagrees with Census ALAND.*01001"
-    with pytest.raises(ValueError, match=message):
+@pytest.mark.parametrize("aland", [0, None])
+def test_invalid_aland_does_not_publish(zone_inputs, aland):
+    """Reject a nonpositive or missing Census land-area denominator."""
+    args, zones, counties, _, county_boxes = zone_inputs
+    counties.unlink()
+    write_layer(
+        counties,
+        {"GEOID": ["01001", "01003", "01005"], "ALAND": [800000, 800000, aland]},
+        county_boxes,
+    )
+    with pytest.raises(ValueError, match="finite positive Census ALAND"):
+        main(args)
+    assert not zones.exists()
+
+
+def test_union_materially_larger_than_aland_does_not_publish(zone_inputs):
+    """Reject a county union larger than ALAND even if each manager fits."""
+    args, zones, counties, _, county_boxes = zone_inputs
+    counties.unlink()
+    write_layer(
+        counties,
+        {"GEOID": ["01001", "01003", "01005"], "ALAND": [600000, 800000, 800000]},
+        county_boxes,
+    )
+    with pytest.raises(ValueError, match="01001.*ALAND"):
         main(args)
     assert not zones.exists()
