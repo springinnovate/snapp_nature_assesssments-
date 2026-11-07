@@ -22,6 +22,9 @@ ZONE_PRODUCTS = (
 _M2_PER_HA = 10_000.0
 _ABS_AREA_TOL_M2 = 0.01
 _REL_AREA_TOL = 1e-10
+# Allow one square metre or one part per million for ALAND rounding.
+_ABS_LAND_TOL_M2 = 1.0
+_REL_LAND_TOL = 1e-6
 
 
 def _clip_union(candidates: Iterable[Geometry], mask: Geometry) -> Geometry | None:
@@ -51,25 +54,25 @@ def _clip_union(candidates: Iterable[Geometry], mask: Geometry) -> Geometry | No
 def build_county_zones(
     geoid: str,
     county_geom: Geometry,
+    county_land_area_m2: float,
     padus_candidates: Iterable[tuple[Geometry, str, bool, bool]],
-    land_candidates: Iterable[Geometry],
     bbb_candidates: Iterable[Geometry],
 ) -> dict[str, list[dict[str, object]]]:
     """Build all six zone products and county area checks for one county.
 
-    Zone geometries retain their water areas for spatial services such as
-    fisheries. Area and share fields intersect those geometries with a
-    separate land-only mask. Per-manager zones retain their original manager
-    labels; overlap is measured as the excess of summed areas over the
-    union area, not assigned to a manager by precedence.
+    County geometry is not altered to exclude water. The supplied footprint
+    polygons are assumed to be land-only, so their clipped union areas are
+    divided by the county's land area (ALAND), not its polygon area.
+    Per-manager zones retain their original labels; overlap is measured as
+    the excess of summed areas over the union area, not assigned by precedence.
 
     Args:
         geoid: County identifier.
         county_geom: Valid county polygon in EPSG:6933.
+        county_land_area_m2: Census ALAND, in square metres.
         padus_candidates: Candidate (geometry, manager type, public flag,
             conservation flag) records; normalized manager labels must be
             nonempty, including any explicit unknown category.
-        land_candidates: Candidate land-only polygons, excluding water.
         bbb_candidates: Candidate BBB polygons for this county.
 
     Returns:
@@ -77,24 +80,21 @@ def build_county_zones(
         A footprint product without positive county overlap has no rows.
 
     Raises:
-        ValueError: A county has no positive land coverage, a participating
-            manager label is missing, or a geometry area is inconsistent.
+        ValueError: County ALAND is invalid, a participating manager label
+            is missing, or a geometry area is inconsistent.
     """
     county_area = float(county_geom.area)
     if not isfinite(county_area) or county_area <= 0:
         raise ValueError(f"County {geoid} does not have positive polygon area")
-    county_land = _clip_union(land_candidates, county_geom)
-    if county_land is None:
-        raise ValueError(f"County {geoid} has no positive land-mask coverage")
-    county_land_area = float(county_land.area)
+    if not isfinite(county_land_area_m2) or county_land_area_m2 <= 0:
+        raise ValueError(f"County {geoid} must have finite positive ALAND: {county_land_area_m2}")
     county_tol = max(_ABS_AREA_TOL_M2, county_area * _REL_AREA_TOL)
-    if not isfinite(county_land_area) or not 0 < county_land_area <= county_area + county_tol:
-        raise ValueError(f"County {geoid} has inconsistent land-mask area: {county_land_area}")
+    land_tol = max(_ABS_LAND_TOL_M2, county_land_area_m2 * _REL_LAND_TOL)
 
     county_row = {
         "GEOID": geoid,
         "geometry": county_geom,
-        "area_ha_county_land": county_land_area / _M2_PER_HA,
+        "area_ha_county_land": county_land_area_m2 / _M2_PER_HA,
     }
     results = {product: [] for product in ZONE_PRODUCTS}
     results["counties"].append(county_row)
@@ -120,30 +120,30 @@ def build_county_zones(
         """Compute a land-only measure and share for a retained footprint.
 
         Args:
-            geometry: County-clipped zone geometry, including any water.
+            geometry: County-clipped zone geometry assumed to be land-only.
             product: Zone product label for diagnostic errors.
 
         Returns:
             Attributes and geometry for the output zone.
 
         Raises:
-            ValueError: A footprint's total or land area is inconsistent.
+            ValueError: A footprint's area is inconsistent or exceeds ALAND.
         """
         area = float(geometry.area)
-        land_area = float(shapely.intersection(geometry, county_land).area)
-        upper_bound = min(county_land_area, area)
-        land_tol = max(_ABS_AREA_TOL_M2, upper_bound * _REL_AREA_TOL)
         if not isfinite(area) or not 0 < area <= county_area + county_tol:
             raise ValueError(f"County {geoid} has inconsistent {product} footprint area: {area}")
-        if not isfinite(land_area) or not 0 <= land_area <= upper_bound + land_tol:
-            raise ValueError(f"County {geoid} has inconsistent {product} land area: {land_area}")
-        # Clamp only floating-point excess already checked against tolerance.
-        land_area = min(land_area, upper_bound)
+        if area > county_land_area_m2 + land_tol:
+            raise ValueError(
+                f"County {geoid} {product} footprint area {area:.6f} m² "
+                f"exceeds ALAND {county_land_area_m2:.6f} m² "
+                f"(tolerance {land_tol:.6f} m²)"
+            )
+        # Retain measured geometry area; bound the share only for rounding.
         return {
             "GEOID": geoid,
             "geometry": geometry,
-            "area_ha_land": land_area / _M2_PER_HA,
-            "county_land_share": land_area / county_land_area,
+            "area_ha_land": area / _M2_PER_HA,
+            "county_land_share": min(1.0, area / county_land_area_m2),
         }
 
     for footprint, managers in pieces.items():
@@ -162,7 +162,6 @@ def build_county_zones(
         zone_area_ha = 0.0
         share = 0.0
         overlap_m2 = 0.0
-        land_overlap_ha = 0.0
         if manager_geometries:
             geometry = repair_polygonal_geometry(shapely.union_all(manager_geometries))
             if geometry is None:
@@ -172,23 +171,16 @@ def build_county_zones(
             zone_area_ha = row["area_ha_land"]
             share = row["county_land_share"]
             overlap_m2 = fsum(float(geom.area) for geom in manager_geometries) - float(geometry.area)
-            land_overlap_ha = (
-                fsum(item["area_ha_land"] for item in results[manager_product]) - zone_area_ha
-            )
             overlap_tol = max(_ABS_AREA_TOL_M2, geometry.area * _REL_AREA_TOL)
-            land_overlap_tol = max(_ABS_AREA_TOL_M2 / _M2_PER_HA, zone_area_ha * _REL_AREA_TOL)
-            if overlap_m2 < -overlap_tol or land_overlap_ha < -land_overlap_tol:
+            if overlap_m2 < -overlap_tol:
                 raise ValueError(f"County {geoid} {footprint} manager areas do not cover the union")
             if abs(overlap_m2) <= overlap_tol:
                 overlap_m2 = 0.0
-            if abs(land_overlap_ha) <= land_overlap_tol:
-                land_overlap_ha = 0.0
 
         label = footprint.removesuffix("_lands")
         county_row[f"area_ha_{footprint}"] = zone_area_ha
         county_row[f"pct_{footprint}"] = 100.0 * share
         county_row[f"area_ha_{label}_manager_overlap"] = overlap_m2 / _M2_PER_HA
-        county_row[f"area_ha_{label}_manager_land_overlap"] = land_overlap_ha
 
     bbb_geometry = _clip_union(bbb_candidates, county_geom)
     if bbb_geometry is not None:

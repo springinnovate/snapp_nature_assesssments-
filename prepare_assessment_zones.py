@@ -33,9 +33,7 @@ COUNTY_AREA_FIELDS = (
     "area_ha_bbb_lands",
     "pct_bbb_lands",
     "area_ha_public_manager_overlap",
-    "area_ha_public_manager_land_overlap",
     "area_ha_conservation_manager_overlap",
-    "area_ha_conservation_manager_land_overlap",
 )
 
 
@@ -117,8 +115,6 @@ def prepare_zones(args: argparse.Namespace) -> Path:
         raise ValueError("Run ID must be 1–64 letters, digits, underscores or hyphens")
     if args.workers < 1:
         raise ValueError("--workers must be positive")
-    if not np.isfinite(args.max_land_area_error_pct) or not 0 <= args.max_land_area_error_pct < 100:
-        raise ValueError("--max-land-area-error-pct must be finite and in [0, 100)")
     output = args.output_root.resolve() / args.run_id / "zonal_units"
     if output.exists():
         raise FileExistsError(f"Zone output already exists: {output}")
@@ -131,7 +127,6 @@ def prepare_zones(args: argparse.Namespace) -> Path:
     sources = {
         "counties": (args.counties, args.counties_layer, {"GEOID", "ALAND"}),
         "padus": (args.padus_path, args.padus_layer, {"Mang_Type", "GAP_Sts", *rule_fields}),
-        "land_mask": (args.land_mask, args.land_mask_layer, set()),
         "bbb_by_county": (args.bbb_by_county, args.bbb_layer, {"GEOID"}),
     }
     frames = {}
@@ -183,9 +178,7 @@ def prepare_zones(args: argparse.Namespace) -> Path:
         frames[label] = project_polygons(frames[label], label)
     counties = frames["counties"]
     padus_shapes = frames["padus"].geometry.to_numpy()
-    land_shapes = frames["land_mask"].geometry.to_numpy()
     padus_index = frames["padus"].sindex
-    land_index = frames["land_mask"].sindex
     bbb_shapes = dict(zip(frames["bbb_by_county"]["GEOID"], frames["bbb_by_county"].geometry))
     county_shapes = counties.geometry.to_numpy()
     county_ids = counties["GEOID"].to_numpy()
@@ -200,7 +193,7 @@ def prepare_zones(args: argparse.Namespace) -> Path:
             for i in padus_index.query(county)
         )
         return build_county_zones(
-            geoid, county, candidates, land_shapes[land_index.query(county)],
+            geoid, county, aland[index], candidates,
             [bbb_shapes[geoid]] if geoid in bbb_shapes else [],
         )
 
@@ -212,31 +205,14 @@ def prepare_zones(args: argparse.Namespace) -> Path:
             total=len(counties), desc="Build and check county zones", unit="county",
         )):
             county = zones["counties"][0]
-            census_land_ha = aland[index] / 10_000
-            measured_land_ha = county["area_ha_county_land"]
-            error_ha = measured_land_ha - census_land_ha
-            error_pct = 100 * error_ha / census_land_ha
-            tolerance_ha = max(1.0, census_land_ha * args.max_land_area_error_pct / 100)
             area_qa.append({
                 "GEOID": county["GEOID"],
+                "area_ha_county_polygon": county_shapes[index].area / 10_000,
                 **{field: county[field] for field in COUNTY_AREA_FIELDS},
-                "area_ha_county_land_aland": census_land_ha,
-                "land_area_error_ha": error_ha,
-                "land_area_error_pct": error_pct,
-                "land_area_check_passed": abs(error_ha) <= tolerance_ha,
             })
             zones["counties"][0] = county_attributes[index] | county
             for product, features in zones.items():
                 rows[product].extend(features)
-
-    mismatches = [row for row in area_qa if not row["land_area_check_passed"]]
-    if mismatches:
-        examples = sorted(mismatches, key=lambda row: abs(row["land_area_error_pct"]), reverse=True)[:5]
-        sample = ", ".join(f"{row['GEOID']} ({row['land_area_error_pct']:+.2f}%)" for row in examples)
-        raise ValueError(
-            f"Land mask disagrees with Census ALAND for {len(mismatches)} counties: {sample}. "
-            "Use a land-only mask aligned to these county boundaries."
-        )
 
     output.mkdir(parents=True)
     manifest = {
@@ -249,8 +225,11 @@ def prepare_zones(args: argparse.Namespace) -> Path:
             "text_sha256": hashlib.sha256(rules_text.encode("utf-8")).hexdigest(),
         },
         "conservation_gap_codes": CONSERVATION_GAP_CODES,
-        "land_area_check": {"reference": "ALAND", "max_error_pct": args.max_land_area_error_pct,
-                            "absolute_tolerance_ha": 1.0},
+        "land_area_method": {
+            "denominator": "Census ALAND (square metres)",
+            "numerator": "Unioned footprint area clipped to county in EPSG:6933",
+            "footprints_assumed_land_only": True,
+        },
         "county_area_qa": str(output / "county_area_qa.csv"),
         "outputs": {},
     }
@@ -292,15 +271,12 @@ def main(argv: list[str] | None = None) -> None:
         ROOT / "data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg"
     ))
     parser.add_argument("--counties-layer")
-    parser.add_argument("--land-mask", type=Path, required=True, help="Polygons representing land only, excluding water")
-    parser.add_argument("--land-mask-layer")
     parser.add_argument("--bbb-by-county", type=Path, required=True, help="Existing BBB polygon zones with unique GEOIDs")
     parser.add_argument("--bbb-layer")
     parser.add_argument("--rules", type=Path, default=ROOT / "config/padus_land_rules.rules")
     parser.add_argument("--output-root", type=Path, default=ROOT / "data/processing_outputs/assessment_runs")
     parser.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
     parser.add_argument("--workers", type=int, default=4, help="Concurrent county geometry workers (default: 4)")
-    parser.add_argument("--max-land-area-error-pct", type=float, default=2.0)
     prepare_zones(parser.parse_args(argv))
 
 
