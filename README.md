@@ -32,12 +32,17 @@ repository for its current installation instructions and supported execution
 environment:
 <https://github.com/springinnovate/zonal_stats_toolkit>
 
-## Run the six-zone assessment
+## Run the six-zone CONUS assessment
 
 From the repository root, use the geospatial Python environment and point
 the command at the zonal toolkit and the **BBB county geometry** GeoPackage.
 This command prepares the zones, computes fresh raster zonals for all six
 products, and integrates the tabular and spatial valuations.
+
+The study area is the contiguous 48 states and Washington, DC, including
+waters within the selected county boundaries. Alaska, Hawaiʻi, Puerto Rico,
+the U.S. Virgin Islands, and other territories are excluded from all six
+outputs. PAD-US is subset in its native CRS before projection.
 
 ```cmd
 python run_six_zone_assessment.py --runner "D:\repositories\zonal_stats_toolkit\runner.py" --bbb-by-county "data\analysis_inputs\zonal_units\bbb_candidate_blm_lands_by_county\bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county_2026_08_09_18_45_22.gpkg"
@@ -72,9 +77,11 @@ Footprint land shares use unioned, county-clipped area divided by Census
 other than recreation are allocated by that share. Fisheries use eligible
 shoreline length or freshwater area and fixed state denominators; Great Lakes
 shorelines are excluded from marine weights and the five lakes are excluded
-from inland weights. Coral points keep their county assignment and contribute
-to a footprint only if it covers the point. Mangrove source-unit totals
-use the full county-intersected area as the fixed denominator. Do not sum
+from inland weights. Only CONUS state totals enter the allocation. Coral points
+are assigned against the original unfiltered county reference; only CONUS
+assignments are kept, and a point contributes to a footprint only if it covers
+the point. Mangrove source-unit totals use the full CONUS county-intersected
+area as the fixed denominator. Do not sum
 overlapping products or overlapping manager categories.
 
 Raw raster sums and other source values are adjusted once using
@@ -361,11 +368,15 @@ feature domains:
 Saltwater, estuarine, canal, ditch, playa, and ice-mass classes are not included
 unless the rule is changed explicitly in the script.
 
-#### Prepare the six assessment zones and check county land areas
+#### Prepare the six CONUS assessment zones and check county land areas
 
 Supply the PAD-US VectorAnalysis polygons and an existing BBB county-cut
 GeoPackage. Treat both footprint inputs as land-only. Use Census `ALAND`
 for the county land area; no separate land mask is required.
+County and BBB inputs are filtered by their `GEOID` state prefix. The PAD-US
+input is subset to the selected county extent in its native CRS before
+projection, then clipped by county. Use the original county release or a
+CONUS county layer with the same identifiers.
 
 ```powershell
 python prepare_assessment_zones.py `

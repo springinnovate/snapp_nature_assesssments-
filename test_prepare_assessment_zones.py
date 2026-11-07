@@ -5,9 +5,10 @@ import json
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import box
+from shapely.geometry import MultiPolygon, box
 from shapely.ops import unary_union
 
+import prepare_assessment_zones as zone_preparation
 from prepare_assessment_zones import main
 
 
@@ -236,5 +237,74 @@ def test_union_materially_larger_than_aland_does_not_publish(zone_inputs):
         county_boxes,
     )
     with pytest.raises(ValueError, match="01001.*ALAND"):
+        main(args)
+    assert not zones.exists()
+
+
+def test_conus_scope_filters_before_projection_and_keeps_unlabeled_padus(zone_inputs, monkeypatch):
+    """Keep mainland and DC rows without projecting distant multipart pieces."""
+    args, zones, counties, padus, county_boxes = zone_inputs
+    bbb = counties.with_name("bbb.gpkg")
+    included_ids = ["01001", "11001"]
+    excluded_ids = ["02020", "15001", "72001", "78010"]
+    remote_counties = [box(x, 0, x + 1000, 1000) for x in range(1_000_000, 5_000_000, 1_000_000)]
+    for path in (counties, padus, bbb):
+        path.unlink()
+    write_layer(
+        counties, {"GEOID": included_ids + excluded_ids, "ALAND": [800000, 800000, *([None] * 4)]},
+        [*county_boxes[:2], *remote_counties],
+    )
+    mainland, district = box(0, 0, 500, 400), box(1000, 0, 1500, 400)
+    write_layer(
+        padus,
+        {"Mang_Type": ["FED"] * 3, "Des_Tp": ["NM"] * 3, "GAP_Sts": [2, 1, 2],
+         "State_Nm": [None, "UNKF", "HI"]},
+        [MultiPolygon([mainland, remote_counties[0]]), MultiPolygon([district]), MultiPolygon([remote_counties[1]])],
+    )
+    # The off-scope HI and VI BBB GEOIDs are intentionally absent from counties.
+    write_layer(
+        bbb, {"GEOID": [*included_ids, "02020", "15009", "72001", "78030"]},
+        [mainland, district, *remote_counties],
+    )
+    projected_inputs = {}
+    original_project = zone_preparation.project_polygons
+
+    def record_projection(frame, label):
+        """Capture each input at the boundary where analysis projection begins."""
+        projected_inputs[label] = frame.copy()
+        return original_project(frame, label)
+
+    monkeypatch.setattr(zone_preparation, "project_polygons", record_projection)
+    main(args)
+
+    padus_before_projection = projected_inputs["padus"]
+    assert len(padus_before_projection) == 2
+    assert tuple(padus_before_projection.total_bounds) == pytest.approx((0, 0, 1500, 400))
+    assert sorted(padus_before_projection.geometry.area) == pytest.approx([200_000, 200_000])
+    for label in ("counties", "bbb_by_county"):
+        assert set(projected_inputs[label]["GEOID"]) == set(included_ids)
+
+    manifest = json.loads((zones / "zone_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["geographic_scope"] == "CONUS"
+    for label in ("counties", "bbb_by_county"):
+        assert manifest["inputs"][label]["rows_before_scope"] == 6
+        assert manifest["inputs"][label]["rows"] == 2
+    for product in manifest["outputs"]:
+        frame = read_product(zones, product).set_index("GEOID")
+        assert set(frame.index) == set(included_ids)
+        if product != "counties":
+            assert_footprint(frame.loc["01001", "geometry"], mainland)
+            assert_footprint(frame.loc["11001", "geometry"], district)
+    with (zones / "county_area_qa.csv").open(encoding="utf-8-sig", newline="") as qa_file:
+        assert {row["GEOID"] for row in csv.DictReader(qa_file)} == set(included_ids)
+
+
+def test_unknown_conus_bbb_geoid_still_fails(zone_inputs):
+    """Reject an unmatched BBB identifier when its state is in scope."""
+    args, zones, counties, _, _ = zone_inputs
+    bbb = counties.with_name("bbb.gpkg")
+    bbb.unlink()
+    write_layer(bbb, {"GEOID": ["01099"]}, [box(0, 0, 500, 400)])
+    with pytest.raises(ValueError, match="BBB includes CONUS GEOIDs not found in counties: 01099"):
         main(args)
     assert not zones.exists()
