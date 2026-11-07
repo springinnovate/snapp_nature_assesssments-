@@ -55,7 +55,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
     monkeypatch.setattr(valuation, "compute_task", county_task)
     monkeypatch.setattr(valuation, "value_fisheries", lambda zones, *_: vector_values(
         {"marine_fisheries": 4, "inland_fisheries": 8}, zones))
-    monkeypatch.setattr(valuation, "value_coastal", lambda zones, *_: vector_values(
+    monkeypatch.setattr(valuation, "value_coastal", lambda zones, *_, **__: vector_values(
         {"corals": 5, "mangroves": np.nan}, zones))
     monkeypatch.setattr(valuation, "calculate_county_metrics", county_metrics)
 
@@ -79,7 +79,8 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
         raster_sums[product] = sums.iloc[::-1].reset_index(drop=True)
 
     outputs, audits, qa = valuation.value_zones(
-        zones, raster_sums, tmp_path, config, workers=2, geometry_workers=1,
+        zones, raster_sums, tmp_path, config, coral_reference_counties=zones["counties"],
+        workers=2, geometry_workers=1,
     )
     assert set(outputs) == set(ZONE_PRODUCTS)
     county = outputs["counties"].iloc[0]

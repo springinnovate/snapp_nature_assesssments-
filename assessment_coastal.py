@@ -1,4 +1,4 @@
-"""Restrict county-based coral and mangrove allocations to assessment zones."""
+"""Restrict county-based coral and mangrove allocations to CONUS zones."""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -10,13 +10,13 @@ import pyogrio
 import shapely
 from tqdm import tqdm
 
+from assessment_geography import CONUS_STATE_FIPS
 from assessment_zone_geometry import ZONE_PRODUCTS
 from coral_county_allocation import allocate_coral_values
 from mangrove_county_allocation import _project_polygons, allocate_mangrove_values
 
 
 AREA_CRS = "EPSG:6933"
-MANGROVE_COUNTRIES = ("USA", "PRI", "VIR")
 
 
 def _footprint_corals(
@@ -83,15 +83,18 @@ def value_coastal(
     zones: Mapping[str, gpd.GeoDataFrame],
     paths: Mapping[str, Path],
     geometry_workers: int,
+    *,
+    coral_reference_counties: gpd.GeoDataFrame,
 ) -> dict[str, pd.DataFrame]:
-    """Calculate unadjusted coral and mangrove values for the six zone products.
+    """Calculate unadjusted coastal values for the six CONUS zone products.
 
-    The whole-county allocators define the reference geography. Coral points
-    keep their nearest-county assignments; a footprint in that county receives
-    only points it intersects, including boundary points. For mangroves, each
-    footprint receives its intersection share of the same whole-county area
-    denominator, with offshore area outside counties excluded. Products and
-    manager rows can overlap and their values are not additive.
+    Assign coral points to the original, unfiltered counties, then retain
+    assignments to assessment counties. This keeps offshore CONUS points
+    without redistributing points assigned to out-of-scope counties. A
+    footprint receives only assigned points it intersects. For mangroves,
+    use USA study units and a denominator fixed to their CONUS county
+    intersections. Products and manager rows can overlap and their values
+    are not additive.
 
     Args:
         zones: The six prepared products. County GEOIDs are unique in the
@@ -99,6 +102,8 @@ def value_coastal(
             and may repeat GEOID for different managers.
         paths: Configured source files keyed by corals and mangroves.
         geometry_workers: Worker count for the whole-county mangrove allocation.
+        coral_reference_counties: Original, unfiltered county polygons with
+            unique GEOIDs, including counties outside the assessment scope.
 
     Returns:
         One DataFrame per product, in that product's input index order, with
@@ -111,23 +116,37 @@ def value_coastal(
     if set(zones) != set(ZONE_PRODUCTS):
         raise ValueError("Coastal valuation requires all six prepared zone products")
     counties = zones["counties"]
+    county_ids = counties.GEOID.astype("string")
+    if (not county_ids.str.fullmatch("[0-9]{5}").fillna(False).all()
+            or county_ids.duplicated().any()
+            or not county_ids.str[:2].isin(CONUS_STATE_FIPS).all()):
+        raise ValueError("Coastal valuation requires unique CONUS county GEOIDs")
+    if ("GEOID" not in coral_reference_counties
+            or not county_ids.isin(coral_reference_counties.GEOID.astype("string")).all()):
+        raise ValueError("The coral reference must contain every assessment county GEOID")
     with tqdm(total=2, desc="Read coastal valuation inputs", unit="layer") as progress:
         points = pyogrio.read_dataframe(
             paths["corals"], layer="aeb_coral", columns=["OBJECTID", "BC_USD11"]
         )
         progress.update(1)
+        mangrove_layer = "UCSC_CWON_studyunits"
+        mangrove_crs = pyogrio.read_info(paths["mangroves"], layer=mangrove_layer)["crs"]
+        if mangrove_crs is None:
+            raise ValueError("Mangrove study units must declare a CRS")
+        bounds = tuple(counties.geometry.to_crs(mangrove_crs).total_bounds)
+        # The bounding box retains offshore parts of candidate study units.
+        # The county allocator checks their actual intersection support.
         study_units = pyogrio.read_dataframe(
-            paths["mangroves"], layer="UCSC_CWON_studyunits",
+            paths["mangroves"], layer=mangrove_layer, bbox=bounds, where="ISO3 = 'USA'",
             columns=["ISO3", "Ben_Stock_2020"], fid_as_index=True,
         ).rename_axis("source_id").reset_index()
         progress.update(1)
-    study_units = study_units.loc[study_units.ISO3.isin(MANGROVE_COUNTRIES)]
 
-    coral_counties, _, coral_audit = allocate_coral_values(counties, points)
+    coral_counties, _, coral_audit = allocate_coral_values(coral_reference_counties, points)
+    coral_audit = coral_audit.loc[coral_audit.GEOID.isin(county_ids)]
     mangrove_counties, _, mangrove_audit = allocate_mangrove_values(
         counties, study_units, workers=geometry_workers
     )
-    county_ids = counties.GEOID.astype("string")
     values = {
         "counties": pd.DataFrame({
             "corals": coral_counties.reindex(county_ids).to_numpy(),
@@ -138,7 +157,7 @@ def value_coastal(
     point_positions = pd.Index(points.OBJECTID.astype("string").str.strip()).get_indexer(
         coral_audit.source_key
     )
-    point_shapes = points.geometry.to_crs(AREA_CRS).to_numpy()[point_positions]
+    point_shapes = points.geometry.iloc[point_positions].to_crs(AREA_CRS).to_numpy()
     support = mangrove_audit.set_index("source_key").reindex(study_units.source_id.astype(str))
     supported = support.intersected_area_m2.gt(0).to_numpy()
     # Use the county allocator's projection/repair for the numerators too.

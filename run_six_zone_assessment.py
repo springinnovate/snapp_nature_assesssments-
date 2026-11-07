@@ -1,4 +1,4 @@
-"""Prepare, value, and publish the six SNAPP assessment zone products."""
+"""Prepare, value, and publish the six CONUS SNAPP assessment zone products."""
 
 from __future__ import annotations
 
@@ -94,6 +94,9 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         "padus": (args.padus_path, args.padus_layer, {"Mang_Type", "Des_Tp", "GAP_Sts"}),
         "counties": (args.counties, args.counties_layer, {"GEOID", "ALAND"}),
         "bbb_by_county": (args.bbb_by_county, args.bbb_layer, {"GEOID"}),
+        # Keep the original national reference even if --counties is already
+        # a CONUS subset; overseas coral points must not move to the mainland.
+        "coral_reference_counties": (COUNTY_PATH, None, {"GEOID"}),
     }
     input_paths = {}
     for key, (path, layer, fields) in vector_inputs.items():
@@ -110,7 +113,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             raise ValueError(f"{path} / {layer} must have a CRS and the fields {sorted(fields)}")
         input_paths[key] = (str(path), str(layer))
     if args.validate_only:
-        print("Six-zone assessment inputs validated; no run files written.", flush=True)
+        print("Six-zone CONUS assessment inputs validated; no run files written.", flush=True)
         return None
 
     results = data / "analysis_results/assessment_runs" / args.run_id
@@ -126,6 +129,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     manifest_path = results / "run_manifest.json"
     manifest = {
         "run_id": args.run_id, "status": "running",
+        "geographic_scope": "CONUS",
         "started_utc": datetime.now(timezone.utc).isoformat(),
         "zone_inputs": input_paths,
         "valuation_inputs": {name: str(path) for name, path in paths.items()
@@ -162,8 +166,9 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             "--run-id", args.run_id, "--output-root", str(work.parent), "--workers", str(args.workers),
         ], cwd=root, env=env, check=True)
         zone_manifest = json.loads((zone_root / "zone_manifest.json").read_text(encoding="utf-8"))
-        if zone_manifest["run_id"] != args.run_id or set(zone_manifest["outputs"]) != set(ZONE_PRODUCTS):
-            raise ValueError("Zone manifest does not identify this run's six products")
+        if (zone_manifest["run_id"] != args.run_id or zone_manifest.get("geographic_scope") != "CONUS"
+                or set(zone_manifest["outputs"]) != set(ZONE_PRODUCTS)):
+            raise ValueError("Zone manifest does not identify this run's six CONUS products")
         zones = {}
         for product in ZONE_PRODUCTS:
             path = zone_root / product / f"{product}_{args.run_id}.gpkg"
@@ -204,8 +209,11 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             product: pyogrio.read_dataframe(path, layer=layer)
             for product, (path, layer) in tqdm(zones.items(), desc="Read prepared zones", unit="product")
         }
+        coral_path, coral_layer = input_paths["coral_reference_counties"]
+        coral_reference = pyogrio.read_dataframe(coral_path, layer=coral_layer, columns=["GEOID"])
         valued, county_audits, coverage = value_zones(
             zone_frames, raster_sums, data, config_dir,
+            coral_reference_counties=coral_reference,
             workers=args.workers, geometry_workers=args.geometry_workers,
         )
         if any(sha256(path) != digest for path, digest in hashes.items()):

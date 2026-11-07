@@ -19,6 +19,7 @@ import yaml
 
 from assessment_coastal import value_coastal
 from assessment_fisheries import value_fisheries
+from assessment_geography import CONUS_STATE_FIPS
 from assessment_zone_geometry import ZONE_PRODUCTS
 from build_county_ecosystem_service_valuations_2026 import (
     BASE_FIELDS,
@@ -82,6 +83,7 @@ def value_zones(
     data_root: Path,
     config_dir: Path,
     *,
+    coral_reference_counties: gpd.GeoDataFrame,
     workers: int,
     geometry_workers: int,
 ) -> tuple[dict[str, gpd.GeoDataFrame], dict[str, pd.DataFrame], dict]:
@@ -92,6 +94,8 @@ def value_zones(
         raster_sums: Raw toolkit sums and key columns for each product.
         data_root: Root containing the local input data.
         config_dir: Tracked sources, factors, and output rules.
+        coral_reference_counties: Original county reference used to assign
+            coral points before retaining only CONUS values.
         workers: Concurrent county table tasks.
         geometry_workers: Concurrent spatial measurement workers.
 
@@ -105,6 +109,8 @@ def value_zones(
         raise ValueError("Valuation requires the same six geometry and raster products")
     paths, factors, rules, derived = load_valuation_config(data_root, config_dir)
     counties = zones["counties"]
+    if not counties.GEOID.astype("string").str[:2].isin(CONUS_STATE_FIPS).all():
+        raise ValueError("The six-zone assessment requires CONUS counties")
     county_base = pd.DataFrame(counties.drop(columns=counties.geometry.name)).set_index("GEOID")
     crosswalk = pd.read_csv(config_dir / "ct_county_crosswalk.csv",
                             dtype={"source_geoid": str, "target_geoid": str})
@@ -128,7 +134,9 @@ def value_zones(
                 air_summary = result["summary_fields"]
     tabular = pd.DataFrame(originals, index=county_base.index)
     fisheries = value_fisheries(zones, paths, geometry_workers)
-    coastal = value_coastal(zones, paths, geometry_workers)
+    coastal = value_coastal(
+        zones, paths, geometry_workers, coral_reference_counties=coral_reference_counties,
+    )
     result_frames = {}
     county_audits = {}
     coverage = {}

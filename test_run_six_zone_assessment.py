@@ -39,6 +39,14 @@ class SixZoneAssessmentTests(unittest.TestCase):
         )
         counties, padus = self.root / "counties.gpkg", self.root / "padus.gpkg"
         pyogrio.write_dataframe(self.county, counties, layer="counties_input")
+        reference = self.root / wrapper.COUNTY_PATH
+        reference.parent.mkdir(parents=True)
+        reference_frame = gpd.GeoDataFrame(
+            {"GEOID": ["01001", "15001"]},
+            geometry=[MultiPolygon([box(0, 0, 10, 10)]), MultiPolygon([box(100, 100, 110, 110)])],
+            crs=self.county.crs,
+        )
+        pyogrio.write_dataframe(reference_frame, reference, layer="coral_reference")
         pyogrio.write_dataframe(self.county[["GEOID", "geometry"]], self.bbb, layer="bbb_input")
         pyogrio.write_dataframe(
             self.county.assign(Mang_Type="FED", Des_Tp="NP", GAP_Sts="1"),
@@ -83,6 +91,7 @@ class SixZoneAssessmentTests(unittest.TestCase):
             (self.zone_root / "zone_manifest.json").write_text(
                 json.dumps({
                     "run_id": self.run_id,
+                    "geographic_scope": "CONUS",
                     "outputs": outputs,
                     "counties_with_manager_overlap": {
                         "area_ha_public_manager_overlap": 0,
@@ -114,9 +123,11 @@ class SixZoneAssessmentTests(unittest.TestCase):
         frozen.write_text("fixture\n", encoding="utf-8")
         return SimpleNamespace(jobs=("mock-job",), skipped_products=(), frozen_config=frozen)
 
-    def fake_valuation(self, zones, *_args, **_kwargs):
+    def fake_valuation(self, zones, *_args, coral_reference_counties, **_kwargs):
         """Return values with the expected county-only recreation schema."""
         self.assertEqual(set(zones), set(wrapper.ZONE_PRODUCTS))
+        self.assertEqual(coral_reference_counties.GEOID.tolist(), ["01001", "15001"])
+        self.assertEqual(zones["counties"].GEOID.tolist(), ["01001"])
         valued = {product: frame.assign(es_total=10.0) for product, frame in zones.items()}
         valued["counties"]["recreation_adj"] = 5.0
         return valued, {}, {}
@@ -144,6 +155,7 @@ class SixZoneAssessmentTests(unittest.TestCase):
         self.assertEqual(self.run_wrapper(), self.results)
         manifest = json.loads((self.results / "run_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(manifest["geographic_scope"], "CONUS")
         self.assertEqual(manifest["zone_inputs"]["bbb_by_county"], [str(self.bbb), "bbb_input"])
         self.assertEqual(self.calls, ["prepare_assessment_zones.py", "runner.py"])
         self.assertEqual(list(manifest["stages"].items()), [

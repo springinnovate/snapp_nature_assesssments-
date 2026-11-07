@@ -1,4 +1,4 @@
-"""Prepare six assessment zone GeoPackages and validate county land areas."""
+"""Prepare six CONUS assessment zone GeoPackages and validate county land areas."""
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pyogrio
+import shapely
 from tqdm import tqdm
 
+from assessment_geography import CONUS_STATE_FIPS, county_bounds_in_crs
 from assessment_zone_geometry import ZONE_PRODUCTS, build_county_zones
 from geometry_utils import repair_polygonal_geometry
 from padus_land_rules import load_rule_config
@@ -38,7 +40,8 @@ COUNTY_AREA_FIELDS = (
 
 
 def read_polygons(
-    path: Path, layer: str | None, required: set[str], *, attributes: bool = False
+    path: Path, layer: str | None, required: set[str], *, attributes: bool = False,
+    county_extent: gpd.GeoDataFrame | None = None,
 ) -> tuple[gpd.GeoDataFrame, str]:
     """Read one unambiguous polygon layer and check its required fields.
 
@@ -47,6 +50,8 @@ def read_polygons(
         layer: Explicit layer, or None for a single spatial layer.
         required: Required attribute names.
         attributes: Whether to retain all source attributes.
+        county_extent: If provided, subset and clip to its native-CRS envelope
+            before projecting, allowing an empty result.
 
     Returns:
         The source frame and resolved layer name.
@@ -67,11 +72,34 @@ def read_polygons(
     missing = required.difference(info["fields"])
     if missing:
         raise ValueError(f"{path} / {layer} is missing fields: {', '.join(sorted(missing))}")
-    frame = pyogrio.read_dataframe(path, layer=layer, columns=None if attributes else sorted(required))
-    if frame.empty or frame.crs is None:
+    bbox = None if county_extent is None else county_bounds_in_crs(county_extent, info["crs"])
+    frame = pyogrio.read_dataframe(path, layer=layer, columns=None if attributes else sorted(required), bbox=bbox)
+    if (frame.empty and bbox is None) or frame.crs is None:
         raise ValueError(f"{path} / {layer} must contain polygons with a defined CRS")
     if not frame.geom_type.isin(polygon_types).all() or frame.geometry.is_empty.any():
         raise ValueError(f"{path} / {layer} contains null, empty, or nonpolygonal geometry")
+    if bbox is not None and not frame.empty:
+        # A national or multipart record can touch CONUS and also have distant
+        # parts. Remove the overhangs in native coordinates, before an overseas
+        # part can wrap across the map in the analysis projection.
+        bounds = shapely.bounds(frame.geometry)
+        overhang = ((bounds[:, :2] < bbox[:2]) | (bounds[:, 2:] > bbox[2:])).any(axis=1)
+        if overhang.any():
+            shapes = frame.geometry.loc[overhang].to_numpy(copy=True)
+            invalid = ~shapely.is_valid(shapes)
+            shapes[invalid] = shapely.make_valid(shapes[invalid])
+            clipped = shapely.intersection(shapes, shapely.box(*bbox))
+            area = shapely.area(clipped)
+            if not np.isfinite(area).all():
+                raise ValueError(f"{path} / {layer} produced nonfinite clipped polygon areas")
+            clipped_rows = frame.index[overhang]
+            frame = frame.drop(index=clipped_rows[area <= 0]).copy()
+            repaired = [repair_polygonal_geometry(geometry) for geometry in clipped[area > 0]]
+            if any(geometry is None for geometry in repaired):
+                raise ValueError(f"{path} / {layer} contains unrecoverable clipped polygons")
+            frame.loc[clipped_rows[area > 0], frame.geometry.name] = gpd.GeoSeries(
+                repaired, index=clipped_rows[area > 0], crs=frame.crs,
+            )
     return frame, layer
 
 
@@ -132,23 +160,32 @@ def prepare_zones(args: argparse.Namespace) -> Path:
     frames = {}
     provenance = {}
     for label, (path, layer, required) in tqdm(sources.items(), desc="Read zone inputs", unit="layer"):
-        frame, resolved_layer = read_polygons(path, layer, required, attributes=label == "counties")
+        frame, resolved_layer = read_polygons(
+            path, layer, required, attributes=label == "counties",
+            county_extent=frames["counties"] if label == "padus" else None,
+        )
+        read_rows = len(frame)
+        if label != "padus":
+            ids = frame["GEOID"].astype("string")
+            if not ids.str.fullmatch(r"[0-9]{5}").fillna(False).all() or ids.duplicated().any():
+                raise ValueError(f"{label} must have unique five-digit GEOID strings")
+            in_scope = ids.str[:2].isin(CONUS_STATE_FIPS)
+            if label == "bbb_by_county":
+                unknown = set(ids.loc[in_scope]).difference(frames["counties"]["GEOID"])
+                if unknown:
+                    raise ValueError(f"BBB includes CONUS GEOIDs not found in counties: {', '.join(sorted(unknown)[:10])}")
+            frame = frame.assign(GEOID=ids).loc[in_scope].copy()
+            if label == "counties" and frame.empty:
+                raise ValueError("No CONUS counties in the supplied county layer")
         provenance[label] = {"path": str(path.resolve()), "layer": resolved_layer, "rows": len(frame)}
+        if label != "padus":
+            provenance[label]["rows_before_scope"] = read_rows
         frames[label] = frame
-
-    for label in ("counties", "bbb_by_county"):
-        ids = frames[label]["GEOID"].astype("string")
-        if not ids.str.fullmatch(r"[0-9]{5}").fillna(False).all() or ids.duplicated().any():
-            raise ValueError(f"{label} must have unique five-digit GEOID strings")
-        frames[label]["GEOID"] = ids
 
     county_input = frames["counties"]
     aland = pd.to_numeric(county_input["ALAND"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
     if not np.isfinite(aland).all() or (aland <= 0).any():
         raise ValueError("Counties must have finite positive Census ALAND values in square metres")
-    unknown_bbb = set(frames["bbb_by_county"]["GEOID"]).difference(county_input["GEOID"])
-    if unknown_bbb:
-        raise ValueError(f"BBB includes GEOIDs not found in counties: {', '.join(sorted(unknown_bbb)[:10])}")
     if set(COUNTY_AREA_FIELDS).intersection(county_input.columns):
         raise ValueError("Use the original county boundary layer, not previously prepared assessment zones")
 
@@ -217,6 +254,7 @@ def prepare_zones(args: argparse.Namespace) -> Path:
     output.mkdir(parents=True)
     manifest = {
         "run_id": args.run_id,
+        "geographic_scope": "CONUS",
         "area_crs": AREA_CRS,
         "inputs": provenance,
         "public_rule": {
