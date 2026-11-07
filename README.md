@@ -32,7 +32,60 @@ repository for its current installation instructions and supported execution
 environment:
 <https://github.com/springinnovate/zonal_stats_toolkit>
 
-## Run the assessment
+## Run the six-zone assessment
+
+From the repository root, use the geospatial Python environment and point
+the command at the zonal toolkit and the **BBB county geometry** GeoPackage.
+This command prepares the zones, computes fresh raster zonals for all six
+products, and integrates the tabular and spatial valuations.
+
+```cmd
+python run_six_zone_assessment.py --runner "D:\repositories\zonal_stats_toolkit\runner.py" --bbb-by-county "data\analysis_inputs\zonal_units\bbb_candidate_blm_lands_by_county\bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county_2026_08_09_18_45_22.gpkg"
+```
+
+Add `--validate-only` to check input paths, vector fields, and the TIFF
+inventory without writing run files. Use `--run-id` to name a new run,
+`--padus-path` and `--padus-layer` to select a different PAD-US source, and
+`--job-workers` and `--raster-workers` to control toolkit parallelism.
+Use `--workers` for zone preparation and county table joins and
+`--geometry-workers` for fisheries and coastal measurement. Child processes
+default to one OpenBLAS/OpenMP thread when those limits are not already set.
+
+Final CSVs and GeoPackages are written under
+`data/analysis_results/assessment_runs/<run-id>/`, one matched pair per
+product directory, with the product name and run ID as the filename:
+
+- `counties/counties_<run-id>.{csv,gpkg}`
+- `public_lands_by_county/public_lands_by_county_<run-id>.{csv,gpkg}`
+- `public_lands_by_county_and_manager_type/public_lands_by_county_and_manager_type_<run-id>.{csv,gpkg}`
+- `conservation_lands_by_county/conservation_lands_by_county_<run-id>.{csv,gpkg}`
+- `conservation_lands_by_county_and_manager_type/conservation_lands_by_county_and_manager_type_<run-id>.{csv,gpkg}`
+- `bbb_lands_by_county/bbb_lands_by_county_<run-id>.{csv,gpkg}`
+
+Check `run_manifest.json` for completion and the exact paths. Zone geometry,
+area QA, raw raster results, and toolkit work files stay under
+`data/processing_outputs/assessment_runs/<run-id>/`. Keep the frozen config
+under `data/workflow_assets/zonal_stats/runs/` with the run records.
+
+Footprint land shares use unioned, county-clipped area divided by Census
+`ALAND`, assuming the footprint inputs are land-only. County-level services
+other than recreation are allocated by that share. Fisheries use eligible
+shoreline length or freshwater area and fixed state denominators; Great Lakes
+shorelines are excluded from marine weights and the five lakes are excluded
+from inland weights. Coral points keep their county assignment and contribute
+to a footprint only if it covers the point. Mangrove source-unit totals
+use the full county-intersected area as the fixed denominator. Do not sum
+overlapping products or overlapping manager categories.
+
+Raw raster sums and other source values are adjusted once using
+[`adjustment_factors.csv`](data/workflow_assets/county_integration/adjustment_factors.csv).
+The exports keep adjusted values and factors, with
+`total_ecosystem_services` excluding recreation and flood NPV. Blank service
+values are preserved in individual fields and contribute zero to the total.
+Only counties include recreation, `total_ecosystem_services_w_rec` and the
+county ratios (whose numerator includes recreation).
+
+## Run the all/public footprint refresh
 
 Run from the repository root in a Python environment that supports both this
 repository's geospatial scripts and the zonal-statistics toolkit. The wrapper

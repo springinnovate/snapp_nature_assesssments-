@@ -17,14 +17,16 @@ column_groups:
   - adjustment_factors
 
 # Required exact source/generated names: a typo or missing field stops the run.
-exclude_fields:
+exclude_fields: []
+
+# Nonmonetary water-use sums may be present in separately supplied raw zonals.
+optional_exclude_fields:
   - sum_Wsw_irr
   - sum_Wsw_pow
   - sum_Wsw_pub
   - sum_Wsw_total
 
-# Older inputs may not contain this duplicate crop-yield statistic.
-optional_exclude_fields:
+  # Older inputs may contain this duplicate crop-yield statistic.
   - sum_national_attributed_annual_crop_yield_value_zstd
   # Old land-cover class-code sums are NOT monetary valuations.
   - sum_mangrove_CONUS
