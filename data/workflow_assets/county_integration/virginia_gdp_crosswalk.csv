@@ -1,0 +1,52 @@
+bea_geofips,county_geoid,bea_name,county_name,source_url
+51901,51003,"Albemarle + Charlottesville, VA*",Albemarle County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51901,51540,"Albemarle + Charlottesville, VA*",Charlottesville city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51903,51005,"Alleghany + Covington, VA*",Alleghany County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51903,51580,"Alleghany + Covington, VA*",Covington city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51907,51015,"Augusta, Staunton + Waynesboro, VA*",Augusta County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51907,51790,"Augusta, Staunton + Waynesboro, VA*",Staunton city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51907,51820,"Augusta, Staunton + Waynesboro, VA*",Waynesboro city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51911,51031,"Campbell + Lynchburg, VA*",Campbell County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51911,51680,"Campbell + Lynchburg, VA*",Lynchburg city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51913,51035,"Carroll + Galax, VA*",Carroll County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51913,51640,"Carroll + Galax, VA*",Galax city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51918,51053,"Dinwiddie, Colonial Heights + Petersburg, VA*",Dinwiddie County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51918,51570,"Dinwiddie, Colonial Heights + Petersburg, VA*",Colonial Heights city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51918,51730,"Dinwiddie, Colonial Heights + Petersburg, VA*",Petersburg city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51919,51059,"Fairfax, Fairfax City + Falls Church, VA*",Fairfax County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51919,51600,"Fairfax, Fairfax City + Falls Church, VA*",Fairfax city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51919,51610,"Fairfax, Fairfax City + Falls Church, VA*",Falls Church city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51921,51069,"Frederick + Winchester, VA*",Frederick County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51921,51840,"Frederick + Winchester, VA*",Winchester city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51923,51081,"Greensville + Emporia, VA*",Greensville County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51923,51595,"Greensville + Emporia, VA*",Emporia city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51929,51089,"Henry + Martinsville, VA*",Henry County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51929,51690,"Henry + Martinsville, VA*",Martinsville city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51931,51095,"James City + Williamsburg, VA*",James City County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51931,51830,"James City + Williamsburg, VA*",Williamsburg city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51933,51121,"Montgomery + Radford, VA*",Montgomery County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51933,51750,"Montgomery + Radford, VA*",Radford city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51939,51143,"Pittsylvania + Danville, VA*",Pittsylvania County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51939,51590,"Pittsylvania + Danville, VA*",Danville city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51941,51149,"Prince George + Hopewell, VA*",Prince George County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51941,51670,"Prince George + Hopewell, VA*",Hopewell city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51942,51153,"Prince William, Manassas + Manassas Park, VA*",Prince William County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51942,51683,"Prince William, Manassas + Manassas Park, VA*",Manassas city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51942,51685,"Prince William, Manassas + Manassas Park, VA*",Manassas Park city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51944,51161,"Roanoke + Salem, VA*",Roanoke County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51944,51775,"Roanoke + Salem, VA*",Salem city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51945,51163,"Rockbridge, Buena Vista + Lexington, VA*",Rockbridge County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51945,51530,"Rockbridge, Buena Vista + Lexington, VA*",Buena Vista city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51945,51678,"Rockbridge, Buena Vista + Lexington, VA*",Lexington city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51947,51165,"Rockingham + Harrisonburg, VA*",Rockingham County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51947,51660,"Rockingham + Harrisonburg, VA*",Harrisonburg city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51949,51175,"Southampton + Franklin, VA*",Southampton County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51949,51620,"Southampton + Franklin, VA*",Franklin city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51951,51177,"Spotsylvania + Fredericksburg, VA*",Spotsylvania County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51951,51630,"Spotsylvania + Fredericksburg, VA*",Fredericksburg city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51953,51191,"Washington + Bristol, VA*",Washington County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51953,51520,"Washington + Bristol, VA*",Bristol city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51955,51195,"Wise + Norton, VA*",Wise County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51955,51720,"Wise + Norton, VA*",Norton city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51958,51199,"York + Poquoson, VA*",York County,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf
+51958,51735,"York + Poquoson, VA*",Poquoson city,https://www.bea.gov/system/files/methodologies/BEA-County-Personal-Income-Concepts-and-Methods.pdf

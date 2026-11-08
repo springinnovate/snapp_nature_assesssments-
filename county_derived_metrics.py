@@ -20,10 +20,11 @@ from tqdm import tqdm
 import yaml
 
 from nlcd_mask_areas import FIELD_DEFINITIONS
+from county_gdp import allocate_combined_gdp, read_county_source
 
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent / 'data/workflow_assets/county_integration/derived_metrics.yaml'
-DERIVED_FIELDS = ('area_ha_county', 'GDP_2024', 'Pop_2024', 'es_total',
+DERIVED_FIELDS = ('area_ha_county', 'GDP_2024', 'GDP_2024_is_allocated', 'Pop_2024', 'es_total',
                   'es_per_ha', 'es_per_ha_natural', 'es_per_gdp', 'es_per_capita')
 
 
@@ -54,9 +55,13 @@ def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: 
     component_values = frame[components]
 
     paths = {name: (data_root / spec['path']).resolve() for name, spec in rules['sources'].items()}
+    crosswalk = rules['sources']['gdp'].get('allocation_crosswalk')
+    if crosswalk:
+        paths['gdp_allocation_crosswalk'] = (data_root / crosswalk).resolve()
     if natural_areas is not None:
         paths['natural_areas'] = natural_source.resolve()
-    paths.update({'derived_rules': config_path, 'derived_calculator': Path(__file__).resolve()})
+    paths.update({'derived_rules': config_path, 'derived_calculator': Path(__file__).resolve(),
+                  'gdp_calculator': Path(__file__).with_name('county_gdp.py').resolve()})
     hashes = {}
     for name, path in tqdm(paths.items(), desc='Record derived-metric sources', unit='file'):
         with path.open('rb') as stream:
@@ -67,21 +72,20 @@ def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: 
     status = pd.DataFrame(index=ids)
     issues = []
     input_counts = {}
+    source_values = {}
     for name in tqdm(('county_area', 'gdp', 'population'), desc='Join county denominators', unit='table'):
         spec = rules['sources'][name]
-        filters = spec.get('where', {})
-        table = pd.read_csv(
-            paths[name], encoding=spec.get('encoding', 'utf-8-sig'),
-            dtype={column: str for column in (spec['key'], *filters)},
-            na_values=spec.get('missing_tokens', []))
-        input_counts[name] = len(table)
-        for column, required in filters.items():
-            table = table.loc[table[column].str.strip().eq(str(required))].copy()
-        table[spec['key']] = table[spec['key']].str.strip().str.replace(r'\.0$', '', regex=True).str.zfill(5)
-        if spec.get('exclude_state_totals', False):
-            table = table.loc[~table[spec['key']].str.endswith('000')]
-
-        series = pd.to_numeric(table.set_index(spec['key'])[spec['field']]) * spec['scale']
+        series, input_counts[name] = read_county_source(paths[name], spec)
+        source_values[name] = series
+    allocations = pd.DataFrame()
+    group_checks = pd.DataFrame()
+    if crosswalk:
+        source_values['gdp'], allocations, group_checks = allocate_combined_gdp(
+            source_values['gdp'], source_values['population'], paths['gdp_allocation_crosswalk'])
+        input_counts['gdp_allocation_crosswalk'] = len(allocations)
+    allocated_ids = set(allocations['county_geoid']) if len(allocations) else set()
+    for name, series in source_values.items():
+        spec = rules['sources'][name]
         aligned = series.loc[ids] if spec['require_all_counties'] else series.reindex(ids)
         values[spec['output']] = aligned
         status[spec['output'] + '_status'] = np.select(
@@ -90,6 +94,8 @@ def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: 
         for key, value in series.loc[~series.index.isin(ids)].items():
             issues.append({'source': name, 'source_key': key, 'reason': 'unmatched_source_not_allocated',
                            'value': value})
+    values['GDP_2024_is_allocated'] = ids.isin(allocated_ids).astype('int64')
+    status.loc[ids.isin(allocated_ids), 'GDP_2024_status'] = 'population_allocated'
 
     # These areas have already been calculated and checked by the mask workflow.
     if natural_areas is None:
@@ -128,7 +134,12 @@ def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: 
         'derived_metric_run': pd.DataFrame([{'created_utc': datetime.now(timezone.utc).isoformat(),
             'interpretation': rules['es_total']['interpretation'], 'counties': len(ids),
             'component_count': len(components), 'ratios': json.dumps(rules['ratios']),
-            'join_policy': 'Exact five-character county FIPS matches',
+            'join_policy': ('Exact five-character county FIPS; configured Virginia combinations '
+                            'allocated by complete-group 2024 population' if crosswalk else
+                            'Exact five-character county FIPS matches'),
             'missing_policy': 'Blank service values contribute zero; unavailable/nonpositive denominators give null ratios'}]),
     }
+    if crosswalk:
+        tables['derived_metric_gdp_allocations'] = allocations
+        tables['derived_metric_gdp_group_checks'] = group_checks
     return values, tables

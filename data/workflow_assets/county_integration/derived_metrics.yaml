@@ -58,6 +58,7 @@ sources:
     missing_tokens: ['(NA)', '(D)']
     exclude_state_totals: true
     require_all_counties: false
+    allocation_crosswalk: workflow_assets/county_integration/virginia_gdp_crosswalk.csv
   population:
     path: analysis_inputs/co-est2025-alldata.csv
     encoding: cp1252

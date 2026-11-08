@@ -60,6 +60,7 @@ class DerivedMetricsTests(unittest.TestCase):
             self.root / 'population.csv', index=False, encoding='cp1252')
         self.config = self.root / 'derived_metrics.yaml'
         self.rules = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding='utf-8'))
+        self.rules['sources']['gdp'].pop('allocation_crosswalk', None)
         self.rules['es_total']['components'] = ['first_adj', 'second_adj']
         for name, path in [('county_area', 'area.csv'), ('natural_areas', 'masks.gpkg'),
                            ('gdp', 'gdp.csv'), ('population', 'population.csv')]:
@@ -93,6 +94,38 @@ class DerivedMetricsTests(unittest.TestCase):
         """Pandas column selection enforces the required component contract."""
         with self.assertRaises(KeyError):
             calculate_county_metrics(self.frame.drop(columns='first_adj'), self.root, self.config)
+
+    def test_virginia_gdp_allocation_flows_through_ratios_and_audits(self):
+        """Allocate a whole source group before selecting any output county subset."""
+        ids = pd.Index(['51059', '51600', '51610'], name='GEOID')
+        frame = self.frame.set_axis(ids)
+        masks = self.masks.set_axis(ids)
+        pd.DataFrame({'GEOID': ids, 'hectares': [2., 4., 5.]}).to_csv(
+            self.root / 'area.csv', index=False)
+        pd.DataFrame({'GeoFIPS': ['51919'], 'LineCode': ['3'], '2024': [100.]}).to_csv(
+            self.root / 'gdp.csv', index=False)
+        pd.DataFrame({'GEOFIPS': ids, 'SUMLEV': ['050'] * 3,
+                      'POPESTIMATE2024': [80, 15, 5]}).to_csv(
+            self.root / 'population.csv', index=False)
+        crosswalk_path = self.root / 'virginia.csv'
+        pd.DataFrame({'bea_geofips': ['51919'] * 3, 'county_geoid': ids,
+                      'bea_name': ['Combined area'] * 3, 'county_name': ['County', 'City A', 'City B'],
+                      'source_url': ['https://www.bea.gov'] * 3}).to_csv(crosswalk_path, index=False)
+        self.rules['sources']['gdp']['allocation_crosswalk'] = crosswalk_path.name
+        self.config.write_text(yaml.safe_dump(self.rules), encoding='utf-8')
+        full, tables = calculate_county_metrics(
+            frame, self.root, self.config, natural_areas=masks, natural_source=self.mask_path)
+        np.testing.assert_allclose(full.GDP_2024, [80000., 15000., 5000.])
+        self.assertEqual(full.GDP_2024_is_allocated.to_list(), [1, 1, 1])
+        np.testing.assert_allclose(full.es_per_gdp, np.array([12., 4., 5.]) / [80000., 15000., 5000.])
+        self.assertEqual(tables['derived_metric_gdp_allocations'].allocated_gdp_2024.sum(), 100000.)
+        self.assertEqual(tables['derived_metric_gdp_group_checks'].difference_gdp_2024.iloc[0], 0.)
+        self.assertTrue(tables['derived_metric_source_issues'].empty)
+        hashes = tables['derived_metric_sources'].set_index('source')
+        self.assertEqual(hashes.loc['gdp_allocation_crosswalk', 'sha256'], sha256(crosswalk_path))
+        subset, _ = calculate_county_metrics(
+            frame.iloc[:1], self.root, self.config, natural_areas=masks.iloc[:1], natural_source=self.mask_path)
+        self.assertEqual(subset.GDP_2024.iloc[0], 80000.)
 
     def test_default_policy_excludes_npv_from_total_and_all_ratios(self):
         """Keep annual flood benefits while NPV neither contributes nor is required."""

@@ -222,7 +222,9 @@ class CountyIntegrationTests(unittest.TestCase):
             (config / "adjustment_factors.csv").write_text(
                 "service,factor,reason,source_units\npollination,0.09,conversion,USD\n", encoding="utf-8")
             (config / "export_rules.yaml").write_bytes(RULES_PATH.read_bytes())
-            (config / "derived_metrics.yaml").write_bytes(RULES_PATH.with_name("derived_metrics.yaml").read_bytes())
+            derived = yaml.safe_load(RULES_PATH.with_name("derived_metrics.yaml").read_text(encoding="utf-8"))
+            derived["sources"]["gdp"].pop("allocation_crosswalk", None)
+            (config / "derived_metrics.yaml").write_text(yaml.safe_dump(derived), encoding="utf-8")
             self.crosswalk.to_csv(config / "ct_county_crosswalk.csv", index=False)
             with self.assertRaisesRegex(ValueError, "must not receive.*second time"):
                 run(root, config, workers=1, geometry_workers=1)
