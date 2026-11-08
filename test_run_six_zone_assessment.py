@@ -182,6 +182,62 @@ class SixZoneAssessmentTests(unittest.TestCase):
                 self.assertEqual(attributes.GEOID.tolist(), ["01001"])
                 self.assertEqual("recreation_adj" in attributes, product == "counties")
 
+    def test_reuse_verified_run_without_preparing_zones_or_running_toolkit(self) -> None:
+        """Revalue saved sums in a new directory without changing the source run."""
+        self.assertEqual(self.run_wrapper(), self.results)
+        source_manifest = self.results / "run_manifest.json"
+        source_bytes = source_manifest.read_bytes()
+        frozen_bytes = self.frozen.read_bytes()
+        reused = self.results.with_name("revalued")
+        args = wrapper.parse_args(["--reuse-zonals-from", self.run_id, "--run-id", reused.name])
+        existing_plan = SimpleNamespace(skipped_products=())
+        raw = self.work / "raw_zonals"
+        fake_sums = {"saved": object()}
+        with (
+            patch.object(wrapper.subprocess, "run") as subprocess_run,
+            patch.object(wrapper, "validate_zone_raster_inputs") as inspect_tiffs,
+            patch.object(wrapper, "freeze_zone_zonals") as freeze,
+            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {"sources": {}})),
+            patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan) as reconstruct,
+            patch.object(wrapper, "read_zone_raster_sums", return_value=fake_sums) as read_sums,
+            patch.object(wrapper, "value_zones", side_effect=self.fake_valuation) as value,
+        ):
+            self.assertEqual(wrapper.run_assessment(args, root=self.root), reused)
+        subprocess_run.assert_not_called()
+        inspect_tiffs.assert_not_called()
+        freeze.assert_not_called()
+        read_sums.assert_called_once_with(existing_plan)
+        self.assertIs(value.call_args.args[1], fake_sums)
+        zones, frozen, work_dir, raw_dir = reconstruct.call_args.args
+        self.assertEqual((frozen, work_dir, raw_dir), (self.frozen, self.work / "zonal_stats_work", raw))
+        self.assertEqual(zones["counties"], (self.zone_root / "counties" / f"counties_{self.run_id}.gpkg", "counties"))
+        self.assertEqual(source_manifest.read_bytes(), source_bytes)
+        self.assertEqual(self.frozen.read_bytes(), frozen_bytes)
+        self.assertFalse(self.work.with_name(reused.name).exists())
+        manifest = json.loads((reused / "run_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(manifest["reused_zonals_from"], {"run_id": self.run_id, "manifest": str(source_manifest)})
+        self.assertEqual(manifest["stages"]["Verify reused raster zonals"], "complete")
+        self.assertNotIn("Run and verify raster zonals", manifest["stages"])
+        for product, record in manifest["outputs"].items():
+            self.assertTrue(Path(record["csv"]).is_file())
+            self.assertEqual(Path(record["gpkg"]), reused / product / f"{product}_{reused.name}.gpkg")
+
+    def test_reuse_refuses_a_run_with_unverified_raster_sums(self) -> None:
+        """Stop before creating outputs when the source zonals did not finish."""
+        self.fail_runner = True
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_wrapper()
+        args = wrapper.parse_args(["--reuse-zonals-from", self.run_id, "--run-id", "revalued"])
+        with (
+            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {"sources": {}})),
+            patch.object(wrapper, "read_frozen_zone_raster_plan") as reconstruct,
+            self.assertRaisesRegex(ValueError, "no completed, verified CONUS raster zonals"),
+        ):
+            wrapper.run_assessment(args, root=self.root)
+        reconstruct.assert_not_called()
+        self.assertFalse(self.results.with_name("revalued").exists())
+
     def test_runner_failure_stops_before_valuation_and_publication(self) -> None:
         """Record the runner failure without publishing any final pair."""
         self.fail_runner = True

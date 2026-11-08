@@ -338,60 +338,82 @@ def marine_coastline_weights(counties, coastline, baseline):
     return weights
 
 
-def inland_freshwater_weights(counties, freshwater_path, lake_fids, baseline):
-    """Remeasure freshwater outside the five Great Lakes for affected counties.
+def inland_freshwater_weights(counties, freshwater_path, lake_fids, baseline, *, great_salt_lake_fids=None):
+    """Remeasure inland-fishery area outside configured lake footprints.
 
     Args:
         counties: County polygons with one row per five-digit GEOID.
         freshwater_path: Prepared NHD polygons with source_layer and source_fid.
-        lake_fids: NHDWaterbody source identifiers for the five lake footprints.
+        lake_fids: NHDWaterbody source identifiers for the Laurentian Great Lakes.
         baseline: Existing county freshwater hectares indexed by GEOID.
+        great_salt_lake_fids: NHDWaterbody source identifiers excluded in Utah.
 
     Returns:
         Hectares per GEOID, with supplied weights preserved outside the lakes.
 
     Raises:
-        ValueError: The prepared layer lacks any configured lake feature.
+        ValueError: Exclusion identifiers are invalid or absent from the prepared layer.
     """
     weights = baseline.reindex(pd.Index(counties.GEOID, name="GEOID")).copy()
-    lake_ids = {int(fid) for fid in lake_fids}
+    great_lakes = list(lake_fids)
+    great_salt_lake = [] if great_salt_lake_fids is None else list(great_salt_lake_fids)
+    ids = pd.Index([*great_lakes, *great_salt_lake])
+    if (not great_lakes or (great_salt_lake_fids is not None and not great_salt_lake)
+            or ids.hasnans or not pd.api.types.is_integer_dtype(ids.dtype)
+            or ids.has_duplicates or (ids < 0).any()):
+        raise ValueError("Inland fisheries exclusion source FIDs must be distinct nonnegative integers")
+    lake_ids = set(ids)
     fid_list = ", ".join(str(fid) for fid in sorted(lake_ids))
     with tqdm(total=3, desc="Correct inland freshwater weights", unit="step") as progress:
-        progress.set_postfix_str("Load Great Lakes polygons")
+        progress.set_postfix_str("Load lake exclusion polygons")
         lakes = gpd.read_file(
             freshwater_path, columns=["source_fid"],
             where=f"source_layer = 'NHDWaterbody' AND source_fid IN ({fid_list})",
         )
         missing_ids = lake_ids - set(lakes.source_fid)
-        if not lake_ids or missing_ids:
-            raise ValueError(f"Missing configured Great Lakes features in {freshwater_path}: {sorted(missing_ids)}")
-        footprint = lakes.to_crs(AREA_CRS).geometry.union_all()
+        if missing_ids:
+            raise ValueError(f"Missing configured inland fisheries exclusions in {freshwater_path}: {sorted(missing_ids)}")
+        lake_shapes = lakes.to_crs(AREA_CRS)
+        great_lakes_footprint = lake_shapes.loc[lake_shapes.source_fid.isin(great_lakes)].geometry.union_all()
         progress.update(1)
 
-        progress.set_postfix_str("Find counties with Great Lakes area")
+        progress.set_postfix_str("Find counties intersecting excluded lakes")
         projected = counties[["GEOID", "geometry"]].to_crs(AREA_CRS)
-        candidates = projected.iloc[projected.sindex.query(footprint)].copy()
-        candidates.geometry = candidates.geometry.make_valid()
-        affected = candidates.loc[candidates.geometry.intersection(footprint).area.gt(0)].copy()
+        scopes = [(projected, great_lakes_footprint)]
+        if great_salt_lake:
+            utah = projected.GEOID.str.startswith("49")
+            salt_lake_footprint = lake_shapes.loc[lake_shapes.source_fid.isin(great_salt_lake)].geometry.union_all()
+            scopes = [(projected.loc[~utah], great_lakes_footprint), (projected.loc[utah], salt_lake_footprint)]
+        affected_parts = []
+        for scope, footprint in scopes:
+            candidates = scope.iloc[scope.sindex.query(footprint)].copy()
+            candidates.geometry = candidates.geometry.make_valid()
+            affected = candidates.loc[candidates.geometry.intersection(footprint).area.gt(0)].copy()
+            affected.geometry = affected.geometry.difference(footprint)
+            affected_parts.append(affected)
+        affected = pd.concat(affected_parts)
         progress.update(1)
         if affected.empty:
             progress.update(1)
             return weights
 
         progress.set_postfix_str("Measure remaining freshwater")
-        # Clip the county zones, not the shared water layer. Read only water
-        # near those counties and sum intersections per feature as in the zonals.
-        mask = counties.loc[affected.index].to_crs(lakes.crs).geometry.union_all()
-        affected.geometry = affected.geometry.difference(footprint)
-        water = gpd.read_file(freshwater_path, columns=[], mask=mask)
-        intersections = gpd.overlay(
-            water.to_crs(AREA_CRS).explode(index_parts=False),
-            affected.loc[~affected.geometry.is_empty],
-            how="intersection",
-            keep_geom_type=False,
-        )
-        hectares = (intersections.area / 10_000).groupby(intersections.GEOID).sum()
-        weights.loc[affected.GEOID] = hectares.reindex(affected.GEOID, fill_value=0.0)
+        # Clip the county zones, not the shared water layer. Read each affected
+        # state separately so a single spatial filter does not span both the
+        # Laurentian Great Lakes and Utah. Keep per-feature area sums.
+        for _, group in affected.groupby(affected.GEOID.str[:2], sort=False):
+            remaining = group.loc[~group.geometry.is_empty]
+            weights.loc[group.GEOID] = 0.0
+            if remaining.empty:
+                continue
+            mask = counties.loc[remaining.index].to_crs(lakes.crs).geometry.union_all()
+            water = gpd.read_file(freshwater_path, columns=[], mask=mask)
+            intersections = gpd.overlay(
+                water.to_crs(AREA_CRS).explode(index_parts=False), remaining,
+                how="intersection", keep_geom_type=False,
+            )
+            hectares = (intersections.area / 10_000).groupby(intersections.GEOID).sum()
+            weights.loc[remaining.GEOID] = hectares.reindex(remaining.GEOID, fill_value=0.0)
         progress.update(1)
     return weights
 
@@ -878,13 +900,19 @@ def compute_task(task, paths, base, crosswalk, geometry_workers):
             counties = gpd.read_file(paths["base"], columns=["GEOID"])
             counties.GEOID = counties.GEOID.map(fips)
             baseline = input_weights(paths["freshwater"], ids, "intersect_area_ha_")
-            lake_fids = pd.read_csv(paths["great_lakes_features"])["source_fid"]
+            lake_fids = {}
+            for key in ("great_lakes_features", "inland_fisheries_exclusions"):
+                selected = pd.read_csv(paths[key], dtype={"source_fid": "int64"})["source_fid"]
+                if selected.empty:
+                    raise ValueError(f"Inland fisheries exclusion table is empty: {paths[key]}")
+                lake_fids[key] = selected
             weights = inland_freshwater_weights(
-                counties, paths["freshwater_polygons"], lake_fids, baseline,
+                counties, paths["freshwater_polygons"], lake_fids["great_lakes_features"], baseline,
+                great_salt_lake_fids=lake_fids["inland_fisheries_exclusions"],
             )
             field = "Consumptive use value (USD)_Intermediate assumption"
             method = ("State total allocated by county freshwater share; affected counties measured "
-                      "outside the five Great Lakes footprints in EPSG:6933")
+                      "outside the five Laurentian Great Lakes and Great Salt Lake in EPSG:6933")
         frame = pd.read_csv(paths[task])
         values, status, state_checks = state_values(frame, field, base.STATEFP, weights)
         checks.extend(dict(service=task, **c) for c in state_checks)
@@ -1107,7 +1135,8 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
         "air_quality": ["base", "air_quality"], "urban_heat": ["base", "urban_heat"],
         "physical_health": ["base", "physical_health"], "jobs": ["base", "jobs"],
         "marine_fisheries": ["base", "marine_fisheries", "coastline", "coastline_lines"],
-        "inland_fisheries": ["base", "inland_fisheries", "freshwater", "freshwater_polygons", "great_lakes_features"],
+        "inland_fisheries": ["base", "inland_fisheries", "freshwater", "freshwater_polygons",
+                            "great_lakes_features", "inland_fisheries_exclusions"],
         "recreation": ["base", "recreation"],
         "mangroves": ["base", "mangroves"],
         "corals": ["base", "corals"],

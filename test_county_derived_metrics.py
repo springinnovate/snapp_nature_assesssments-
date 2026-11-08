@@ -245,7 +245,7 @@ class DerivedMetricsTests(unittest.TestCase):
                       'county_visits_2024': [200, 300]}).to_csv(recreation_source, index=False)
         names = ['base', 'grazing', 'timber', 'air_quality', 'urban_heat', 'physical_health', 'jobs',
                  'marine_fisheries', 'coastline', 'coastline_lines', 'inland_fisheries', 'freshwater',
-                 'freshwater_polygons', 'great_lakes_features',
+                 'freshwater_polygons', 'great_lakes_features', 'inland_fisheries_exclusions',
                  'recreation', 'mangroves', 'corals']
         task_paths = {'corals': coral_source, 'recreation': recreation_source}
         pd.DataFrame({'source': names, 'path': [task_paths.get(name, source).name for name in names]}).to_csv(

@@ -1,4 +1,4 @@
-"""Check Great Lakes exclusion and its effect on inland fishery allocation."""
+"""Check configured lake exclusions and their effect on inland fishery allocation."""
 
 from pathlib import Path
 import tempfile
@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import box
 
-from build_county_ecosystem_service_valuations_2026 import inland_freshwater_weights, state_values
+from build_county_ecosystem_service_valuations_2026 import compute_task, inland_freshwater_weights, state_values
 
 
 class InlandFisheriesWeightsTest(unittest.TestCase):
@@ -34,10 +34,8 @@ class InlandFisheriesWeightsTest(unittest.TestCase):
         lake = box(0, 0, 150, 100)
         gpd.GeoDataFrame(
             {
-                "source_layer": ["NHDWaterbody"] * 3 + ["NHDArea", "NHDWaterbody"],
-                "source_fid": [11, 12, 13, 11, 14],
-                "fcode": [39010, 39010, 39010, 46000, 39010],
-                "name": ["Lake Michigan", "Lake Michigan", "Lake Michigan", None, "Nearby lake"],
+                "source_layer": ["NHDWaterbody"] * 3 + ["NHDArea"] + ["NHDWaterbody"] * 4,
+                "source_fid": [11, 12, 13, 11, 14, 21, 22, 23],
             },
             geometry=[
                 lake,
@@ -45,6 +43,9 @@ class InlandFisheriesWeightsTest(unittest.TestCase):
                 box(125, 0, 175, 100),
                 box(180, 0, 190, 100),
                 box(200, 0, 250, 100),
+                box(10000, 0, 10140, 120),
+                box(10130, 0, 10150, 100),
+                box(10125, 0, 10175, 100),
             ],
             crs=6933,
         ).to_file(self.freshwater, layer="nhd_freshwater_clipped_to_usa", driver="GPKG")
@@ -69,6 +70,51 @@ class InlandFisheriesWeightsTest(unittest.TestCase):
         np.testing.assert_allclose(values, [0.0, 200.0, 600.0, 200.0])
         self.assertEqual(status.loc["26003"], "zero_weight")
         self.assertAlmostEqual(checks[0]["allocated_value"], checks[0]["input_value"])
+
+    def test_builder_reallocates_utah_and_preserves_great_lakes_correction(self):
+        """Read both configured selections and redistribute only within each state."""
+        root = Path(self.temporary.name)
+        extra_ids = pd.Index(["49001", "49003", "49005", "16001", "16003"], name="GEOID")
+        extra_counties = gpd.GeoDataFrame(
+            {"GEOID": extra_ids}, geometry=[
+                box(10000, 0, 10100, 100), box(10100, 0, 10200, 100), box(10200, 0, 10300, 100),
+                box(10000, 100, 10100, 200), box(10200, 100, 10300, 200),
+            ], crs=6933,
+        )
+        counties = pd.concat([self.counties, extra_counties], ignore_index=True)
+        baseline = pd.concat([self.baseline, pd.Series([4.0, 4.0, 1.0, 1.5, 4.5], index=extra_ids)])
+        paths = {
+            "base": root / "counties.gpkg", "freshwater": root / "baseline.csv", "freshwater_polygons": self.freshwater,
+            "great_lakes_features": root / "great_lakes.csv", "inland_fisheries_exclusions": root / "salt_lake.csv",
+            "inland_fisheries": root / "harvest.csv",
+        }
+        counties.to_file(paths["base"], layer="counties", driver="GPKG")
+        baseline.rename("intersect_area_ha_water").to_csv(paths["freshwater"])
+        pd.DataFrame({"source_fid": [11, 12]}).to_csv(paths["great_lakes_features"], index=False)
+        pd.DataFrame({"source_fid": [21, 22]}).to_csv(paths["inland_fisheries_exclusions"], index=False)
+        pd.DataFrame({
+            "State": ["MICHIGAN", "UTAH", "IDAHO"],
+            "Consumptive use value (USD)_Intermediate assumption": [1000.0, 800.0, 600.0],
+        }).to_csv(paths["inland_fisheries"], index=False)
+        ids = self.ids.append(extra_ids)
+        base = pd.DataFrame({"STATEFP": ids.str[:2]}, index=ids)
+
+        result = compute_task("inland_fisheries", paths, base, pd.DataFrame(), 1)
+
+        # The Idaho county touches the test lake across the state line but the
+        # Utah exclusion does not change Idaho's supplied weights.
+        np.testing.assert_allclose(result["originals"]["inland_fisheries"],
+                                   [0.0, 200.0, 600.0, 200.0, 0.0, 160.0, 640.0, 150.0, 450.0])
+        for check in result["checks"]:
+            self.assertAlmostEqual(check["allocated_value"], check["input_value"])
+        self.assertEqual(len(result["checks"]), 3)
+        self.assertIn("Great Salt Lake", result["metadata"][0]["method"])
+
+    def test_rejects_unknown_configured_lake_fid(self):
+        """Do not publish an allocation from an incomplete selection."""
+        with self.assertRaisesRegex(ValueError, "Missing configured inland fisheries exclusions.*999"):
+            inland_freshwater_weights(self.counties, self.freshwater, [11, 12], self.baseline,
+                                      great_salt_lake_fids=[999])
 
 
 if __name__ == "__main__":

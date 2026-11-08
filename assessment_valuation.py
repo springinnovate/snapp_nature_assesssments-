@@ -37,10 +37,12 @@ from county_derived_metrics import calculate_county_metrics
 COUNTY_TABLES = ("grazing", "timber", "air_quality", "urban_heat", "physical_health", "jobs", "recreation")
 VALUE_SOURCES = (
     *COUNTY_TABLES, "marine_fisheries", "inland_fisheries", "coastline_lines",
-    "freshwater_polygons", "great_lakes_features", "corals", "mangroves",
+    "freshwater_polygons", "great_lakes_features", "inland_fisheries_exclusions",
+    "corals", "mangroves",
 )
 CONFIG_FILES = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv",
-                "export_rules.yaml", "derived_metrics.yaml")
+                "export_rules.yaml", "derived_metrics.yaml", "great_lakes_nhd_features.csv",
+                "inland_fisheries_exclusions.csv")
 
 
 def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.DataFrame, dict, dict]:
