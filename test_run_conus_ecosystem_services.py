@@ -1,4 +1,4 @@
-"""Exercise the six-zone wrapper without running production analysis."""
+"""Exercise the CONUS assessment wrapper without running production analysis."""
 
 import json
 from pathlib import Path
@@ -13,10 +13,10 @@ import pandas as pd
 import pyogrio
 from shapely.geometry import MultiPolygon, Point, box
 
-import run_six_zone_assessment as wrapper
+import run_conus_ecosystem_services as wrapper
 
 
-class SixZoneAssessmentTests(unittest.TestCase):
+class ConusEcosystemServicesTests(unittest.TestCase):
     """Check run handoffs and output isolation with one county per product."""
 
     def setUp(self) -> None:

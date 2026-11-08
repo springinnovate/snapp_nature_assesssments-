@@ -112,7 +112,7 @@ def value_zones(
     paths, factors, rules, derived = load_valuation_config(data_root, config_dir)
     counties = zones["counties"]
     if not counties.GEOID.astype("string").str[:2].isin(CONUS_STATE_FIPS).all():
-        raise ValueError("The six-zone assessment requires CONUS counties")
+        raise ValueError("County inputs must be within CONUS")
     county_base = pd.DataFrame(counties.drop(columns=counties.geometry.name)).set_index("GEOID")
     crosswalk = pd.read_csv(config_dir / "ct_county_crosswalk.csv",
                             dtype={"source_geoid": str, "target_geoid": str})

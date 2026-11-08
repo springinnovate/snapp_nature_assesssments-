@@ -21,8 +21,8 @@ fields are also represented in a total.
 The implementation is
 [`build_county_ecosystem_service_valuations_2026.py`](../build_county_ecosystem_service_valuations_2026.py).
 This guide describes its inputs, allocation assumptions, adjustments, and
-interpretation limits. The [README](../README.md) describes the separate
-raster zonal-statistics and PAD-US workflows.
+interpretation limits. See the [supporting workflows](supporting_workflows.md)
+for standalone raster zonal-statistics and PAD-US commands.
 
 The valuation builder includes county NLCD areas from the mask-area GeoPackage
 selected in `derived_metrics.yaml`: `area_ha_valid_nlcd`, five
@@ -31,7 +31,7 @@ selected in `derived_metrics.yaml`: `area_ha_valid_nlcd`, five
 These observed areas are not the full county polygon area. Source NLCD NoData
 has zero observed coverage and undefined (null) class proportions.
 The area fields are nonmonetary: no adjustment factor is applied. Use the
-[mask-only command](../README.md#calculate-county-nlcd-areas-without-rerunning-ecosystem-service-zonals)
+[mask-only command](supporting_workflows.md#calculate-county-nlcd-areas)
 to calculate those areas independently of the service zonals. That command can
 also append the areas, totals and ratios to completed valuations that lack them.
 
@@ -536,7 +536,7 @@ counties, and their blank counts. Unmatched source rows are recorded in
 `derived_metric_source_issues`.
 
 For a new output from existing county values, use the
-[finalization command in the README](../README.md#add-county-totals-and-ratios-without-rerunning-zonals).
+[county finalization command](supporting_workflows.md#build-or-finalize-county-valuations).
 It copies the original values, factors and geometry, then appends the summaries
 to a new timestamped CSV/GeoPackage pair. Reuse that original input when changing
 settings. The full county builder performs the same calculation after applying
@@ -577,7 +577,7 @@ record for interpreting a particular deliverable.
 The input datasets are stored at the paths listed above. The configuration
 files are included under
 `data/workflow_assets/county_integration/`. Activate the geospatial environment
-described in the [README](../README.md#environment), then run from the repository
+described in the [README](../README.md#1-set-up-python), then run from the repository
 directory:
 
 ```powershell

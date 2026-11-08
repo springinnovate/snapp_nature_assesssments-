@@ -1,4 +1,4 @@
-"""Prepare, value, and publish the six CONUS SNAPP assessment zone products."""
+"""Run the CONUS Ecosystem Services Assessment and publish its output layers."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ _REUSE_RASTERS = "Verify reused raster zonals"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the six-zone assessment inputs and worker limits.
+    """Parse the assessment inputs and worker limits.
 
     Args:
         argv: Argument strings, or None to use the command line.
@@ -232,7 +232,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         raster_sums = read_zone_raster_sums(plan)
     if args.validate_only:
         detail = "reused zones and raster sums" if source_id is not None else "inputs"
-        print(f"Six-zone CONUS assessment {detail} validated; no run files written.", flush=True)
+        print(f"CONUS Ecosystem Services Assessment: {detail} validated; no run files written.", flush=True)
         return None
 
     results.mkdir(parents=True)
@@ -342,7 +342,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         manifest["finished_utc"] = datetime.now(timezone.utc).isoformat()
         record(stage, "failed")
         raise
-    print(f"Completed six-zone assessment: {results}", flush=True)
+    print(f"Completed CONUS Ecosystem Services Assessment: {results}", flush=True)
     return results
 
 
