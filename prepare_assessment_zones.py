@@ -310,7 +310,7 @@ def prepare_zones(args: argparse.Namespace) -> Path:
     (output / "zone_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     if any(overlap_counts.values()):
         print("Manager zones overlap in some counties; do not sum them without reviewing county_area_qa.csv.")
-    print(f"Prepared six zone layers and area QA: {output}")
+    print(f"Prepared assessment geometries and land-area checks: {output}")
     return output
 
 

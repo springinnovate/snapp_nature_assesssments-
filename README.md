@@ -1,10 +1,15 @@
-# SNAPP Nature Assessments
+# CONUS Ecosystem Services Assessment
 
-The six-zone assessment estimates ecosystem-service values for counties and
-selected land footprints in the contiguous 48 states and Washington, DC.
-Each run produces matching CSV and GeoPackage files for counties, PAD-US public
-lands and conservation lands (each by county and by county/manager type), and
-BBB candidate lands by county.
+This SNAPP assessment estimates ecosystem-service values for counties and
+selected land footprints in the contiguous 48 states and Washington, DC. It
+publishes six output layers, each as a matching CSV and GeoPackage pair:
+
+1. Counties
+2. Public lands by county
+3. Public lands by county and manager type
+4. Conservation lands by county
+5. Conservation lands by county and manager type
+6. BBB candidate lands by county
 
 ## Run the assessment
 
@@ -71,13 +76,13 @@ set "SNAPP_RUNNER=..\zonal_stats_toolkit\runner.py"
 set "SNAPP_BBB=data\analysis_inputs\zonal_units\bbb_candidate_blm_lands_by_county\bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county_2026_08_09_18_45_22.gpkg"
 set "SNAPP_MASK=data\analysis_inputs\boundaries\county_land\tl_2024_us_county_land_conus.gpkg"
 
-python run_six_zone_assessment.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --validate-only
-python run_six_zone_assessment.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --run-id conus-assessment
+python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --validate-only
+python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --run-id conus-assessment
 ```
 
 The first command checks the input files, TIFF inventory, and vector metadata.
-Run the second after validation passes. It prepares the six zones, calculates
-raster sums, and publishes the valuations. Use `--help` for worker settings and
+Run the second after validation passes. It prepares the output geometries,
+calculates raster sums, and publishes the valuations. Use `--help` for worker settings and
 additional input options.
 
 ### 4. Find the final files
@@ -105,7 +110,7 @@ the saved zones and raster sums. Use the original run ID in the same checkout
 with the original projection settings and the current valuation inputs:
 
 ```cmd
-python run_six_zone_assessment.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued"
+python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued"
 ```
 
 The command checks the saved results and publishes six new pairs, leaving the

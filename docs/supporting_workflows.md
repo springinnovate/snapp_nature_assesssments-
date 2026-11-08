@@ -3,7 +3,8 @@
 Run these commands from the repository root in the
 [geospatial environment](../README.md#1-set-up-python). Use them to prepare
 replacement inputs or run a standalone analysis. They are not steps to repeat
-when running the [six-zone assessment](../README.md) with its prepared inputs.
+when running the [CONUS Ecosystem Services Assessment](../README.md) with its
+prepared inputs.
 
 ## Prepare the Census county land mask
 
@@ -85,7 +86,7 @@ python run_snapp_assessment.py `
   --bbb-results '<completed BBB zonal results.gpkg>'
 ```
 
-Add `--validate-only` to check input paths. The output is four pairs in `data/analysis_results/assessment_runs/<run-id>/`; `run_manifest.json` names the files. This command does not create the six-zone assessment products.
+Add `--validate-only` to check input paths. The output is four pairs in `data/analysis_results/assessment_runs/<run-id>/`; `run_manifest.json` names the files.
 
 For geometry alone, use the PAD-US VectorAnalysis layer for `all` and `public`:
 
