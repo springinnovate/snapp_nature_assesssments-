@@ -26,6 +26,10 @@ optional_exclude_fields:
   - sum_Wsw_pub
   - sum_Wsw_total
 
+  # Older zonals may carry the integer per-pixel carbon input; density drives valuation.
+  - sum_totalC_tCO2e_pixel_2020
+  - sum_totalC_tCO2e_pixel_2020_adj
+
   # Older inputs may contain this duplicate crop-yield statistic.
   - sum_national_attributed_annual_crop_yield_value_zstd
   # Old land-cover class-code sums are NOT monetary valuations.
@@ -67,7 +71,7 @@ rename_fields:
   mangroves_adj: sum_mangrove_coastal_flood_protection_value_adj
   sum_annual_value_masked_to_wetlands_adj: sum_flood_annual_value_masked_to_wetlands_adj
   sum_marginal_npv_masked_to_wetlands_adj: sum_flood_marginal_npv_masked_to_wetlands_adj
-  # User-confirmed $3.66 per tonne CO2e, times 1.182 inflation; no mass conversion.
-  sum_totalC_tCO2e_pixel_2020_adj: sum_CO2e_mitigation_dollar_value_per_pixel_adj
+  # Density sum integrated over 30 m pixels and valued at the configured dollar factor.
+  carbon_pixel_adj: sum_CO2e_mitigation_dollar_value_per_pixel_adj
   avoided_air_quality_heath_costs_adj: air_quality_avoided_mortality_annual_value_adj
   avoided_air_quality_heath_costs_adj_factor: air_quality_avoided_mortality_annual_value_adj_factor

@@ -30,6 +30,7 @@ _KEY_FIELDS = {
 }
 _MANAGER_PRODUCTS = frozenset(product for product, fields in _KEY_FIELDS.items() if len(fields) == 2)
 _RESULT_STAMP = re.compile(r"\d{8}_\d{6}")
+_RETIRED_CARBON_PIXEL_SUM = "sum_totalC_tCO2e_pixel_2020"
 
 
 @dataclass(frozen=True)
@@ -55,10 +56,12 @@ class ZoneRasterPlan:
 
     Attributes:
         frozen_config: Exact toolkit configuration file to run.
-        raster_columns: Sum column names corresponding to the unscaled TIFFs.
+        raster_columns: Unscaled raster sum columns used by valuation.
         jobs: Nonempty toolkit jobs and their expected result keys.
         blocked_rasters: Reviewed reasons for inventory exclusions.
         skipped_products: Empty products that need no toolkit job.
+        retired_raster_columns: Historical sums required in saved result
+            schemas but not read as numeric values or passed to valuation.
     """
 
     frozen_config: Path
@@ -66,6 +69,7 @@ class ZoneRasterPlan:
     jobs: tuple[ZoneRasterJob, ...]
     blocked_rasters: tuple[str, ...]
     skipped_products: tuple[str, ...]
+    retired_raster_columns: tuple[str, ...] = ()
 
 
 def _zone_keys(frame: pd.DataFrame, fields: tuple[str, ...], label: str) -> pd.DataFrame:
@@ -236,6 +240,10 @@ def read_frozen_zone_raster_plan(
 ) -> ZoneRasterPlan:
     """Reconstruct a completed run's raster plan without touching the TIFFs.
 
+    Older plans can contain the retired per-pixel carbon sum. Keep checking
+    that column's presence as part of the original schema without using its
+    values.
+
     Args:
         zones: The saved GeoPackage path and layer name for each product.
         frozen_config: Original toolkit configuration from the completed run.
@@ -284,8 +292,12 @@ def read_frozen_zone_raster_plan(
     except (KeyError, AttributeError, TypeError, ValueError) as error:
         raise ValueError(f"Invalid frozen raster metadata in {frozen_config}: {error}") from error
     raster_columns = tuple(f"sum_{Path(path).stem}" for path in raster_paths)
+    required_columns = set(expected_raster_columns)
+    frozen_columns = set(raster_columns)
+    retired_columns = frozen_columns - required_columns
     if (len({name.casefold() for name in raster_columns}) != len(raster_columns)
-            or set(raster_columns) != set(expected_raster_columns)):
+            or required_columns - frozen_columns
+            or retired_columns - {_RETIRED_CARBON_PIXEL_SUM}):
         raise ValueError("Frozen raster sum columns do not match the valuation services")
 
     if overlapping_manager_products is None:
@@ -342,7 +354,11 @@ def read_frozen_zone_raster_plan(
         raise ValueError("Frozen raster config has unexpected jobs or sections")
     if unavailable != [f"{product}: empty zone layer" for product in skipped]:
         raise ValueError("Frozen raster config's empty zone list does not match prepared zones")
-    return ZoneRasterPlan(frozen_config, raster_columns, tuple(jobs), blocked, tuple(skipped))
+    return ZoneRasterPlan(
+        frozen_config, tuple(column for column in raster_columns if column in required_columns),
+        tuple(jobs), blocked, tuple(skipped),
+        tuple(column for column in raster_columns if column in retired_columns),
+    )
 
 
 def read_zone_raster_sums(plan: ZoneRasterPlan) -> dict[str, pd.DataFrame]:
@@ -377,8 +393,9 @@ def read_zone_raster_sums(plan: ZoneRasterPlan) -> dict[str, pd.DataFrame]:
             raise ValueError(f"Toolkit result for {job.output_base} has a different run timestamp: {stamp}")
         run_stamp = stamp
 
-        columns = [*job.key_fields, *plan.raster_columns]
-        frame = pd.read_csv(csvs[0], dtype={field: "string" for field in job.key_fields}, keep_default_na=False)
+        columns = [*job.key_fields, *plan.raster_columns, *plan.retired_raster_columns]
+        text_fields = (*job.key_fields, *plan.retired_raster_columns)
+        frame = pd.read_csv(csvs[0], dtype={field: "string" for field in text_fields}, keep_default_na=False)
         if set(frame.columns) != set(columns):
             raise ValueError(f"Unexpected key or raster sum columns in {csvs[0]}")
         keys = list(frame[list(job.key_fields)].itertuples(index=False, name=None))

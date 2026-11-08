@@ -337,8 +337,8 @@ adjusted county estimate = source county estimate × adjustment factor
 | Service | Source county field | Factor |
 | --- | --- | --- |
 | Pollination | `sum_pollination_attributed_annual_crop_yield_value` | 0.09 |
-| Carbon per hectare | `sum_totalC_tCO2e_ha_2020` | 4.32612 |
-| Carbon per pixel | `sum_totalC_tCO2e_pixel_2020` | 4.32612 |
+| Carbon density diagnostic (not area-integrated) | `sum_totalC_tCO2e_ha_2020` | 4.32612 |
+| Carbon stock value | `sum_totalC_tCO2e_ha_2020` × 0.09 ha per pixel | 4.32612 |
 | Dredging | `sum_avoided_dredging_costs_raster` | 1 |
 | Safe Drinking Water Act health benefits | `sum_avoided_sdwa_health_costs_raster` | 1 |
 | Water treatment | `sum_avoided_treatment_costs_raster` | 1 |
@@ -354,14 +354,21 @@ represents 0.09 ha, so multiplying the raw county raster sum by 0.09 gives
 is applied once. The configured input contains the unscaled aggregate; an
 already-adjusted county export is not an admissible input.
 
-Carbon uses the assessment-supplied price of USD 3.66 per tonne CO2e and the
-1.182 inflation multiplier: `3.66 × 1.182 = 4.32612`. This is a price
-conversion, not a carbon-to-CO2 mass conversion.
-`sum_CO2e_mitigation_dollar_value_per_pixel_adj` is the county sum of monetary
-per-pixel values, despite `per_pixel` in its name. It is not a county average.
-The separate carbon-per-hectare field is a sum of per-hectare values multiplied
-by the price; no area integration is applied to that field. It is therefore
-not a county dollar total.
+Carbon stock valuation uses the zonal sum of `totalC_tCO2e_ha_2020.tif`, a
+30 m raster in tonnes CO2e per hectare. The valuation first multiplies the
+sum by `0.09` hectares per pixel to obtain tonnes CO2e, preserving fractional
+tonnes. It then multiplies by the assessment-supplied price and inflation
+factor: `3.66 × 1.182 = 4.32612` USD per tonne CO2e. The per-pixel TIFF and
+its zonal sums are not used, so saved raw zonals can be reused as long as
+they contain the per-hectare sum.
+
+The existing output name `sum_CO2e_mitigation_dollar_value_per_pixel_adj`
+identifies the area-integrated carbon stock dollar total, not a per-pixel rate
+or a county average. Its existing factor field, `carbon_pixel_adj_factor`,
+records `4.32612`; the `0.09` area conversion is applied separately. The
+separate `sum_totalC_tCO2e_ha_2020_adj` field applies the same dollar factor to
+the density sum without area integration. It is a diagnostic, not a county
+dollar total.
 
 The flood outputs are
 `sum_flood_annual_value_masked_to_wetlands_adj` and
