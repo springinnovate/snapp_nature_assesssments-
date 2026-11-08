@@ -49,6 +49,27 @@ class CountyIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             numbers(pd.Series(["#REF!"]))
 
+    def test_grazing_uses_subtotal_before_eight_month_multiplier(self):
+        """Use the annual forage value once, including for split counties."""
+        base = pd.DataFrame(index=self.ids)
+        source = pd.DataFrame({
+            "CountyCode": [9001, 9003, 1001],
+            "CountyGrazingValueMonth": [80, 160, 24],
+            "CountyGrazingValueYear": [640, 1280, 192],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "grazing.xlsx"
+            source.to_excel(path, sheet_name="SNAPPGrazingCalculations", index=False, engine="openpyxl")
+            original_hash = sha256(path)
+            result = compute_task("grazing", {"grazing": path}, base, self.crosswalk, 1)
+            self.assertEqual(sha256(path), original_hash)
+
+        self.assertEqual(result["originals"]["grazing"].to_list(), [20, 220, 24])
+        metadata = result["metadata"][0]
+        self.assertEqual(metadata["source_field"], "CountyGrazingValueMonth")
+        self.assertIn("eight-month multiplier excluded", metadata["method"])
+        self.assertEqual(metadata["original_total"], 264)
+
     def test_county_split_conserves_totals_and_reports_unmatched(self):
         source = pd.DataFrame({"fips": [9001, 9003, 1001, 99999], "value": [100, 200, 0, 5]})
         values, status, issues, audit = county_values(source, "fips", "value", self.ids, self.crosswalk)

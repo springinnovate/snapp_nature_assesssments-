@@ -823,7 +823,7 @@ def compute_task(task, paths, base, crosswalk, geometry_workers):
         metadata.append(row)
         logging.info("%s: %s populated counties; original total %.3f", service, row["populated_counties"], row["original_total"])
 
-    def county_add(service, frame, key, field, source, *, use_crosswalk=True, **options):
+    def county_add(service, frame, key, field, source, *, use_crosswalk=True, method_note=None, **options):
         """Join tabular county values with service-specific source policies.
 
         Args:
@@ -833,9 +833,12 @@ def compute_task(task, paths, base, crosswalk, geometry_workers):
             field: Source valuation column.
             source: Input key in sources.csv.
             use_crosswalk: Allocate historical Connecticut rows when present.
+            method_note: Optional service-specific detail to record in provenance.
             **options: Aggregation and missing-value options for county_values.
         """
         method = "FIPS join; historical CT allocated by land area" if use_crosswalk else "direct GEOID join"
+        if method_note:
+            method += f"; {method_note}"
         if service == "timber":
             # Clamp individual source county rents BEFORE the CT crosswalk:
             # negative source rents must not cancel another county's positive rent.
@@ -877,7 +880,12 @@ def compute_task(task, paths, base, crosswalk, geometry_workers):
                 add(service, values, status, "base", BASE_FIELDS[service], "existing county aggregate preserved")
     if task == "grazing":
         grazing = pd.read_excel(paths["grazing"], sheet_name="SNAPPGrazingCalculations", engine="openpyxl")
-        county_add("grazing", grazing, "CountyCode", "CountyGrazingValueYear", "grazing")
+        # Annual usable forage / 780 lb per animal-unit month already gives the
+        # annual animal-unit months. Price them once using the workbook subtotal.
+        county_add(
+            "grazing", grazing, "CountyCode", "CountyGrazingValueMonth", "grazing",
+            method_note="annual forage priced per animal-unit month; workbook's final eight-month multiplier excluded",
+        )
     if task == "timber":
         timber = pd.read_csv(paths["timber"], dtype={"fips_padded": str})
         county_add("timber", timber, "fips_padded", "total_annual_rent", "timber", zero_missing=True)
