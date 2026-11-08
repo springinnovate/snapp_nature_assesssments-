@@ -15,7 +15,7 @@ from shapely.geometry import box
 from osgeo import ogr
 
 from build_county_ecosystem_service_valuations_2026 import (
-    NON_SUM_FIELD, adjusted_county_fields, load_export_rules, plan_county_export,
+    BASE_FIELDS, NON_SUM_FIELD, adjusted_county_fields, load_export_rules, plan_county_export,
     air_quality_summary, compute_task, county_values, fips, numbers,
     read_attributes, sha256, state_values, validate_crosswalk, write_output,
     load_checkpoint, run, save_checkpoint,
@@ -379,6 +379,7 @@ class CountyExportRuleTests(unittest.TestCase):
             "GEOID": self.ids, "ALAND": [1000, 2000], "AWATER": [10, 20],
             "sum_annual_value_masked_to_wetlands": [10.0, np.nan],
             "sum_marginal_npv_masked_to_wetlands": [200.0, np.nan],
+            "sum_totalC_tCO2e_ha_2020": [27.0, np.nan],
             "sum_totalC_tCO2e_pixel_2020": [100.0, np.nan],
             **{f"sum_Wsw_{kind}": [3.0, 4.0] for kind in ("irr", "pow", "pub", "total")},
             "sum_Wval_sw_2020usd_total": [7.0, np.nan],
@@ -388,7 +389,8 @@ class CountyExportRuleTests(unittest.TestCase):
         self.originals = {
             "flood_annual": self.base.sum_annual_value_masked_to_wetlands,
             "flood_npv": self.base.sum_marginal_npv_masked_to_wetlands,
-            "carbon_pixel": self.base.sum_totalC_tCO2e_pixel_2020,
+            "carbon_ha": self.base.sum_totalC_tCO2e_ha_2020,
+            "carbon_pixel": pd.Series([2.43, np.nan], index=self.ids),
             "avoided_air_quality_heath_costs": pd.Series([50.0, np.nan], index=self.ids),
             "timber": pd.Series([30.0, np.nan], index=self.ids),
         }
@@ -406,13 +408,14 @@ class CountyExportRuleTests(unittest.TestCase):
         self.assertEqual(list(fields), [
             "sum_flood_annual_value_masked_to_wetlands_adj",
             "sum_flood_marginal_npv_masked_to_wetlands_adj",
-            "sum_CO2e_mitigation_dollar_value_per_pixel_adj",
+            "sum_totalC_tCO2e_ha_2020_adj",
             "sum_Wval_sw_2020usd_total",
+            "sum_CO2e_mitigation_dollar_value_per_pixel_adj",
             AIR_QUALITY_OUTPUT + "_adj", "timber_adj",
-            "flood_annual_adj_factor", "flood_npv_adj_factor", "carbon_pixel_adj_factor",
+            "flood_annual_adj_factor", "flood_npv_adj_factor", "carbon_ha_adj_factor", "carbon_pixel_adj_factor",
             AIR_QUALITY_OUTPUT + "_adj_factor", "timber_adj_factor",
         ])
-        self.assertAlmostEqual(fields.loc["01001", mapping["carbon_pixel"]], 100 * 3.66 * 1.182)
+        self.assertAlmostEqual(fields.loc["01001", mapping["carbon_pixel"]], 27 * 0.09 * 3.66 * 1.182)
         self.assertEqual(fields.loc["01001", "carbon_pixel_adj_factor"], 4.32612)
         self.assertIn("per tonne CO2e price", self.factors.loc["carbon_pixel", "reason"])
         self.assertAlmostEqual(fields.loc["01001", mapping["flood_annual"]], 0.9)
@@ -429,9 +432,22 @@ class CountyExportRuleTests(unittest.TestCase):
         self.assertEqual(mapping["carbon_pixel"], "sum_CO2e_mitigation_dollar_value_per_pixel_adj")
         self.assertEqual(mapping["avoided_air_quality_heath_costs"], AIR_QUALITY_OUTPUT + "_adj")
 
+    def test_base_task_integrates_density_without_reading_old_pixel_sums(self):
+        """Convert density to fractional tonnes even if an old pixel sum is present."""
+        raw = pd.DataFrame(0.0, index=self.ids, columns=list(BASE_FIELDS.values()))
+        raw["sum_totalC_tCO2e_ha_2020"] = [27.0, np.nan]
+        for frame in (raw, raw.assign(sum_totalC_tCO2e_pixel_2020="not used")):
+            result = compute_task("base", {}, frame, pd.DataFrame(), 1)
+            tonnes = result["originals"]["carbon_pixel"]
+            self.assertAlmostEqual(tonnes.loc["01001"], 2.43)
+            self.assertTrue(pd.isna(tonnes.loc["01003"]))
+            metadata = next(row for row in result["metadata"] if row["service"] == "carbon_pixel")
+            self.assertEqual(metadata["source_field"], "sum_totalC_tCO2e_ha_2020")
+            self.assertAlmostEqual(metadata["original_total"], 2.43)
+
     def test_yaml_only_rename_and_group_order_preserve_semantic_sum_group(self):
         """A custom alias stays with its source group regardless of its prefix."""
-        self.rules["rename_fields"]["sum_totalC_tCO2e_pixel_2020_adj"] = "carbon_dollar_value_adj"
+        self.rules["rename_fields"]["carbon_pixel_adj"] = "carbon_dollar_value_adj"
         self.rules["column_groups"] = ["base_attributes", "adjustment_factors", "sum_values", "service_totals"]
         with tempfile.TemporaryDirectory() as directory:
             custom = Path(directory) / "export_rules.yaml"
@@ -439,10 +455,10 @@ class CountyExportRuleTests(unittest.TestCase):
             loaded = load_export_rules(custom)
         plan = plan_county_export(self.base.columns, self.factors.index, loaded)
         fields, mapping = adjusted_county_fields(self.base, self.originals, self.summaries, self.factors, plan)
-        self.assertTrue(all(field.endswith("_adj_factor") for field in list(fields)[:5]))
+        self.assertTrue(all(field.endswith("_adj_factor") for field in list(fields)[:6]))
         self.assertLess(list(fields).index("carbon_dollar_value_adj"), list(fields).index(AIR_QUALITY_OUTPUT + "_adj"))
         self.assertEqual(mapping["carbon_pixel"], "carbon_dollar_value_adj")
-        self.assertAlmostEqual(fields.loc["01001", "carbon_dollar_value_adj"], 432.612)
+        self.assertAlmostEqual(fields.loc["01001", "carbon_dollar_value_adj"], 2.43 * 4.32612)
         self.assertEqual(next(row["group"] for row in plan if row["output_field"] == "carbon_dollar_value_adj"), "sum_values")
         self.assertEqual(plan, plan_county_export(self.base.columns, self.factors.index, loaded))
 
@@ -461,12 +477,12 @@ class CountyExportRuleTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     plan_county_export(self.base.columns, self.factors.index, rules)
         with self.assertRaisesRegex(ValueError, "Missing source sums"):
-            plan_county_export(self.base.drop(columns="sum_totalC_tCO2e_pixel_2020").columns,
+            plan_county_export(self.base.drop(columns="sum_totalC_tCO2e_ha_2020").columns,
                               self.factors.index, self.rules)
 
     def test_rules_reject_collisions_and_overlapping_actions(self):
         """SQLite case-insensitive names and simultaneous policy conflicts are checked."""
-        source = "sum_totalC_tCO2e_pixel_2020_adj"
+        source = "carbon_pixel_adj"
         for target in ("geoid", "GEOM", "SUM_FLOOD_ANNUAL_VALUE_MASKED_TO_WETLANDS_ADJ"):
             with self.subTest(target=target):
                 rules = deepcopy(self.rules)
@@ -505,7 +521,7 @@ class CountyExportRuleTests(unittest.TestCase):
         """Malformed presentation settings cannot silently affect a published result."""
         cases = [
             ("duplicate top-level key", RULES_PATH.read_text(encoding="utf-8") + "\nschema_version: 1\n"),
-            ("duplicate nested key", RULES_PATH.read_text(encoding="utf-8") + "\n  sum_totalC_tCO2e_pixel_2020_adj: duplicate\n"),
+            ("duplicate nested key", RULES_PATH.read_text(encoding="utf-8") + "\n  carbon_pixel_adj: duplicate\n"),
         ]
         for label, mutate in (
             ("unknown setting", lambda rules: rules.update({"typo": True})),
@@ -575,8 +591,9 @@ class CountyExportRuleTests(unittest.TestCase):
                 pd.testing.assert_frame_equal(persisted, snapshot)
                 mapping = pd.read_sql_query("SELECT source_field,output_field,action FROM integration_export_fields", con)
                 row = mapping.loc[mapping.source_field == "sum_totalC_tCO2e_pixel_2020"].iloc[0]
-                self.assertEqual(row.output_field, "sum_CO2e_mitigation_dollar_value_per_pixel_adj")
-                self.assertEqual(row.action, "rename")
+                self.assertTrue(pd.isna(row.output_field))
+                self.assertEqual(row.action, "exclude")
+                self.assertAlmostEqual(saved.loc[0, "sum_CO2e_mitigation_dollar_value_per_pixel_adj"], 2.43 * 4.32612)
                 omitted = mapping[mapping.source_field.str.startswith("sum_Wsw_")]
                 self.assertEqual(len(omitted), 4)
                 self.assertTrue(omitted.output_field.isna().all())

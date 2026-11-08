@@ -26,8 +26,8 @@ from build_county_ecosystem_service_valuations_2026 import (
     adjusted_county_fields,
     compute_task,
     load_export_rules,
-    numbers,
     plan_county_export,
+    raster_service_sums,
     read_db,
     validate_crosswalk,
 )
@@ -180,7 +180,7 @@ def value_zones(
             raise ValueError(f"{product}: spatial value rows do not match zone rows")
         raw_values = pd.concat([
             values, *spatial,
-            pd.DataFrame({service: numbers(raw_sums[field]) for service, field in BASE_FIELDS.items()}),
+            pd.DataFrame(raster_service_sums(raw_sums), index=zone.index),
         ], axis=1)
         expected = set(factors.index) - (set() if is_county else {"recreation"})
         if not raw_values.columns.is_unique or set(raw_values) != expected:

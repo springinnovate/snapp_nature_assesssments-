@@ -52,10 +52,10 @@ NON_SUM_FIELD = re.compile(
     r"count|valid_count|total_count|nodata_count|nonzero_count|"
     r"area_ha_total|area_ha_valid|area_total|area_valid|proportion_[a-z_]+)_"
 )
+CARBON_PIXEL_AREA_HA = 0.09  # The carbon density source has 30 m × 30 m pixels.
 BASE_FIELDS = {
     "pollination": "sum_pollination_attributed_annual_crop_yield_value",
     "carbon_ha": "sum_totalC_tCO2e_ha_2020",
-    "carbon_pixel": "sum_totalC_tCO2e_pixel_2020",
     "dredging": "sum_avoided_dredging_costs_raster",
     "sdwa": "sum_avoided_sdwa_health_costs_raster",
     "water_treatment": "sum_avoided_treatment_costs_raster",
@@ -115,6 +115,21 @@ def numbers(series):
     values = pd.to_numeric(cleaned, errors="raise").astype(float)
     if np.isinf(values).any():
         raise ValueError(f"Non-finite numeric values in {series.name}")
+    return values
+
+
+def raster_service_sums(frame):
+    """Read raster aggregates and integrate the carbon density over pixel area.
+
+    Args:
+        frame: Unscaled zonal sums, including the 30 m carbon density sum.
+
+    Returns:
+        Unadjusted service series. The integrated carbon series is in tonnes
+        CO2e, before the monetary factor is applied.
+    """
+    values = {service: numbers(frame[field]) for service, field in BASE_FIELDS.items()}
+    values["carbon_pixel"] = values["carbon_ha"] * CARBON_PIXEL_AREA_HA
     return values
 
 
@@ -524,7 +539,7 @@ def plan_county_export(base_columns, services, rules, geometry_field="geom"):
         if service not in BASE_FIELDS:
             records.append({"source_field": "", "default_field": service + "_adj",
                             "service": service,
-                            "group": "sum_values" if service in {"mangroves", "corals"} else "service_totals"})
+                            "group": "sum_values" if service in {"carbon_pixel", "mangroves", "corals"} else "service_totals"})
         records.append({"source_field": "", "default_field": service + "_adj_factor",
                         "service": service, "group": "adjustment_factors"})
     defaults = [row["default_field"] for row in records]
@@ -852,10 +867,14 @@ def compute_task(task, paths, base, crosswalk, geometry_workers):
         issues.extend(dict(service=service, **p) for p in problems)
         add(service, values, status, source, field, method, audit)
 
-    for service, field in (BASE_FIELDS.items() if task == "base" else []):
-        values = numbers(base[field])
-        status = pd.Series(np.where(values.isna(), "missing_source_value", "existing_base"), index=ids)
-        add(service, values, status, "base", field, "existing county aggregate preserved")
+    if task == "base":
+        for service, values in raster_service_sums(base).items():
+            status = pd.Series(np.where(values.isna(), "missing_source_value", "existing_base"), index=ids)
+            if service == "carbon_pixel":
+                add(service, values, status, "base", BASE_FIELDS["carbon_ha"],
+                    f"Density sum multiplied by {CARBON_PIXEL_AREA_HA} hectares per 30 m pixel")
+            else:
+                add(service, values, status, "base", BASE_FIELDS[service], "existing county aggregate preserved")
     if task == "grazing":
         grazing = pd.read_excel(paths["grazing"], sheet_name="SNAPPGrazingCalculations", engine="openpyxl")
         county_add("grazing", grazing, "CountyCode", "CountyGrazingValueYear", "grazing")

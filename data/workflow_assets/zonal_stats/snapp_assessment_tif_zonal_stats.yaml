@@ -18,7 +18,6 @@ max_simplify_tolerance_meters = 15
 # hectare-to-pixel conversion once when building combined county outputs.
 raster_inventory =
     [
-      {"label": "Carbon stock per pixel", "filename": "totalC_tCO2e_pixel_2020.tif", "units": "t CO2e per pixel", "include": true},
       {"label": "Carbon stock per hectare", "filename": "totalC_tCO2e_ha_2020.tif", "units": "t CO2e per ha", "include": true},
       {"label": "Avoided dredging costs", "filename": "avoided_dredging_costs_raster.tif", "units": "USD 2024 per 30 m pixel", "include": true},
       {"label": "Avoided SDWA health costs", "filename": "avoided_sdwa_health_costs_raster.tif", "units": "USD 2024 per 30 m pixel", "include": true},

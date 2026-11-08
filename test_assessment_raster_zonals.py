@@ -212,6 +212,44 @@ def test_reuse_frozen_plan_without_current_raster_inputs(raster_inputs):
     assert before == {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in reviewed.parent.rglob("*") if p.is_file()}
 
 
+def test_reuse_frozen_carbon_pixel_column_is_schema_only(raster_inputs):
+    """Reuse the active sums from an older run without inspecting retired values."""
+    zones, reviewed, frozen, work, raw = raster_inputs
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(reviewed, encoding="utf-8")
+    inventory = json.loads(config["project"]["raster_inventory"])
+    retired = "sum_totalC_tCO2e_pixel_2020"
+    retired_tiff = reviewed.parent / "source rasters" / f"{retired.removeprefix('sum_')}.tif"
+    retired_tiff.write_bytes(b"source placeholder")
+    inventory.append({"label": "Carbon per pixel", "filename": retired_tiff.name,
+                      "units": "t CO2e per pixel", "include": True})
+    config["project"]["raster_inventory"] = json.dumps(inventory)
+    with reviewed.open("w", encoding="utf-8") as stream:
+        config.write(stream)
+
+    old_plan = freeze_zone_zonals(*raster_inputs, overlapping_manager_products={PUBLIC_MANAGERS})
+    csvs = write_pairs(old_plan)
+    original = read_zone_raster_sums(old_plan)
+    required = set(old_plan.raster_columns) - {retired}
+    retired_tiff.unlink()
+    county_csv = csvs[raw / "counties" / "counties"]
+    saved = pd.read_csv(county_csv, dtype={"GEOID": "string"}).assign(**{retired: "not a value"})
+    saved.to_csv(county_csv, index=False)
+
+    plan = read_frozen_zone_raster_plan(zones, frozen, work, raw, expected_raster_columns=required)
+    assert set(plan.raster_columns) == required
+    assert plan.retired_raster_columns == (retired,)
+    reused = read_zone_raster_sums(plan)
+    for product in ZONE_PRODUCTS:
+        pd.testing.assert_frame_equal(reused[product], original[product].drop(columns=retired))
+
+    with pytest.raises(ValueError, match="sum columns do not match"):
+        read_frozen_zone_raster_plan(zones, frozen, work, raw, expected_raster_columns={"sum_flood"})
+    saved.drop(columns=retired).to_csv(county_csv, index=False)
+    with pytest.raises(ValueError, match="Unexpected key or raster sum columns"):
+        read_zone_raster_sums(plan)
+
+
 @pytest.mark.parametrize(("defect", "message"), [
     ("wrong_output", "does not use this run's vector and result paths"),
     ("missing_shard", "missing required"),

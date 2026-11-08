@@ -76,6 +76,9 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
         sums = zones[product][keys].copy()
         for source in valuation.BASE_FIELDS.values():
             sums[source] = [100 * (index + 1) for index in range(size)]
+        if product == "counties":
+            sums["sum_totalC_tCO2e_ha_2020"] = [27.0]
+            sums["sum_totalC_tCO2e_pixel_2020"] = [2.0]  # Retired input must not affect dollars.
         raster_sums[product] = sums.iloc[::-1].reset_index(drop=True)
 
     outputs, audits, qa = valuation.value_zones(
@@ -88,6 +91,11 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
     assert county["total_ecosystem_services_w_rec"] - county["total_ecosystem_services"] == pytest.approx(400)
     assert county["sum_pollination_attributed_annual_crop_yield_value_adj"] == pytest.approx(9)
     assert county["pollination_adj_factor"] == pytest.approx(0.09)
+    carbon = "sum_CO2e_mitigation_dollar_value_per_pixel_adj"
+    assert county[carbon] == pytest.approx(2.43 * 4.32612)
+    assert county["carbon_pixel_adj_factor"] == pytest.approx(4.32612)
+    assert "sum_totalC_tCO2e_pixel_2020" not in county
+    assert carbon in qa["total_components"]
     assert county["sum_flood_marginal_npv_masked_to_wetlands_adj"] == pytest.approx(9)
     assert "sum_flood_marginal_npv_masked_to_wetlands_adj" not in qa["total_components"]
     assert "es_total" not in county
@@ -101,6 +109,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
         assert np.allclose(frame["marine_fisheries_adj"], 4 * 1.027)
         if "Mang_Type" in frame:
             assert list(frame["sum_pollination_attributed_annual_crop_yield_value_adj"]) == pytest.approx([9, 18])
+            assert list(frame[carbon]) == pytest.approx([9 * 4.32612, 18 * 4.32612])
     assert "integration_county_table_status" in audits
     assert qa["blank_component_rows"]["counties"]["sum_mangrove_coastal_flood_protection_value_adj"] == 1
 
