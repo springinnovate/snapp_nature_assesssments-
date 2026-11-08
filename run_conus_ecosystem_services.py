@@ -185,6 +185,9 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     raw_root = work / "raw_zonals"
     work_dir = work / "zonal_stats_work"
     config_files = [config_dir / filename for filename in CONFIG_FILES]
+    gdp_crosswalk = derived["sources"]["gdp"].get("allocation_crosswalk")
+    if gdp_crosswalk:
+        config_files.append((data / gdp_crosswalk).resolve())
     if source_id is None:
         runner = (root / args.runner).resolve()
         if not runner.is_file():

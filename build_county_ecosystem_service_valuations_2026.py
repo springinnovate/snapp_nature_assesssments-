@@ -1099,7 +1099,12 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     geometry_utils_hash = sha256(geometry_utils_path)
     config_names = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv",
                     "export_rules.yaml", "derived_metrics.yaml")
-    config_hashes = {name: sha256(config_dir / name) for name in config_names}
+    config_paths = {name: config_dir / name for name in config_names}
+    derived_rules = yaml.safe_load((config_dir / "derived_metrics.yaml").read_text(encoding="utf-8"))
+    gdp_crosswalk = derived_rules["sources"]["gdp"].get("allocation_crosswalk")
+    if gdp_crosswalk:
+        config_paths["gdp_allocation_crosswalk"] = (data_root / gdp_crosswalk).resolve()
+    config_hashes = {name: sha256(path) for name, path in config_paths.items()}
     rules = load_export_rules(config_dir / "export_rules.yaml")
     rules_text = (config_dir / "export_rules.yaml").read_text(encoding="utf-8")
     sources = pd.read_csv(config_dir / "sources.csv")
@@ -1223,14 +1228,14 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     if (sha256(__file__) != script_hash or sha256(allocator_path) != allocator_hash
             or sha256(coral_allocator_path) != coral_allocator_hash
             or sha256(geometry_utils_path) != geometry_utils_hash
-            or any(sha256(config_dir / name) != digest for name, digest in config_hashes.items())):
+            or any(sha256(config_paths[name]) != digest for name, digest in config_hashes.items())):
         raise ValueError("Script or configuration changed during integration; rerun")
     source_audit = sources.copy()
     source_audit["sha256"] = source_audit.source.map(fingerprints)
     source_audit["bytes"] = source_audit.source.map({n: p.stat().st_size for n, p in paths.items()})
     source_audit = pd.concat([source_audit, pd.DataFrame([
-        {"source": name, "path": name, "sha256": sha256(config_dir / name), "bytes": (config_dir / name).stat().st_size}
-        for name in config_names
+        {"source": name, "path": str(path), "sha256": config_hashes[name], "bytes": path.stat().st_size}
+        for name, path in config_paths.items()
     ])], ignore_index=True)
     meta = pd.DataFrame(metadata)
     meta["output_field"] = meta.service.map(output_fields)

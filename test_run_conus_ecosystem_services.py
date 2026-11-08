@@ -57,6 +57,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         config_dir = self.data / "workflow_assets/county_integration"
         for path in (
             self.runner, self.zonal_config, self.root / "config/padus_land_rules.rules",
+            config_dir / "virginia_gdp_crosswalk.csv",
             *(config_dir / name for name in wrapper.CONFIG_FILES),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +147,9 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         args = wrapper.parse_args([*self.args, *extra])
         with (
             patch.object(wrapper.subprocess, "run", side_effect=self.fake_subprocess),
-            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {"sources": {}})),
+            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {"sources": {
+                "gdp": {"path": "gdp.csv", "allocation_crosswalk":
+                        "workflow_assets/county_integration/virginia_gdp_crosswalk.csv"}}})),
             patch.object(wrapper, "validate_zone_raster_inputs", return_value=(rasters, [])),
             patch.object(wrapper, "freeze_zone_zonals", side_effect=self.fake_freeze),
             patch.object(wrapper, "read_zone_raster_sums", self.read_rasters),
@@ -197,7 +200,8 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             patch.object(wrapper.subprocess, "run") as subprocess_run,
             patch.object(wrapper, "validate_zone_raster_inputs") as inspect_tiffs,
             patch.object(wrapper, "freeze_zone_zonals") as freeze,
-            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {"sources": {}})),
+            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {
+                "sources": {"gdp": {"path": "gdp.csv"}}})),
             patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan) as reconstruct,
             patch.object(wrapper, "read_zone_raster_sums", return_value=fake_sums) as read_sums,
             patch.object(wrapper, "value_zones", side_effect=self.fake_valuation) as value,
@@ -230,7 +234,8 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             self.run_wrapper()
         args = wrapper.parse_args(["--reuse-zonals-from", self.run_id, "--run-id", "revalued"])
         with (
-            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {"sources": {}})),
+            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {
+                "sources": {"gdp": {"path": "gdp.csv"}}})),
             patch.object(wrapper, "read_frozen_zone_raster_plan") as reconstruct,
             self.assertRaisesRegex(ValueError, "no completed, verified CONUS raster zonals"),
         ):

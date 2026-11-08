@@ -62,7 +62,7 @@ Paths in the table are relative to the repository's `data/` directory.
 | Mangrove coastal flood protection | `analysis_inputs/ecosystem_services/mangroves/ucsc_cwon_studyunits.gpkg` |
 | Coral coastal protection | `analysis_inputs/ecosystem_services/aeb_coral.gpkg` |
 
-Four additional files record the assessment decisions:
+Additional files record the assessment decisions:
 
 - [`adjustment_factors.csv`](../data/workflow_assets/county_integration/adjustment_factors.csv):
   multipliers, their stated reasons, and source units.
@@ -72,6 +72,8 @@ Four additional files record the assessment decisions:
   field names, exclusions, ordering, and output naming.
 - [`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml):
   explicit adjusted-value components, denominator releases/columns/units and ratios.
+- [`virginia_gdp_crosswalk.csv`](../data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv):
+  BEA combined-area codes and their constituent Virginia county/city GEOIDs.
 
 The source files determine the estimates' spatial and temporal coverage.
 Adjustment factors are assessment-supplied constants; the workflow does not
@@ -493,14 +495,15 @@ stays blank, so you can distinguish missing coverage from an estimated zero.
 
 ### Where the denominators come from
 
-The output keeps all four denominator columns. They are joined by five-digit
-county FIPS, preserving leading zeroes.
+The output keeps all four denominator columns. Direct matches use five-digit
+county FIPS, preserving leading zeroes. The Virginia GDP allocation described
+below maps combined-area codes to their constituent county/city codes.
 
 | Column | Source |
 | --- | --- |
 | `area_ha_county` | `intersect_area_ha_tl_2024_us_county_50_states` in `counties_area_20260910_130816.csv`, matched by `GEOID` |
 | `area_ha_all_natural` | Sum of the NLCD forest, grassland, shrubland, water/snow and wetland areas |
-| `GDP_2024` | `2024` in `CAGDP1_LineCode3_All_States.csv`, LineCode 3, matched by `GeoFIPS`. Values are in thousands of dollars and are multiplied by 1,000 |
+| `GDP_2024` | `2024` in `CAGDP1_LineCode3_All_States.csv`, LineCode 3, matched by `GeoFIPS` or allocated from a mapped Virginia combined area. Values are in thousands of dollars and are multiplied by 1,000 |
 | `Pop_2024` | `POPESTIMATE2024` in `co-est2025-alldata.csv`, county rows (`SUMLEV=050`), matched by `GEOFIPS` |
 
 Full source paths are in
@@ -514,13 +517,47 @@ The natural-land ratio uses the former. For a county outside NLCD coverage,
 zero observed hectares means the data are unavailable, rather than that the
 county has no natural land.
 
+### Virginia combined-area GDP
+
+BEA reports some Virginia counties and independent cities as combined areas.
+The [crosswalk](../data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
+maps each combined-area code to its constituent GEOIDs, with the official BEA
+source recorded in the file. Select this file with
+`sources.gdp.allocation_crosswalk` in `derived_metrics.yaml`.
+
+The combined GDP is divided by 2024 population share:
+
+```text
+county GDP_2024 = combined-area GDP_2024 × county Pop_2024 / combined-area Pop_2024
+```
+
+The denominator uses all members of the combined area from the population
+source, even when the output contains only a subset of them. The allocations
+across the full group sum to its original GDP; directly matched county GDP
+values are not altered or given an additional allocation. This preserves
+the original totals without repeating a combined-area value on each row.
+
+`GDP_2024_is_allocated` is `1` for these population-allocated estimates and
+`0` otherwise. A zero flag does not imply that a missing GDP value is available.
+The populated county GDP then supplies the denominator for `es_per_gdp`.
+Population allocation is an estimate, not a separate BEA estimate for each
+jurisdiction: population measures residents rather than where production
+occurs.
+
+The GeoPackage's `derived_metric_gdp_allocations` table records the source
+group, population weights and county allocations.
+`derived_metric_gdp_group_checks` reconciles each full group to its original
+GDP value. These tables distinguish population allocation from direct GDP
+matches.
+
 ### Why a ratio may be blank
 
 A ratio is blank when its denominator is missing or nonpositive. Common causes
 are an absent county row in the GDP or population table, or a county outside
-NLCD coverage. GDP records for combined BEA regions are not distributed to their
-constituent counties; a county without its own matching GDP row has a blank
-`es_per_gdp`.
+NLCD coverage. A GDP record that has neither a direct county match nor a
+configured combined-area mapping leaves `es_per_gdp` blank. Missing or invalid
+population for a mapped Virginia member is an allocation error, not an assumed
+zero population.
 
 To investigate a particular county, find its `GEOID` in the GeoPackage's
 `derived_metric_county_status` table. This records the denominator match and the
@@ -534,6 +571,17 @@ YAML used for that run, even if the repository settings have since changed.
 `derived_metric_components` lists the included fields, their totals across
 counties, and their blank counts. Unmatched source rows are recorded in
 `derived_metric_source_issues`.
+
+To refresh a completed CONUS assessment after changing the GDP source or
+allocation rules, reuse the original raster run. From the repository root:
+
+```powershell
+python run_conus_ecosystem_services.py --reuse-zonals-from '<original-raster-run-id>' --run-id '<new-run-id>'
+```
+
+This reads saved geometries and raster sums, recalculates the valuations and
+county denominators, and publishes a new set of output pairs without rerunning
+the raster zonals. Use the original raster run ID, not a valuation-only rerun ID.
 
 For a new output from existing county values, use the
 [county finalization command](supporting_workflows.md#build-or-finalize-county-valuations).
@@ -564,6 +612,7 @@ The GeoPackage includes supporting tables for evaluating the estimates:
 | Which countries' mangrove study units were selected, and how many were excluded? | `integration_services` |
 | Which timber source values were clamped, and how much did clamping change the total? | `integration_source_issues`, `integration_services` |
 | Which Connecticut allocation weights were used? | `integration_ct_crosswalk` |
+| Which Virginia GDP values were population-allocated, and do they preserve each source total? | `derived_metric_gdp_allocations`, `derived_metric_gdp_group_checks` |
 | Which naming and exclusion rules produced the exported fields? | `integration_export_rules`, `integration_export_fields` |
 | What does the air-quality annual total represent? | `integration_summary_fields` |
 | Which script version, execution, and intermediate results identify the run? | `integration_run`, `integration_checkpoints` |

@@ -56,7 +56,7 @@ Use these files to locate the exact inputs or select replacements:
 | --- | --- |
 | PAD-US | `--padus-path` and `--padus-layer`. The default is `PADUS4_1VectorAnalysis_PADUS_Only.gdb` in `data/analysis_inputs/padus/PADUS4_1VectorAnalysis_PADUS_Only (1)/`, layer `PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP`. |
 | County boundaries, land mask, or BBB footprint | `--counties`, `--land-mask`, and `--bbb-by-county`. Match the county release and five-digit `GEOID` keys across inputs. Counties require `ALAND` in square metres; mask and BBB GeoPackages have one footprint per `GEOID` they cover. Select layers with `--counties-layer`, `--land-mask-layer`, or `--bbb-layer` as needed. Keep the default national county file at `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` for coral assignments. |
-| Service TIFFs | The [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml) names the 13 required source TIFFs and their units. Place compatible replacements in `data/analysis_inputs/ecosystem_services/` with the expected names. |
+| Service TIFFs | The [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml) names the required source TIFFs and their units. Place compatible replacements in `data/analysis_inputs/ecosystem_services/` with the expected names. |
 | Valuation tables and spatial sources | [`sources.csv`](data/workflow_assets/county_integration/sources.csv) gives paths relative to `data/`. Keep the expected fields, identifiers, and units. When replacing NHD, verify the lake exclusion IDs against that release. |
 | County ratio inputs | [`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml) selects the county area, NLCD natural area, GDP, and population files. These four inputs are required for both fresh runs and revaluation. |
 | Factors, fields, or public-land rules | [`adjustment_factors.csv`](data/workflow_assets/county_integration/adjustment_factors.csv), [`export_rules.yaml`](data/workflow_assets/county_integration/export_rules.yaml), and [`padus_land_rules.rules`](config/padus_land_rules.rules). |
@@ -117,6 +117,9 @@ The command checks the saved results and publishes six new pairs, leaving the
 source run intact. Add `--validate-only` to check reuse before launching.
 Use a fresh assessment when changing the zones or source rasters.
 
+This also updates GDP allocations and ratios without rerunning zonals. Use the
+original run that calculated the raster sums, not a valuation-only derivative.
+
 ## Methods for reporting
 
 **Zones and land shares.** The workflow clips PAD-US 4.1 VectorAnalysis
@@ -143,8 +146,9 @@ simplification is capped at 15 m, with tighter limits for small or narrow parts.
 Overlapping manager types are sampled separately. A raster sum of zero can
 represent either zero-valued pixels or no valid pixels. Unit conversions are
 applied once during valuation: pollination and flood values per hectare use
-0.09 ha per 30 m pixel. Per-pixel carbon stock uses $3.66 per tonne CO₂e
-multiplied by a 1.182 inflation adjustment.
+0.09 ha per 30 m pixel. Carbon stock is calculated from the per-hectare raster
+sum multiplied by 0.09, then valued at $3.66 per tonne CO₂e multiplied by a 1.182
+inflation adjustment.
 
 **County tables.** Grazing, timber, jobs, air quality, urban heat, and physical
 health are joined by county. A [land-area crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
@@ -182,6 +186,17 @@ and 2024 Census population estimates. Missing service estimates
 remain blank in service columns and contribute zero to totals. Ratios with
 missing or nonpositive denominators are blank. The total is an assessment
 summary of components with different time bases and possible economic overlap.
+
+**GDP geography.** County GDP matches BEA geographic codes directly except for
+the Virginia combined county/city areas listed in the
+[GDP crosswalk](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv).
+Each combined-area total is split using the members' shares of 2024 Census
+population. The full group's population is used even for a subset of counties,
+and allocated GDP sums back to the original total. These estimates have
+`GDP_2024_is_allocated = 1`; other rows have `0`. The GeoPackage's
+`derived_metric_gdp_allocations` and `derived_metric_gdp_group_checks` tables
+record the source amounts, weights, and reconciliation. Population allocation
+does not constitute an official BEA estimate for each member jurisdiction.
 
 For reproducibility, report the input releases, code and toolkit revisions,
 and the run ID. Keep `run_manifest.json` with the final pairs; it records the

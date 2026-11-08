@@ -71,9 +71,13 @@ def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.D
         raise ValueError(f"Missing service sources in sources.csv: {sorted(missing)}")
     rules = load_export_rules(config_dir / "export_rules.yaml")
     derived = yaml.safe_load((config_dir / "derived_metrics.yaml").read_text(encoding="utf-8"))
+    allocation = derived["sources"]["gdp"].get("allocation_crosswalk")
+    denominator_paths = [(data_root / source["path"]).resolve() for source in derived["sources"].values()]
+    if allocation:
+        denominator_paths.append((data_root / allocation).resolve())
     for path in [*(paths[name] for name in VALUE_SOURCES),
                  *(config_dir / name for name in CONFIG_FILES),
-                 *((data_root / source["path"]).resolve() for source in derived["sources"].values())]:
+                 *denominator_paths]:
         if not path.is_file():
             raise FileNotFoundError(f"Missing valuation input: {path}")
     return paths, factors, rules, derived
