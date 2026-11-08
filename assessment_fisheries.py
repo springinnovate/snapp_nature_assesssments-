@@ -22,6 +22,7 @@ _FIELDS = {
     "marine_fisheries": "ncp_value",
     "inland_fisheries": "Consumptive use value (USD)_Intermediate assumption",
 }
+_UTAH_FIPS = "49"
 # Recognize non-CONUS names that may be supplied by the source tables, even
 # when absent from the legacy county builder's state lookup.
 _STATE_NAMES = {
@@ -90,22 +91,23 @@ def _read_marine_shoreline(path: Path, counties: gpd.GeoDataFrame) -> shapely.ST
     return shapely.STRtree(gpd.GeoSeries(clipped, crs=coast.crs).to_crs(AREA_CRS).to_numpy())
 
 
-def _read_great_lakes(path: Path, features: Path):
-    """Read and dissolve the configured NHD footprints of the five Great Lakes.
+def _read_excluded_lakes(path: Path, features: Path, label: str):
+    """Read and dissolve NHD footprints to subtract from inland weights.
 
     Args:
         path: Prepared NHD GeoPackage containing the freshwater geometries.
         features: Tracked CSV of NHDWaterbody source identifiers to exclude.
+        label: Lake or lake group name for validation messages.
 
     Returns:
-        The combined Great Lakes geometry in the measurement CRS.
+        The combined exclusion geometry in the measurement CRS.
 
     Raises:
         ValueError: The identifier list is invalid or not found in the source.
     """
     ids = pd.read_csv(features, dtype={"source_fid": "int64"})["source_fid"]
     if ids.empty or (ids < 0).any() or ids.duplicated().any():
-        raise ValueError(f"Expected distinct nonnegative Great Lakes source FIDs in {features}")
+        raise ValueError(f"Expected distinct nonnegative {label} source FIDs in {features}")
     id_list = ", ".join(map(str, ids))
     lakes = read_dataframe(
         path, columns=["source_fid"],
@@ -113,11 +115,11 @@ def _read_great_lakes(path: Path, features: Path):
     )
     missing = set(ids) - set(lakes["source_fid"])
     if missing:
-        raise ValueError(f"Missing Great Lakes features in {path}: {sorted(missing)}")
+        raise ValueError(f"Missing {label} features in {path}: {sorted(missing)}")
     projected = lakes.to_crs(AREA_CRS).geometry.to_numpy()
     merged = repair_polygonal_geometry(shapely.union_all(shapely.make_valid(projected)))
     if merged is None or not np.isfinite(merged.area) or merged.area <= 0:
-        raise ValueError(f"No valid Great Lakes polygon area in {path}")
+        raise ValueError(f"No valid {label} polygon area in {path}")
     shapely.prepare(merged)
     return merged
 
@@ -148,8 +150,9 @@ def value_fisheries(
 
     CONUS county measurements set the fixed state denominators. Each footprint,
     including each manager row, gets the same rate times its own weight. The
-    Great Lakes are excluded from marine shoreline and inland water area;
-    neither the source data nor the zone geometries are changed.
+    Great Lakes are excluded from marine shoreline and inland water area.
+    Great Salt Lake is excluded only from Utah's inland water area. The
+    state totals, source data and zone geometries are not changed.
 
     Args:
         zones: Product frames keyed by name, with GEOID and geometry. The
@@ -198,7 +201,10 @@ def value_fisheries(
     totals = {service: _read_state_totals(paths[service], field) for service, field in _FIELDS.items()}
     marine_tree = _read_marine_shoreline(paths["coastline_lines"], zones["counties"])
     water_path = paths["freshwater_polygons"]
-    lake_geometry = _read_great_lakes(water_path, paths["great_lakes_features"])
+    great_lakes = _read_excluded_lakes(water_path, paths["great_lakes_features"], "Great Lakes")
+    great_salt_lake = _read_excluded_lakes(
+        water_path, paths["inland_fisheries_exclusions"], "Great Salt Lake",
+    )
     water_info = read_info(water_path)
     if not water_info["crs"] or not water_info["capabilities"]["fast_spatial_filter"]:
         raise ValueError(f"Freshwater input must have a CRS and a spatial index: {water_path}")
@@ -232,9 +238,10 @@ def value_fisheries(
             if invalid.any():
                 candidates[invalid] = shapely.make_valid(candidates[invalid])
             inland_tree = shapely.STRtree(candidates)
+        excluded_lakes = great_salt_lake if state == _UTAH_FIPS else great_lakes
         county_lakes = (
-            shapely.intersection(lake_geometry, county)
-            if measure_inland and shapely.intersects(lake_geometry, county) else None
+            shapely.intersection(excluded_lakes, county)
+            if measure_inland and shapely.intersects(excluded_lakes, county) else None
         )
         measured = {}
         for product, groups in by_county.items():

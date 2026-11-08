@@ -11,7 +11,12 @@ import pyogrio
 import pytest
 from shapely.geometry import box
 
-from assessment_raster_zonals import freeze_zone_zonals, read_zone_raster_sums, validate_zone_raster_inputs
+from assessment_raster_zonals import (
+    freeze_zone_zonals,
+    read_frozen_zone_raster_plan,
+    read_zone_raster_sums,
+    validate_zone_raster_inputs,
+)
 from assessment_zone_geometry import ZONE_PRODUCTS
 
 
@@ -182,3 +187,65 @@ def test_missing_enabled_source_stops_before_writing(raster_inputs):
     with pytest.raises(FileNotFoundError, match="Included raster 'Pollination' is missing"):
         freeze_zone_zonals(*raster_inputs)
     assert not frozen.exists() and not work.exists()
+
+
+def test_reuse_frozen_plan_without_current_raster_inputs(raster_inputs):
+    """Read a mixed split/unsplit run even when the reviewed config and TIFFs are gone."""
+    zones, reviewed, frozen, work, raw = raster_inputs
+    old = freeze_zone_zonals(*raster_inputs, overlapping_manager_products={PUBLIC_MANAGERS})
+    write_pairs(old)
+    original_sums = read_zone_raster_sums(old)
+    reviewed.unlink()
+    for raster in (reviewed.parent / "source rasters").glob("*.tif"):
+        raster.unlink()
+    before = {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in reviewed.parent.rglob("*") if p.is_file()}
+
+    for overlap in (None, {PUBLIC_MANAGERS}):
+        plan = read_frozen_zone_raster_plan(
+            zones, frozen, work, raw, expected_raster_columns=set(old.raster_columns),
+            overlapping_manager_products=overlap,
+        )
+        assert plan == old
+        reused_sums = read_zone_raster_sums(plan)
+        for product in ZONE_PRODUCTS:
+            pd.testing.assert_frame_equal(reused_sums[product], original_sums[product])
+    assert before == {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in reviewed.parent.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize(("defect", "message"), [
+    ("wrong_output", "does not use this run's vector and result paths"),
+    ("missing_shard", "missing required"),
+    ("wrong_manager_keys", "Saved manager shard keys do not match"),
+    ("scaled_raster", "original, unscaled TIFF paths"),
+    ("unreviewed_service", "sum columns do not match"),
+])
+def test_reuse_rejects_incompatible_saved_plan(raster_inputs, defect, message):
+    """Prevent path substitution, incomplete manager coverage, and double scaling."""
+    zones, _, frozen, work, raw = raster_inputs
+    old = freeze_zone_zonals(*raster_inputs, overlapping_manager_products={PUBLIC_MANAGERS})
+    expected = set(old.raster_columns)
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(frozen, encoding="utf-8")
+    shard = f"{PUBLIC_MANAGERS}__manager_01"
+    if defect == "wrong_output":
+        config["job:counties"]["output_csv"] = "some_other_run/counties.csv"
+    elif defect == "missing_shard":
+        config.remove_section(f"job:{shard}")
+    elif defect == "wrong_manager_keys":
+        vector = work / "manager_zone_shards" / f"{shard}.gpkg"
+        frame = pyogrio.read_dataframe(vector, layer=PUBLIC_MANAGERS).assign(Mang_Type="wrong")
+        vector.unlink()
+        pyogrio.write_dataframe(frame, vector, layer=PUBLIC_MANAGERS)
+    elif defect == "scaled_raster":
+        entries = json.loads(config["project"]["snapp_rasters"])
+        entries[0]["scale"] = 0.09
+        config["project"]["snapp_rasters"] = json.dumps(entries)
+    else:
+        expected.add("sum_unreviewed")
+    with frozen.open("w", encoding="utf-8") as stream:
+        config.write(stream)
+    with pytest.raises(ValueError, match=message):
+        read_frozen_zone_raster_plan(
+            zones, frozen, work, raw, expected_raster_columns=expected,
+            overlapping_manager_products={PUBLIC_MANAGERS},
+        )

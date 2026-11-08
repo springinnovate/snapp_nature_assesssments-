@@ -49,6 +49,7 @@ Paths in the table are relative to the repository's `data/` directory.
 | County freshwater areas | `analysis_results/zonal_statistics/counties/counties_freshwater_area_20260910_130816.csv` |
 | Prepared NHD freshwater polygons | `analysis_inputs/hydrography/nhdfreshwater/nhd_freshwater_clipped_to_usa_2026_05_18_01_44_14.gpkg` |
 | Great Lakes source feature IDs | `workflow_assets/county_integration/great_lakes_nhd_features.csv` |
+| Great Salt Lake source feature IDs | `workflow_assets/county_integration/inland_fisheries_exclusions.csv` |
 | Grazing | `analysis_inputs/ecosystem_services/grazing/SNAPPGrazingDataset_final_062326.xlsx` |
 | Nature-related wages | `analysis_inputs/ecosystem_services/jobs/Finalized Flagged and Sorted Industry and County Codes.xlsx` |
 | Timber | `analysis_inputs/ecosystem_services/timber/total_valuation_all_regions_fvs.csv` |
@@ -169,7 +170,7 @@ county value = state value × county weight / sum of county weights in that stat
 | Service | State source value | County allocation weight | Source units/year | Factor |
 | --- | --- | --- | --- | --- |
 | Marine fisheries | `ncp_value` | Marine coastline length (km) | USD, 2023 | 1.027 |
-| Inland fisheries | `Consumptive use value (USD)_Intermediate assumption` | Freshwater area outside the five Great Lakes (ha) | USD, 2022 | 1.065 |
+| Inland fisheries | `Consumptive use value (USD)_Intermediate assumption` | Freshwater area outside the applicable lake exclusions (ha) | USD, 2022 | 1.065 |
 
 For marine fisheries, the county builder starts with the county lengths from
 the `coastline` row in `sources.csv`. It uses the TIGER GeoPackage in the
@@ -184,21 +185,20 @@ measured length.
 
 For inland fisheries, the county builder starts with the county areas from
 the `freshwater` row in `sources.csv`. It reads the prepared NHD polygons from
-`freshwater_polygons` and the selection table from `great_lakes_features`.
-The table identifies nine `NHDWaterbody` source features by source FID and
-records the GNIS IDs for Lakes Superior, Michigan, Huron, Erie, and Ontario.
-These FIDs are tied to the configured NHD release; verify the table against
-the source if changing releases. The builder unions the selected polygons
-into a single exclusion footprint, so overlapping records for the same lake
-do not expand the excluded area beyond their combined footprint.
+`freshwater_polygons` and selects `NHDWaterbody` features by source FID.
+`great_lakes_features` selects the nine features for Lakes Superior, Michigan,
+Huron, Erie, and Ontario. `inland_fisheries_exclusions` selects the 26 features
+for Great Salt Lake (GNIS ID `01441459`), which is excluded in Utah. The
+selection tables are tied to the configured NHD release; verify both tables
+against the source if changing releases.
 
-Only counties with a positive-area intersection with this footprint are
-remeasured. For those counties, the builder excludes the footprint from the
-prepared freshwater polygons and sums the remaining per-feature county
-intersection areas in EPSG:6933, converted to hectares. Other counties retain
-their supplied freshwater areas. The exclusion affects only inland fisheries
-allocation; it does not change state totals, the adjustment factor, or the
-general freshwater zonal inputs and outputs.
+The builder unions each selection so overlapping polygons are only excluded
+once. It remeasures only counties with a positive-area intersection with
+their applicable exclusion. For those counties, it sums the remaining
+per-feature freshwater intersection areas in EPSG:6933, converted to hectares.
+Other counties retain their supplied freshwater areas. These exclusions affect
+only inland fisheries allocation; they do not change the source state totals,
+the adjustment factor, marine fisheries, or the general freshwater zonals.
 
 The denominator is the sum of the county weights within each state,
 not an independently measured state coastline length or freshwater area.
@@ -578,9 +578,9 @@ python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry
 ```
 
 The integration uses the configured county aggregates and NLCD mask areas.
-It calculates the fisheries weights from the configured coastline and
-freshwater inputs as part of the build; no separate zonal statistics run is
-needed.
+It calculates fisheries weights from the configured coastline, freshwater,
+and lake exclusion inputs as part of the build; no separate zonal statistics
+run is needed.
 The default output pair is:
 
 ```text

@@ -1,4 +1,4 @@
-"""Test state-rate reuse and Great Lakes exclusions for footprint fisheries."""
+"""Test state-rate reuse and lake exclusions for footprint fisheries."""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,32 +26,41 @@ class FootprintFisheriesTests(TestCase):
                 ("coastline_lines", ".gpkg"),
                 ("freshwater_polygons", ".gpkg"),
                 ("great_lakes_features", ".csv"),
+                ("inland_fisheries_exclusions", ".csv"),
                 ("marine_fisheries", ".csv"),
                 ("inland_fisheries", ".csv"),
             )
         }
         gpd.GeoDataFrame(
-            {"NAME": ["Atlantic", "Atlantic", " gREat Lakes ", "Atlantic"]},
+            {"NAME": ["Atlantic", "Atlantic", " gREat Lakes ", "Atlantic", "Atlantic", "Atlantic"]},
             geometry=[
                 LineString([(10, 20), (90, 20)]),
                 LineString([(110, 20), (190, 20)]),
                 LineString([(10, 80), (90, 80)]),
                 LineString([(210, 20), (290, 20)]),
+                LineString([(310, 80), (390, 80)]),
+                LineString([(410, 20), (490, 20)]),
             ],
             crs=6933,
         ).to_file(self.paths["coastline_lines"], index=False)
         lake = box(0, 40, 100, 100)
+        salt_lake = box(300, 20, 400, 100)
         gpd.GeoDataFrame(
             {
-                "source_layer": ["NHDWaterbody", "NHDWaterbody", "NHDArea", "NHDWaterbody"],
-                "source_fid": [11, 12, 11, 13],
+                "source_layer": ["NHDWaterbody", "NHDWaterbody", "NHDArea", "NHDWaterbody",
+                                 "NHDWaterbody", "NHDWaterbody", "NHDArea", "NHDWaterbody"],
+                "source_fid": [11, 12, 11, 13, 14, 15, 14, 16],
             },
             # A second copy of the lake has an unlisted FID. Removing just the
             # listed feature rather than excluding its footprint would miss it.
-            geometry=[lake, lake, box(0, 0, 100, 60), box(100, 0, 200, 40)],
+            geometry=[lake, lake, box(0, 0, 100, 60), box(100, 0, 200, 40),
+                      salt_lake, salt_lake, box(300, 0, 400, 40), box(400, 0, 500, 40)],
             crs=6933,
         ).to_file(self.paths["freshwater_polygons"], index=False)
         pd.DataFrame({"source_fid": [11]}).to_csv(self.paths["great_lakes_features"], index=False)
+        pd.DataFrame({"source_fid": [14]}).to_csv(
+            self.paths["inland_fisheries_exclusions"], index=False,
+        )
         pd.DataFrame(
             {
                 "State": [" Michigan ", "Ohio", "Alaska", "Hawaii", "Guam", "Total"],
@@ -105,6 +114,47 @@ class FootprintFisheriesTests(TestCase):
         with self.assertRaisesRegex(ValueError, "No allocation support for marine_fisheries states:.*48"):
             value_fisheries(self.zones, self.paths, geometry_workers=1)
 
+    def test_redistributes_utah_inland_only_across_all_products(self):
+        """Conserve Utah's total using eligible water and leave marine values alone."""
+        national_before = value_fisheries(self.zones, self.paths, geometry_workers=1)
+        for service, field, value in (
+            ("inland_fisheries", "Consumptive use value (USD)_Intermediate assumption", 6000),
+            ("marine_fisheries", "ncp_value", 1200),
+        ):
+            path = self.paths[service]
+            totals = pd.read_csv(path)
+            totals.loc[len(totals)] = {"State": "Utah", field: value}
+            totals.to_csv(path, index=False)
+
+        lake_only = self.zone(["49011"], [box(300, 60, 400, 100)])
+        utah = dict(zip(ZONE_PRODUCTS, (
+            self.zone(["49011", "49057"], [box(300, 0, 400, 100), box(400, 0, 500, 100)]),
+            self.zone(["49011"], [box(300, 0, 350, 20)]),
+            self.zone(["49011", "49011"], [box(300, 0, 325, 20), box(325, 0, 350, 20)]),
+            lake_only,
+            lake_only,
+            lake_only,
+        )))
+        zones = {product: pd.concat([frame, utah[product]], ignore_index=True)
+                 for product, frame in self.zones.items()}
+        expected = (
+            [[600, 2000], [600, 4000]],
+            [[0, 1000]],
+            [[0, 500], [0, 500]],
+            [[600, 0]],
+            [[600, 0]],
+            [[600, 0]],
+        )
+        results = value_fisheries(zones, self.paths, geometry_workers=2)
+        for product, utah_values in zip(ZONE_PRODUCTS, expected):
+            with self.subTest(product=product):
+                offset = len(self.zones[product])
+                pd.testing.assert_frame_equal(results[product].iloc[:offset], national_before[product])
+                np.testing.assert_allclose(results[product].iloc[offset:], utah_values)
+        np.testing.assert_allclose(
+            results["counties"].iloc[-2:]["inland_fisheries"].sum(), 6000,
+        )
+
     def test_rejects_non_conus_county_geometries(self):
         """Do not compute state rates from a mixed-domain county layer."""
         self.zones["counties"].loc[0, "GEOID"] = "02001"
@@ -139,6 +189,14 @@ class FootprintFisheriesTests(TestCase):
         """Reject stale lake FIDs instead of treating the water as eligible."""
         pd.DataFrame({"source_fid": [11, 999]}).to_csv(self.paths["great_lakes_features"], index=False)
         with self.assertRaisesRegex(ValueError, r"Missing Great Lakes features.*999"):
+            value_fisheries(self.zones, self.paths, geometry_workers=1)
+
+    def test_fails_when_configured_great_salt_lake_not_in_source(self):
+        """Reject stale Utah identifiers without silently restoring the lake weight."""
+        pd.DataFrame({"source_fid": [14, 999]}).to_csv(
+            self.paths["inland_fisheries_exclusions"], index=False,
+        )
+        with self.assertRaisesRegex(ValueError, r"Missing Great Salt Lake features.*999"):
             value_fisheries(self.zones, self.paths, geometry_workers=1)
 
     def test_repairs_zone_geometry_for_overlay_only(self):

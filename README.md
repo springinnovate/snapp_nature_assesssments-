@@ -77,9 +77,10 @@ under `data/workflow_assets/zonal_stats/runs/` with the run records.
 Footprint land shares divide the area within the Census land mask by Census
 `ALAND`. Those shares allocate county-level services other than recreation
 and fisheries; the mask does not change the zone geometries. Fisheries use
-eligible shoreline length or freshwater area and fixed state denominators; Great Lakes
-shorelines are excluded from marine weights and the five lakes are excluded
-from inland weights. Only CONUS state totals enter the allocation. Coral points
+eligible shoreline length or freshwater area and fixed state denominators. The
+five Great Lakes are excluded from both sets of weights; Great Salt Lake is
+also excluded from Utah's inland weights. These exclusions redistribute, but
+do not change, the supplied state totals. Only CONUS state totals enter the allocation. Coral points
 are assigned against the original unfiltered county reference; only CONUS
 assignments are kept, and a point contributes to a footprint only if it covers
 the point. Mangrove source-unit totals use the full CONUS county-intersected
@@ -93,6 +94,23 @@ The exports keep adjusted values and factors, with
 values are preserved in individual fields and contribute zero to the total.
 Only counties include recreation, `total_ecosystem_services_w_rec` and the
 county ratios (whose numerator includes recreation).
+
+### Revalue without rerunning raster zonals
+
+To apply updated valuation inputs or rules, pass the ID of an original
+six-zone run whose raster zonals finished and passed verification:
+
+```cmd
+python run_six_zone_assessment.py --reuse-zonals-from "<source-run-id>" --run-id "<new-run-id>"
+```
+
+This verifies and reuses the original prepared zone GeoPackages, frozen zonal
+configuration, and raw raster CSV/GeoPackage pairs. It does not prepare new
+zones, open TIFF inputs, or start the zonal toolkit. It recalculates valuations
+and totals with the current valuation inputs and writes six new pairs under
+`data/analysis_results/assessment_runs/<new-run-id>/`, leaving the source run
+intact. Use the same geospatial environment and PROJ settings as the source
+run. Add `--validate-only` to verify the saved handoffs without writing results.
 
 ## Run the all/public footprint refresh
 
