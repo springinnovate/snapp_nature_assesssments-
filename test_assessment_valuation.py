@@ -14,7 +14,8 @@ import assessment_valuation as valuation
 from assessment_zone_geometry import ZONE_PRODUCTS
 
 
-def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
+@pytest.mark.parametrize("county_total_area", [200.0, 0.0, np.nan])
+def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, county_total_area):
     """Check all product keys, land allocation, totals, factors and the output pair."""
     config = Path(valuation.__file__).parent / "data/workflow_assets/county_integration"
     factors = pd.read_csv(config / "adjustment_factors.csv").set_index("service")
@@ -50,7 +51,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
     def county_metrics(frame, data_root, config_path):
         """Compute the existing county total for the reconciliation assertion."""
         total = frame[derived["es_total"]["components"]].fillna(0).sum(axis=1)
-        return pd.DataFrame({"es_total": total, "Pop_2024": 10}), {}
+        return pd.DataFrame({"es_total": total, "Pop_2024": 10, "area_ha_county": county_total_area}), {}
 
     monkeypatch.setattr(valuation, "compute_task", county_task)
     monkeypatch.setattr(valuation, "value_fisheries", lambda zones, *_: vector_values(
@@ -62,7 +63,11 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
     zones, raster_sums = {}, {}
     for product in ZONE_PRODUCTS:
         fields = {"GEOID": ["01001"], "NAME": ["NA"]}
-        if product != "counties":
+        if product == "counties":
+            fields.update(area_ha_county_land=[100.0], area_ha_public_lands=[50.0], pct_public_lands=[50.0],
+                          area_ha_conservation_lands=[25.0], pct_conservation_lands=[25.0],
+                          area_ha_bbb_lands=[0.0], pct_bbb_lands=[0.0])
+        else:
             fields["county_land_share"] = [0.25]
         if product.endswith("_and_manager_type"):
             fields = {"GEOID": ["01001", "01001"], "Mang_Type": ["FED", "LOC"],
@@ -87,6 +92,11 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
     )
     assert set(outputs) == set(ZONE_PRODUCTS)
     county = outputs["counties"].iloc[0]
+    ratio_fields = ["ratio_public_lands_to_total_county_area", "ratio_conservation_lands_to_total_county_area",
+                    "ratio_bbb_lands_to_total_county_area"]
+    expected_ratios = [0.25, 0.125, 0.0] if county_total_area > 0 else [np.nan] * 3
+    np.testing.assert_allclose(county[ratio_fields].to_numpy(dtype=float), expected_ratios)
+    assert list(county[["pct_public_lands", "pct_conservation_lands", "pct_bbb_lands"]]) == [50.0, 25.0, 0.0]
     assert county["recreation_adj"] == pytest.approx(400)
     assert county["total_ecosystem_services_w_rec"] - county["total_ecosystem_services"] == pytest.approx(400)
     assert county["sum_pollination_attributed_annual_crop_yield_value_adj"] == pytest.approx(9)
@@ -104,6 +114,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
         assert "sum_pollination_attributed_annual_crop_yield_value" not in frame
         if product == "counties":
             continue
+        assert set(ratio_fields).isdisjoint(frame.columns)
         assert {"recreation_adj", "recreation_adj_factor", "total_ecosystem_services_w_rec"}.isdisjoint(frame)
         assert np.allclose(frame["grazing_adj"], 40 * frame["county_land_share"])
         assert np.allclose(frame["marine_fisheries_adj"], 4 * 1.027)
@@ -117,6 +128,10 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path):
         path = tmp_path / product / f"{product}_test.gpkg"
         csv_path, gpkg = valuation.write_zone_pair(outputs[product], path, product, audits if product == "counties" else {})
         assert csv_path.is_file() and gpkg.is_file()
-        assert len(pyogrio.read_dataframe(gpkg, layer=product)) == len(outputs[product])
+        published = pyogrio.read_dataframe(gpkg, layer=product)
+        assert len(published) == len(outputs[product])
+        if product == "counties":
+            for exported in (pd.read_csv(csv_path), published):
+                np.testing.assert_allclose(exported[ratio_fields].iloc[0], expected_ratios)
         with pytest.raises(FileExistsError):
             valuation.write_zone_pair(outputs[product], path, product, {})
