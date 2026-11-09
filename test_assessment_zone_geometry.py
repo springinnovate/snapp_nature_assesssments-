@@ -45,7 +45,7 @@ class CountyZoneGeometryTests(TestCase):
                 self.assertAlmostEqual(footprint["area_ha_land"], area)
                 self.assertAlmostEqual(footprint["county_land_share"], area / 1.8)
                 self.assertAlmostEqual(county_row[f"area_ha_{name}_lands"], area)
-                self.assertAlmostEqual(county_row[f"pct_{name}_lands"], 100 * area / 1.8)
+                self.assertNotIn(f"pct_{name}_lands", county_row)
                 self.assertEqual(county_row[f"area_ha_{name}_manager_overlap"], 0.0)
         public, = result["public_lands_by_county"]
         self.assertEqual(public["geometry"].area, 17_000)
@@ -53,7 +53,7 @@ class CountyZoneGeometryTests(TestCase):
         self.assertEqual(conservation["geometry"].area, 11_000)
         self.assertAlmostEqual(result["conservation_lands_by_county_and_manager_type"][1]["area_ha_land"], 0.1)
         self.assertAlmostEqual(county_row["area_ha_bbb_lands"], 0.7)
-        self.assertAlmostEqual(county_row["pct_bbb_lands"], 100 * 0.7 / 1.8)
+        self.assertNotIn("pct_bbb_lands", county_row)
 
     def test_manager_overlap_audited_without_assignment(self):
         """Keep both manager labels and report overlap without assigning it."""
@@ -66,9 +66,11 @@ class CountyZoneGeometryTests(TestCase):
         row, = result["counties"]
         for name in ("public", "conservation"):
             self.assertAlmostEqual(row[f"area_ha_{name}_manager_overlap"], 0.3)
-            self.assertAlmostEqual(row[f"pct_{name}_lands"], 100)
+            self.assertEqual(row[f"area_ha_{name}_lands"], 1.0)
+            self.assertNotIn(f"pct_{name}_lands", row)
         self.assertFalse(result["bbb_lands_by_county"])
-        self.assertEqual(row["pct_bbb_lands"], 0.0)
+        self.assertEqual(row["area_ha_bbb_lands"], 0.0)
+        self.assertNotIn("pct_bbb_lands", row)
 
     def test_small_rounding_excess_bounds_only_the_share(self):
         """Retain measured area while rounding a very small excess to 100%."""
@@ -78,7 +80,7 @@ class CountyZoneGeometryTests(TestCase):
         self.assertTrue(row["geometry"].equals(county))
         self.assertEqual(row["area_ha_land"], 1.0)
         self.assertEqual(row["county_land_share"], 1.0)
-        self.assertEqual(result["counties"][0]["pct_bbb_lands"], 100.0)
+        self.assertNotIn("pct_bbb_lands", result["counties"][0])
 
     def test_mask_materially_disagreeing_with_aland_fails(self):
         """Check the whole land mask even without any footprint candidates."""
@@ -115,7 +117,7 @@ class CountyZoneGeometryTests(TestCase):
             self.assertEqual(result[product], [])
         for name in ("public", "conservation", "bbb"):
             self.assertEqual(row[f"area_ha_{name}_lands"], 0.0)
-            self.assertEqual(row[f"pct_{name}_lands"], 0.0)
+            self.assertNotIn(f"pct_{name}_lands", row)
 
     def test_invalid_aland_fails(self):
         """Reject an undefined denominator instead of emitting zero or NaN."""

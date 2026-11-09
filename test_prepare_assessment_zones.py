@@ -165,7 +165,7 @@ def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
         for geoid in ids:
             hectares = footprints.get(geoid, (None, 0))[1]
             assert counties.loc[geoid, f"area_ha_{land_class}"] == pytest.approx(hectares)
-            assert counties.loc[geoid, f"pct_{land_class}"] == pytest.approx(hectares / 80 * 100)
+            assert f"pct_{land_class}" not in counties.columns
 
     with (zones / "county_area_qa.csv").open(encoding="utf-8-sig", newline="") as qa_file:
         qa_rows = {row["GEOID"]: row for row in csv.DictReader(qa_file)}

@@ -174,7 +174,6 @@ def build_county_zones(
             results[manager_product].append(row)
 
         zone_area_ha = 0.0
-        share = 0.0
         overlap_m2 = 0.0
         if manager_geometries:
             geometry = repair_polygonal_geometry(shapely.union_all(manager_geometries))
@@ -183,7 +182,6 @@ def build_county_zones(
             row = footprint_row(geometry, county_product)
             results[county_product].append(row)
             zone_area_ha = row["area_ha_land"]
-            share = row["county_land_share"]
             overlap_m2 = fsum(float(geom.area) for geom in manager_geometries) - float(geometry.area)
             overlap_tol = max(_ABS_AREA_TOL_M2, geometry.area * _REL_AREA_TOL)
             if overlap_m2 < -overlap_tol:
@@ -193,7 +191,6 @@ def build_county_zones(
 
         label = footprint.removesuffix("_lands")
         county_row[f"area_ha_{footprint}"] = zone_area_ha
-        county_row[f"pct_{footprint}"] = 100.0 * share
         county_row[f"area_ha_{label}_manager_overlap"] = overlap_m2 / _M2_PER_HA
 
     bbb_geometry = _clip_union(bbb_candidates, county_geom)
@@ -201,5 +198,4 @@ def build_county_zones(
         results["bbb_lands_by_county"].append(footprint_row(bbb_geometry, "BBB lands"))
     bbb_rows = results["bbb_lands_by_county"]
     county_row["area_ha_bbb_lands"] = bbb_rows[0]["area_ha_land"] if bbb_rows else 0.0
-    county_row["pct_bbb_lands"] = 100.0 * bbb_rows[0]["county_land_share"] if bbb_rows else 0.0
     return results

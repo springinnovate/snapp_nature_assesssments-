@@ -86,7 +86,8 @@ def validate_mask_definition(config_path: Path) -> list[dict]:
 def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
                       county_results: Path | None = None, raster_metadata: list[dict] | None = None,
                       *, derived_config: Path | None = DEFAULT_DERIVED_CONFIG,
-                      data_root: Path | None = None) -> Path:
+                      data_root: Path | None = None,
+                      output_layer: str = "tl_2024_us_county_50_states") -> Path:
     """Publish corrected areas, optionally alongside unchanged service values.
 
     Args:
@@ -99,6 +100,7 @@ def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
         derived_config: Rules for totals/ratios on augmented county outputs.
             None disables that stage for programmatic mask-only testing.
         data_root: Denominator source root; defaults to this repository's data.
+        output_layer: Feature-layer name in the new GeoPackage.
 
     Returns:
         New GeoPackage path, after CSV parity and preservation checks.
@@ -183,7 +185,7 @@ def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
         if sha256(path) != fingerprints[key]:
             raise ValueError(f"Input changed during mask export: {path}")
     write_output(base_path, output, layer, geom, additions, tables, removed_fields=removed,
-                 output_layer="tl_2024_us_county_50_states")
+                 output_layer=output_layer)
     tqdm.write(f"Verified: {output}\nVerified: {output.with_suffix('.csv')}")
     return output
 
