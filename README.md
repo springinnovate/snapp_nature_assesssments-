@@ -140,6 +140,13 @@ export reports hectares (`area_ha_*_lands`) and percentages (`pct_*_lands`)
 for public, conservation, and BBB lands. Raster and spatial valuations use
 the full zone geometries, including water.
 
+The county CSV and GeoPackage also report `ratio_public_lands_to_total_county_area`,
+`ratio_conservation_lands_to_total_county_area`, and `ratio_bbb_lands_to_total_county_area`.
+These divide the same land-only footprint hectares by `area_ha_county`, the
+full county polygon area including water. They are fractions (0.25 means 25%),
+not the 0–100 `pct_*_lands` fields. For these or other valuation-only updates,
+[reuse a completed raster run](#revalue-a-completed-run).
+
 **Raster sums.** The toolkit reprojects zones to each raster's native CRS and
 sums valid first-band pixels whose centers fall inside the zone. Geometry
 simplification is capped at 15 m, with tighter limits for small or narrow parts.

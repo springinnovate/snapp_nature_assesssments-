@@ -210,7 +210,17 @@ def value_zones(
             if not np.allclose(denominators["es_total"], adjusted["total_ecosystem_services_w_rec"],
                                rtol=1e-12, atol=0.001):
                 raise ValueError("County total with recreation differs from the configured legacy component sum")
-            adjusted = pd.concat([adjusted, denominators.drop(columns="es_total").set_axis(zone.index)], axis=1)
+            denominators = denominators.drop(columns="es_total").set_axis(zone.index)
+            # The saved footprint hectares exclude water; the published county
+            # polygon area includes it. Keep these separate from land shares.
+            footprint_rules = derived["county_footprint_ratios"]
+            county_area = denominators[footprint_rules["denominator"]]
+            divisor = county_area.where(np.isfinite(county_area) & county_area.gt(0))
+            footprint_ratios = pd.DataFrame({
+                output: zone[numerator] / divisor
+                for output, numerator in footprint_rules["numerators"].items()
+            }, index=zone.index)
+            adjusted = pd.concat([adjusted, denominators, footprint_ratios], axis=1)
             county_audits.update({
                 "integration_county_table_methods": pd.DataFrame(task_metadata),
                 "integration_county_table_status": pd.concat(status_frames, ignore_index=True),
