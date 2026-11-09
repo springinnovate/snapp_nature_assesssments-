@@ -21,7 +21,12 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     factors = pd.read_csv(config / "adjustment_factors.csv").set_index("service")
     rules = valuation.load_export_rules(config / "export_rules.yaml")
     derived = yaml.safe_load((config / "derived_metrics.yaml").read_text(encoding="utf-8"))
-    monkeypatch.setattr(valuation, "load_valuation_config", lambda *_: ({}, factors, rules, derived))
+    air_path = tmp_path / "air_quality.csv"
+    pd.DataFrame({"FIPS": ["46113"], "land": ["forest"], "pollutant": ["PM2.5"],
+                  "dollars_annual": [20.0]}).to_csv(air_path, index=False)
+    paths = {"air_quality": air_path, "air_quality_county_aliases": config / "air_quality_county_aliases.csv"}
+    real_compute_task = valuation.compute_task
+    monkeypatch.setattr(valuation, "load_valuation_config", lambda *_: (paths, factors, rules, derived))
     monkeypatch.setattr(valuation, "validate_crosswalk", lambda *_: None)
     task_values = {
         "grazing": {"grazing": 40},
@@ -36,6 +41,8 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
 
     def county_task(task, paths, base, crosswalk, workers):
         """Simulate raw whole-county values from the tested service-specific joins."""
+        if task == "air_quality":
+            return real_compute_task(task, paths, base, crosswalk, workers)
         values = {name: pd.Series(number, index=base.index) for name, number in task_values[task].items()}
         return {
             "originals": values,
@@ -62,7 +69,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
 
     zones, raster_sums = {}, {}
     for product in ZONE_PRODUCTS:
-        fields = {"GEOID": ["01001"], "NAME": ["NA"]}
+        fields = {"GEOID": ["46102"], "NAME": ["NA"]}
         if product == "counties":
             fields.update(area_ha_county_land=[100.0], area_ha_public_lands=[50.0], pct_public_lands=[50.0],
                           area_ha_conservation_lands=[25.0], pct_conservation_lands=[25.0],
@@ -70,7 +77,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         else:
             fields["county_land_share"] = [0.25]
         if product.endswith("_and_manager_type"):
-            fields = {"GEOID": ["01001", "01001"], "Mang_Type": ["FED", "LOC"],
+            fields = {"GEOID": ["46102", "46102"], "Mang_Type": ["FED", "LOC"],
                       "county_land_share": [0.15, 0.1]}
         if product == "bbb_lands_by_county":
             fields = {"GEOID": pd.Series(dtype="str"), "county_land_share": pd.Series(dtype="float64")}
@@ -98,6 +105,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     np.testing.assert_allclose(county[ratio_fields].to_numpy(dtype=float), expected_ratios)
     assert list(county[["pct_public_lands", "pct_conservation_lands", "pct_bbb_lands"]]) == [50.0, 25.0, 0.0]
     assert county["recreation_adj"] == pytest.approx(400)
+    assert county["air_quality_avoided_mortality_annual_value_adj"] == pytest.approx(20 * 1.135)
     assert county["total_ecosystem_services_w_rec"] - county["total_ecosystem_services"] == pytest.approx(400)
     assert county["sum_pollination_attributed_annual_crop_yield_value_adj"] == pytest.approx(9)
     assert county["pollination_adj_factor"] == pytest.approx(0.09)
@@ -119,6 +127,8 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         assert set(ratio_fields).isdisjoint(frame.columns)
         assert {"recreation_adj", "recreation_adj_factor", "total_ecosystem_services_w_rec"}.isdisjoint(frame)
         assert np.allclose(frame["grazing_adj"], 40 * frame["county_land_share"])
+        assert np.allclose(frame["air_quality_avoided_mortality_annual_value_adj"],
+                           20 * 1.135 * frame["county_land_share"])
         assert np.allclose(frame["marine_fisheries_adj"], 4 * 1.027)
         if "Mang_Type" in frame:
             assert list(frame["sum_pollination_attributed_annual_crop_yield_value_adj"]) == pytest.approx([9, 18])

@@ -891,7 +891,22 @@ def compute_task(task, paths, base, crosswalk, geometry_workers):
         county_add("timber", timber, "fips_padded", "total_annual_rent", "timber", zero_missing=True)
     if task == "air_quality":
         air = pd.read_csv(paths["air_quality"], dtype={"FIPS": str})
+        aliases = pd.read_csv(paths["air_quality_county_aliases"], dtype=str)
+        if aliases.source_geoid.duplicated().any():
+            raise ValueError("Duplicate source GEOIDs in air-quality county aliases")
+        original_codes = air.FIPS.map(fips)
+        air["FIPS"] = original_codes.replace(
+            aliases.set_index("source_geoid").target_geoid)
+        alias_audit = []
+        for alias in aliases.itertuples(index=False):
+            selected = original_codes.eq(alias.source_geoid)
+            if selected.any():
+                alias_audit.append(dict(
+                    alias._asdict(), source_rows=int(selected.sum()),
+                    raw_known_total=float(numbers(air.loc[selected, "dollars_annual"]).sum())))
         county_add("avoided_air_quality_heath_costs", air, "FIPS", "dollars_annual", "air_quality", aggregate=True)
+        metadata[-1]["county_code_aliases"] = json.dumps(alias_audit, sort_keys=True)
+        # The existing category check also rejects collisions caused by an alias.
         summary_fields = air_quality_summary(
             air, ids, crosswalk, originals["avoided_air_quality_heath_costs"])
     if task == "urban_heat":
@@ -1164,7 +1179,7 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
     cache_root.mkdir(parents=True, exist_ok=True)
     dependencies = {
         "base": ["base"], "grazing": ["base", "grazing"], "timber": ["base", "timber"],
-        "air_quality": ["base", "air_quality"], "urban_heat": ["base", "urban_heat"],
+        "air_quality": ["base", "air_quality", "air_quality_county_aliases"], "urban_heat": ["base", "urban_heat"],
         "physical_health": ["base", "physical_health"], "jobs": ["base", "jobs"],
         "marine_fisheries": ["base", "marine_fisheries", "coastline", "coastline_lines"],
         "inland_fisheries": ["base", "inland_fisheries", "freshwater", "freshwater_polygons",

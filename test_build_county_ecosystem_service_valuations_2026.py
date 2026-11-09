@@ -3,6 +3,7 @@ from pathlib import Path
 from contextlib import closing
 from copy import deepcopy
 import sqlite3
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -124,6 +125,51 @@ class CountyIntegrationTests(unittest.TestCase):
         self.assertEqual(checks[0]["allocated_value"], 80)
         with self.assertRaises(ValueError):
             state_values(frame, "value", states, weights * 0)
+
+    def test_air_quality_alias_restores_value_before_both_aggregations(self):
+        """Restore renamed counties while preserving source files and CT weights."""
+        ids = pd.Index(["46102", "46003", "09110", "09120", "01001"], name="GEOID")
+        source = pd.DataFrame({
+            "FIPS": ["46113", "46113", "46003", "09001", "09003"],
+            "land": ["forest", "grass", "forest", "forest", "forest"],
+            "pollutant": ["PM2.5"] * 5, "dollars_annual": [10., 20., 5., 8., 12.],
+        })
+        alias_path = RULES_PATH.with_name("air_quality_county_aliases.csv")
+        aliases = pd.read_csv(alias_path, dtype=str)
+        expected = [30., 5., 2., 18., np.nan]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "air.csv"
+            source.to_csv(path, index=False)
+            digest = sha256(path)
+            paths = {"air_quality": path, "air_quality_county_aliases": alias_path}
+            result = compute_task("air_quality", paths, pd.DataFrame(index=ids), self.crosswalk, 1)
+            self.assertEqual(sha256(path), digest)
+            source.assign(FIPS=source.FIPS.replace({"46113": "46102"})).to_csv(path, index=False)
+            repeated = compute_task("air_quality", paths, pd.DataFrame(index=ids), self.crosswalk, 1)
+            np.testing.assert_allclose(repeated["originals"]["avoided_air_quality_heath_costs"], expected)
+            self.assertEqual(json.loads(repeated["metadata"][0]["county_code_aliases"]), [])
+            duplicate = pd.concat([source, source.iloc[[0]].assign(FIPS="46102")], ignore_index=True)
+            duplicate.to_csv(path, index=False)
+            with self.assertRaisesRegex(ValueError, "Duplicate air-quality"):
+                compute_task("air_quality", paths, pd.DataFrame(index=ids), self.crosswalk, 1)
+        np.testing.assert_allclose(result["originals"]["avoided_air_quality_heath_costs"], expected)
+        np.testing.assert_allclose(result["summary_fields"].sum_dollars_annual, expected)
+        self.assertEqual(result["metadata"][0]["unmatched_total"], 0.)
+        self.assertEqual(json.loads(result["metadata"][0]["county_code_aliases"]), [
+            dict(aliases.iloc[0], source_rows=2, raw_known_total=30.)])
+
+    def test_air_quality_rejects_duplicate_alias_sources(self):
+        """Require one correction per source county instead of choosing silently."""
+        source = pd.DataFrame(columns=["FIPS", "land", "pollutant", "dollars_annual"])
+        aliases = pd.read_csv(RULES_PATH.with_name("air_quality_county_aliases.csv"), dtype=str)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {"air_quality": Path(directory) / "air.csv",
+                     "air_quality_county_aliases": Path(directory) / "aliases.csv"}
+            source.to_csv(paths["air_quality"], index=False)
+            pd.concat([aliases, aliases.assign(target_geoid="46115")]).to_csv(
+                paths["air_quality_county_aliases"], index=False)
+            with self.assertRaisesRegex(ValueError, "Duplicate source GEOIDs"):
+                compute_task("air_quality", paths, pd.DataFrame(index=self.ids), self.crosswalk, 1)
 
     def test_air_quality_summaries_keep_raw_units_and_missing_counties(self):
         """Statistics describe category values, not pixels or adjusted dollars."""
