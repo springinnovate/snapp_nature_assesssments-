@@ -111,6 +111,8 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     assert "es_total" not in county
     assert pd.isna(county["sum_mangrove_coastal_flood_protection_value_adj"])
     for product, frame in outputs.items():
+        assert {"sum_totalC_tCO2e_ha_2020", "sum_totalC_tCO2e_ha_2020_adj",
+                "carbon_ha_adj_factor"}.isdisjoint(frame.columns)
         assert "sum_pollination_attributed_annual_crop_yield_value" not in frame
         if product == "counties":
             continue

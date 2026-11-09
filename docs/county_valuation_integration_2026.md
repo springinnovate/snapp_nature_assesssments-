@@ -362,7 +362,6 @@ adjusted county estimate = source county estimate × adjustment factor
 | Service | Source county field | Factor |
 | --- | --- | --- |
 | Pollination | `sum_pollination_attributed_annual_crop_yield_value` | 0.09 |
-| Carbon density diagnostic (not area-integrated) | `sum_totalC_tCO2e_ha_2020` | 4.32612 |
 | Carbon stock value | `sum_totalC_tCO2e_ha_2020` × 0.09 ha per pixel | 4.32612 |
 | Dredging | `sum_avoided_dredging_costs_raster` | 1 |
 | Safe Drinking Water Act health benefits | `sum_avoided_sdwa_health_costs_raster` | 1 |
@@ -390,10 +389,10 @@ they contain the per-hectare sum.
 The existing output name `sum_CO2e_mitigation_dollar_value_per_pixel_adj`
 identifies the area-integrated carbon stock dollar total, not a per-pixel rate
 or a county average. Its existing factor field, `carbon_pixel_adj_factor`,
-records `4.32612`; the `0.09` area conversion is applied separately. The
-separate `sum_totalC_tCO2e_ha_2020_adj` field applies the same dollar factor to
-the density sum without area integration. It is a diagnostic, not a county
-dollar total.
+records `4.32612`; the `0.09` area conversion is applied separately. Density
+sums remain internal calculation inputs. The final CSV and GeoPackage omit
+the unintegrated density sum and its associated factor so they cannot be
+mistaken for an additional carbon valuation.
 
 The flood outputs are
 `sum_flood_annual_value_masked_to_wetlands_adj` and

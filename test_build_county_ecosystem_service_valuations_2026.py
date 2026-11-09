@@ -431,15 +431,18 @@ class CountyExportRuleTests(unittest.TestCase):
         self.assertEqual(list(fields), [
             "sum_flood_annual_value_masked_to_wetlands_adj",
             "sum_flood_marginal_npv_masked_to_wetlands_adj",
-            "sum_totalC_tCO2e_ha_2020_adj",
             "sum_Wval_sw_2020usd_total",
             "sum_CO2e_mitigation_dollar_value_per_pixel_adj",
             AIR_QUALITY_OUTPUT + "_adj", "timber_adj",
-            "flood_annual_adj_factor", "flood_npv_adj_factor", "carbon_ha_adj_factor", "carbon_pixel_adj_factor",
+            "flood_annual_adj_factor", "flood_npv_adj_factor", "carbon_pixel_adj_factor",
             AIR_QUALITY_OUTPUT + "_adj_factor", "timber_adj_factor",
         ])
         self.assertAlmostEqual(fields.loc["01001", mapping["carbon_pixel"]], 27 * 0.09 * 3.66 * 1.182)
         self.assertEqual(fields.loc["01001", "carbon_pixel_adj_factor"], 4.32612)
+        self.assertNotIn("sum_totalC_tCO2e_ha_2020_adj", fields)
+        self.assertNotIn("carbon_ha_adj_factor", fields)
+        self.assertNotIn("carbon_ha", mapping)
+        self.assertTrue(all(row["action"] == "exclude" for row in plan if row["service"] == "carbon_ha"))
         self.assertIn("per tonne CO2e price", self.factors.loc["carbon_pixel", "reason"])
         self.assertAlmostEqual(fields.loc["01001", mapping["flood_annual"]], 0.9)
         self.assertAlmostEqual(fields.loc["01001", mapping["flood_npv"]], 18)
@@ -478,7 +481,7 @@ class CountyExportRuleTests(unittest.TestCase):
             loaded = load_export_rules(custom)
         plan = plan_county_export(self.base.columns, self.factors.index, loaded)
         fields, mapping = adjusted_county_fields(self.base, self.originals, self.summaries, self.factors, plan)
-        self.assertTrue(all(field.endswith("_adj_factor") for field in list(fields)[:6]))
+        self.assertTrue(all(field.endswith("_adj_factor") for field in list(fields)[:5]))
         self.assertLess(list(fields).index("carbon_dollar_value_adj"), list(fields).index(AIR_QUALITY_OUTPUT + "_adj"))
         self.assertEqual(mapping["carbon_pixel"], "carbon_dollar_value_adj")
         self.assertAlmostEqual(fields.loc["01001", "carbon_dollar_value_adj"], 2.43 * 4.32612)
