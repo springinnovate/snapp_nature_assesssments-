@@ -216,49 +216,6 @@ def county_values(frame, key, field, ids, crosswalk, *, aggregate=False, zero_mi
     return result, status, issues, audit
 
 
-def normalize_air_quality_counties(frame, aliases):
-    """Apply reviewed one-to-one county aliases without modifying source rows.
-
-    Args:
-        frame: Air-quality records with FIPS, land, pollutant and dollars_annual.
-        aliases: Source/target GEOIDs, names and Census references for aliases.
-
-    Returns:
-        A copied frame with current FIPS codes and records of applied aliases.
-
-    Raises:
-        ValueError: Aliases are ambiguous or invalid, or normalized categories
-            collide and would double-count the same county contribution.
-    """
-    fields = {"source_geoid", "target_geoid", "source_name", "target_name", "source_url"}
-    if set(aliases.columns) != fields or aliases.isna().any().any():
-        raise ValueError("Air-quality county aliases need GEOIDs, names and source URLs")
-    aliases = aliases.astype(str).apply(lambda column: column.str.strip())
-    if aliases.eq("").any().any():
-        raise ValueError("Air-quality county alias fields cannot be blank")
-    for field in ("source_geoid", "target_geoid"):
-        if not aliases[field].str.fullmatch(r"\d{5}").all() or aliases[field].duplicated().any():
-            raise ValueError("Air-quality county aliases require unique five-digit source and target GEOIDs")
-    if set(aliases.source_geoid) & set(aliases.target_geoid):
-        raise ValueError("Air-quality county aliases cannot be chained or map a code to itself")
-    result = frame.copy()
-    original_codes = result.FIPS.map(fips)
-    result["FIPS"] = original_codes.replace(dict(zip(aliases.source_geoid, aliases.target_geoid)))
-    if result.duplicated(["FIPS", "land", "pollutant"]).any():
-        raise ValueError("Duplicate air-quality county/land/pollutant rows after county-code normalization")
-    audit = []
-    for alias in aliases.itertuples(index=False):
-        selected = original_codes.eq(alias.source_geoid)
-        if selected.any():
-            audit.append({
-                "source_geoid": alias.source_geoid, "target_geoid": alias.target_geoid,
-                "source_name": alias.source_name, "target_name": alias.target_name,
-                "source_url": alias.source_url, "source_rows": int(selected.sum()),
-                "raw_known_total": float(numbers(frame.loc[selected, "dollars_annual"]).sum()),
-            })
-    return result, audit
-
-
 def air_quality_summary(frame, ids, crosswalk, county_totals):
     """Summarize unadjusted annual dollars across target-county categories.
 
@@ -935,16 +892,21 @@ def compute_task(task, paths, base, crosswalk, geometry_workers):
     if task == "air_quality":
         air = pd.read_csv(paths["air_quality"], dtype={"FIPS": str})
         aliases = pd.read_csv(paths["air_quality_county_aliases"], dtype=str)
-        air, alias_audit = normalize_air_quality_counties(air, aliases)
-        note = "reviewed county-code aliases: " + ", ".join(
-            f"{row['source_geoid']} -> {row['target_geoid']} ({row['source_rows']} rows)" for row in alias_audit
-        ) if alias_audit else None
-        county_add("avoided_air_quality_heath_costs", air, "FIPS", "dollars_annual", "air_quality",
-                   aggregate=True, method_note=note)
+        if aliases.source_geoid.duplicated().any():
+            raise ValueError("Duplicate source GEOIDs in air-quality county aliases")
+        original_codes = air.FIPS.map(fips)
+        air["FIPS"] = original_codes.replace(
+            aliases.set_index("source_geoid").target_geoid)
+        alias_audit = []
+        for alias in aliases.itertuples(index=False):
+            selected = original_codes.eq(alias.source_geoid)
+            if selected.any():
+                alias_audit.append(dict(
+                    alias._asdict(), source_rows=int(selected.sum()),
+                    raw_known_total=float(numbers(air.loc[selected, "dollars_annual"]).sum())))
+        county_add("avoided_air_quality_heath_costs", air, "FIPS", "dollars_annual", "air_quality", aggregate=True)
         metadata[-1]["county_code_aliases"] = json.dumps(alias_audit, sort_keys=True)
-        issues.extend({"service": "avoided_air_quality_heath_costs", "source_key": row["source_geoid"],
-                       "reason": f"county_code_alias_to_{row['target_geoid']}", "value": row["raw_known_total"]}
-                      for row in alias_audit)
+        # The existing category check also rejects collisions caused by an alias.
         summary_fields = air_quality_summary(
             air, ids, crosswalk, originals["avoided_air_quality_heath_costs"])
     if task == "urban_heat":
