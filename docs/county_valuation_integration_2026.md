@@ -54,6 +54,7 @@ Paths in the table are relative to the repository's `data/` directory.
 | Nature-related wages | `analysis_inputs/ecosystem_services/jobs/Finalized Flagged and Sorted Industry and County Codes.xlsx` |
 | Timber | `analysis_inputs/ecosystem_services/timber/total_valuation_all_regions_fvs.csv` |
 | Air quality | `analysis_inputs/ecosystem_services/air_quality/snapp_air_quality.csv` |
+| Air-quality county-code aliases | `workflow_assets/county_integration/air_quality_county_aliases.csv` |
 | Marine fisheries | `analysis_inputs/ecosystem_services/marine_fisheries/NCPvalue_landings_marine_fish_noaa_2023_state.csv` |
 | Inland fisheries | `analysis_inputs/ecosystem_services/inland_fisheries/Harvest_table_with_value.csv` |
 | Urban heat | `analysis_inputs/ecosystem_services/urban_heat/HEAT_all_tracts_2021.csv` |
@@ -152,6 +153,15 @@ The air-quality output,
 `dollars_annual` multiplied by 1.135. The source release contains three
 land-cover classes and three pollutants, giving nine records per source county.
 These are category estimates, not raster pixels or per-area values.
+Before aggregation, the workflow applies the reviewed one-to-one county codes
+in `air_quality_county_aliases.csv`. This maps source `46113` (Shannon County,
+South Dakota) to `46102` (Oglala Lakota County), following the
+[Census county name/code change](https://www.census.gov/programs-surveys/acs/technical-documentation/table-and-geography-changes/2015/geography-changes.html).
+This is an identifier correction, not an area- or population-weighted allocation.
+The supplied air-quality CSV remains unchanged. Duplicate county/land-cover/pollutant
+records after normalization stop the run instead of counting the same contribution
+twice. The county method metadata records applied aliases and their source row
+counts and known dollar totals; the alias file is fingerprinted with the run.
 Connecticut contributions are allocated using the land-area crosswalk and
 recombined within each planning-region land-cover/pollutant category.
 

@@ -162,6 +162,8 @@ the density sum remains an internal input, not a second monetary total.
 **County tables.** Grazing, timber, jobs, air quality, urban heat, and physical
 health are joined by county. A [land-area crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
 maps Connecticut source IDs to the target county release.
+Air-quality records use the reviewed [county-code aliases](data/workflow_assets/county_integration/air_quality_county_aliases.csv)
+before aggregation; the supplied CSV is not modified.
 Grazing treats mean biomass as annual production and prices the resulting
 animal-unit months once, using the workbook subtotal before its eight-month
 multiplier. See the [grazing method and evidence](docs/county_valuation_integration_2026.md#grazing-valuation).

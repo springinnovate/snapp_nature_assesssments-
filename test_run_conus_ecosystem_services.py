@@ -55,8 +55,10 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             padus, layer="padus_input",
         )
         config_dir = self.data / "workflow_assets/county_integration"
+        self.air_aliases = config_dir / "air_quality_county_aliases.csv"
         for path in (
             self.runner, self.zonal_config, self.root / "config/padus_land_rules.rules",
+            self.air_aliases,
             config_dir / "virginia_gdp_crosswalk.csv",
             *(config_dir / name for name in wrapper.CONFIG_FILES),
         ):
@@ -147,7 +149,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         args = wrapper.parse_args([*self.args, *extra])
         with (
             patch.object(wrapper.subprocess, "run", side_effect=self.fake_subprocess),
-            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {"sources": {
+            patch.object(wrapper, "load_valuation_config", return_value=({"air_quality_county_aliases": self.air_aliases}, None, None, {"sources": {
                 "gdp": {"path": "gdp.csv", "allocation_crosswalk":
                         "workflow_assets/county_integration/virginia_gdp_crosswalk.csv"}}})),
             patch.object(wrapper, "validate_zone_raster_inputs", return_value=(rasters, [])),
@@ -164,6 +166,9 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         manifest = json.loads((self.results / "run_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["status"], "complete")
         self.assertEqual(manifest["geographic_scope"], "CONUS")
+        self.assertEqual(manifest["configuration_sha256"][str(self.air_aliases)],
+                         wrapper.sha256(self.air_aliases))
+        self.assertEqual(manifest["valuation_inputs"]["air_quality_county_aliases"], str(self.air_aliases))
         self.assertEqual(manifest["zone_inputs"]["bbb_by_county"], [str(self.bbb), "bbb_input"])
         self.assertEqual(manifest["zone_inputs"]["land_mask"], [str(self.land_mask), "county_land_mask"])
         self.assertEqual(self.calls, ["prepare_assessment_zones.py", "runner.py"])
@@ -200,7 +205,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             patch.object(wrapper.subprocess, "run") as subprocess_run,
             patch.object(wrapper, "validate_zone_raster_inputs") as inspect_tiffs,
             patch.object(wrapper, "freeze_zone_zonals") as freeze,
-            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {
+            patch.object(wrapper, "load_valuation_config", return_value=({"air_quality_county_aliases": self.air_aliases}, None, None, {
                 "sources": {"gdp": {"path": "gdp.csv"}}})),
             patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan) as reconstruct,
             patch.object(wrapper, "read_zone_raster_sums", return_value=fake_sums) as read_sums,
@@ -221,6 +226,8 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         manifest = json.loads((reused / "run_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["status"], "complete")
         self.assertEqual(manifest["reused_zonals_from"], {"run_id": self.run_id, "manifest": str(source_manifest)})
+        self.assertEqual(manifest["configuration_sha256"][str(self.air_aliases)],
+                         wrapper.sha256(self.air_aliases))
         self.assertEqual(manifest["stages"]["Verify reused raster zonals"], "complete")
         self.assertNotIn("Run and verify raster zonals", manifest["stages"])
         for product, record in manifest["outputs"].items():
@@ -234,7 +241,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             self.run_wrapper()
         args = wrapper.parse_args(["--reuse-zonals-from", self.run_id, "--run-id", "revalued"])
         with (
-            patch.object(wrapper, "load_valuation_config", return_value=({}, None, None, {
+            patch.object(wrapper, "load_valuation_config", return_value=({"air_quality_county_aliases": self.air_aliases}, None, None, {
                 "sources": {"gdp": {"path": "gdp.csv"}}})),
             patch.object(wrapper, "read_frozen_zone_raster_plan") as reconstruct,
             self.assertRaisesRegex(ValueError, "no completed, verified CONUS raster zonals"),

@@ -36,7 +36,7 @@ from county_derived_metrics import calculate_county_metrics
 
 COUNTY_TABLES = ("grazing", "timber", "air_quality", "urban_heat", "physical_health", "jobs", "recreation")
 VALUE_SOURCES = (
-    *COUNTY_TABLES, "marine_fisheries", "inland_fisheries", "coastline_lines",
+    *COUNTY_TABLES, "air_quality_county_aliases", "marine_fisheries", "inland_fisheries", "coastline_lines",
     "freshwater_polygons", "great_lakes_features", "inland_fisheries_exclusions",
     "corals", "mangroves",
 )

@@ -276,7 +276,7 @@ class DerivedMetricsTests(unittest.TestCase):
         recreation_source = self.root / 'recreation.csv'
         pd.DataFrame({'GEOID': ['01001', '01003'], 'county_cs_2024usd': [11., 0.],
                       'county_visits_2024': [200, 300]}).to_csv(recreation_source, index=False)
-        names = ['base', 'grazing', 'timber', 'air_quality', 'urban_heat', 'physical_health', 'jobs',
+        names = ['base', 'grazing', 'timber', 'air_quality', 'air_quality_county_aliases', 'urban_heat', 'physical_health', 'jobs',
                  'marine_fisheries', 'coastline', 'coastline_lines', 'inland_fisheries', 'freshwater',
                  'freshwater_polygons', 'great_lakes_features', 'inland_fisheries_exclusions',
                  'recreation', 'mangroves', 'corals']

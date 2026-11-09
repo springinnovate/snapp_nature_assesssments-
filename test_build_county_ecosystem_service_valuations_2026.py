@@ -3,6 +3,7 @@ from pathlib import Path
 from contextlib import closing
 from copy import deepcopy
 import sqlite3
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -16,7 +17,7 @@ from osgeo import ogr
 
 from build_county_ecosystem_service_valuations_2026 import (
     BASE_FIELDS, NON_SUM_FIELD, adjusted_county_fields, load_export_rules, plan_county_export,
-    air_quality_summary, compute_task, county_values, fips, numbers,
+    air_quality_summary, normalize_air_quality_counties, compute_task, county_values, fips, numbers,
     read_attributes, sha256, state_values, validate_crosswalk, write_output,
     load_checkpoint, run, save_checkpoint,
 )
@@ -124,6 +125,50 @@ class CountyIntegrationTests(unittest.TestCase):
         self.assertEqual(checks[0]["allocated_value"], 80)
         with self.assertRaises(ValueError):
             state_values(frame, "value", states, weights * 0)
+
+    def test_air_quality_alias_restores_value_before_both_aggregations(self):
+        """Restore renamed counties while preserving source files and CT weights."""
+        ids = pd.Index(["46102", "46003", "09110", "09120", "01001"], name="GEOID")
+        source = pd.DataFrame({
+            "FIPS": ["46113", "46113", "46003", "09001", "09003"],
+            "land": ["forest", "grass", "forest", "forest", "forest"],
+            "pollutant": ["PM2.5"] * 5, "dollars_annual": [10., 20., 5., 8., 12.],
+        })
+        alias_path = RULES_PATH.with_name("air_quality_county_aliases.csv")
+        aliases = pd.read_csv(alias_path, dtype=str)
+        original = source.copy(deep=True)
+        normalized, audit = normalize_air_quality_counties(source, aliases)
+        pd.testing.assert_frame_equal(source, original)
+        repeated, repeated_audit = normalize_air_quality_counties(normalized, aliases)
+        pd.testing.assert_frame_equal(normalized, repeated)
+        self.assertEqual(repeated_audit, [])
+        self.assertEqual(audit[0]["source_rows"], 2)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "air.csv"
+            source.to_csv(path, index=False)
+            digest = sha256(path)
+            result = compute_task("air_quality", {"air_quality": path, "air_quality_county_aliases": alias_path},
+                                  pd.DataFrame(index=ids), self.crosswalk, 1)
+            self.assertEqual(sha256(path), digest)
+        expected = [30., 5., 2., 18., np.nan]
+        np.testing.assert_allclose(result["originals"]["avoided_air_quality_heath_costs"], expected)
+        np.testing.assert_allclose(result["summary_fields"].sum_dollars_annual, expected)
+        self.assertEqual(result["metadata"][0]["unmatched_total"], 0.)
+        self.assertEqual(json.loads(result["metadata"][0]["county_code_aliases"]), audit)
+        duplicate = pd.concat([source, source.iloc[[0]].assign(FIPS="46102")], ignore_index=True)
+        with self.assertRaisesRegex(ValueError, "Duplicate air-quality"):
+            normalize_air_quality_counties(duplicate, aliases)
+
+    def test_air_quality_rejects_ambiguous_alias_config(self):
+        """Reject malformed IDs, duplicate targets, cycles and missing metadata."""
+        source = pd.DataFrame(columns=["FIPS", "land", "pollutant", "dollars_annual"])
+        aliases = pd.read_csv(RULES_PATH.with_name("air_quality_county_aliases.csv"), dtype=str)
+        invalid = [aliases.assign(source_geoid="4611"), aliases.assign(target_geoid="46113"),
+                   aliases.assign(source_name=""), aliases.drop(columns="source_url"),
+                   pd.concat([aliases, aliases.assign(source_geoid="46115")], ignore_index=True)]
+        for config in invalid:
+            with self.subTest(config=config.to_dict()), self.assertRaises(ValueError):
+                normalize_air_quality_counties(source, config)
 
     def test_air_quality_summaries_keep_raw_units_and_missing_counties(self):
         """Statistics describe category values, not pixels or adjusted dollars."""
