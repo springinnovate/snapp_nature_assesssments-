@@ -19,8 +19,12 @@ column_groups:
 # Required exact source/generated names: a typo or missing field stops the run.
 exclude_fields: []
 
-# Nonmonetary water-use sums may be present in separately supplied raw zonals.
+# Omit nonmonetary diagnostics and superseded sums when present in raw zonals.
 optional_exclude_fields:
+  # Density sums are internal inputs, not area-integrated monetary totals.
+  # Excluding this service also omits carbon_ha_adj_factor automatically.
+  - sum_totalC_tCO2e_ha_2020
+  - sum_totalC_tCO2e_ha_2020_adj
   - sum_Wsw_irr
   - sum_Wsw_pow
   - sum_Wsw_pub

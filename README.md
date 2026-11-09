@@ -156,6 +156,8 @@ applied once during valuation: pollination and flood values per hectare use
 0.09 ha per 30 m pixel. Carbon stock is calculated from the per-hectare raster
 sum multiplied by 0.09, then valued at $3.66 per tonne CO₂e multiplied by a 1.182
 inflation adjustment.
+Only the area-integrated carbon value and its dollar factor are published;
+the density sum remains an internal input, not a second monetary total.
 
 **County tables.** Grazing, timber, jobs, air quality, urban heat, and physical
 health are joined by county. A [land-area crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
