@@ -60,6 +60,11 @@ class DerivedMetricsTests(unittest.TestCase):
             self.root / 'population.csv', index=False, encoding='cp1252')
         self.config = self.root / 'derived_metrics.yaml'
         self.rules = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding='utf-8'))
+        # Generic county fixtures exercise the original single-scope calculator.
+        for name in ('county_area_inclusive', 'natural_areas_inclusive'):
+            self.rules['sources'].pop(name)
+        self.rules['ratios'] = {name: field for name, field in self.rules['ratios'].items()
+                                if not name.endswith('_incl_ocean_great_lakes')}
         self.rules['sources']['gdp'].pop('allocation_crosswalk', None)
         self.rules['es_total']['components'] = ['first_adj', 'second_adj']
         for name, path in [('county_area', 'area.csv'), ('natural_areas', 'masks.gpkg'),
@@ -158,9 +163,54 @@ class DerivedMetricsTests(unittest.TestCase):
         self.assertTrue(all(c.endswith('_adj') for c in components))
         self.assertEqual(rules['sources']['gdp']['scale'], 1000.)
         self.assertEqual(rules['sources']['population']['where'], {'SUMLEV': '050'})
-        self.assertEqual(rules['ratios'], {'es_per_ha': 'area_ha_county_excl_ocean_great_lakes',
-                         'es_per_ha_natural': 'area_ha_all_natural', 'es_per_gdp': 'GDP_2024',
+        self.assertEqual(rules['ratios'], {'es_per_ha': 'area_ha_county',
+                         'es_per_ha_incl_ocean_great_lakes': 'area_ha_county_incl_ocean_great_lakes',
+                         'es_per_ha_natural': 'area_ha_all_natural',
+                         'es_per_ha_natural_incl_ocean_great_lakes': 'area_ha_all_natural_incl_ocean_great_lakes',
+                         'es_per_gdp': 'GDP_2024',
                          'es_per_capita': 'Pop_2024'})
+
+    def test_inclusive_metrics_use_saved_full_areas_and_stay_adjacent(self):
+        """Export both denominator versions without resampling or altering inputs."""
+        defaults = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding='utf-8'))
+        self.rules['ratios'] = defaults['ratios']
+        self.rules['sources']['county_area_inclusive'] = {
+            **defaults['sources']['county_area_inclusive'], 'path': 'county_qa.csv'}
+        self.rules['sources']['natural_areas_inclusive'] = {
+            **defaults['sources']['natural_areas_inclusive'], 'path': 'full_masks.gpkg', 'layer': 'counties'}
+        area_path = self.root / 'county_qa.csv'
+        pd.DataFrame({'GEOID': self.ids[::-1], 'area_ha_full_county': [10., 8., 4.]}).to_csv(area_path, index=False)
+        full_masks = self.masks.assign(area_ha_all_natural=[2., 1., 0.], area_ha_valid_nlcd=[3., 3., 0.])
+        full_path = self.root / 'full_masks.gpkg'
+        gpd.GeoDataFrame(full_masks, geometry=self.geometry).reset_index().iloc[::-1].to_file(
+            full_path, layer='counties', driver='GPKG')
+        self.config.write_text(yaml.safe_dump(self.rules, sort_keys=False), encoding='utf-8')
+        hashes = {path: sha256(path) for path in (area_path, full_path, self.mask_path, self.base)}
+        output = finalize_counties(self.base, self.root, self.config, self.root / 'paired.gpkg')
+        attrs, _, _ = read_attributes(output)
+        csv = pd.read_csv(output.with_suffix('.csv'), dtype={'GEOID': str}, float_precision='round_trip')
+        pd.testing.assert_frame_equal(attrs, csv, check_dtype=False)
+        for base, excluded, included in (
+            ('area_ha_county', [2., 4., 5.], [4., 8., 10.]),
+            ('area_ha_all_natural', [1., .5, 0.], [2., 1., 0.]),
+            ('es_per_ha', [6., 1., 1.], [3., .5, .5]),
+            ('es_per_ha_natural', [12., 8., np.nan], [6., 4., np.nan]),
+        ):
+            companion = base + '_incl_ocean_great_lakes'
+            self.assertEqual(attrs.columns.get_loc(companion), attrs.columns.get_loc(base) + 1)
+            np.testing.assert_allclose(attrs[base], excluded)
+            np.testing.assert_allclose(attrs[companion], included)
+        np.testing.assert_allclose(attrs.es_total, [12., 4., 5.])
+        np.testing.assert_allclose(attrs.es_per_gdp, [.012, np.nan, np.nan])
+        np.testing.assert_allclose(attrs.es_per_capita, [4., 2., np.nan])
+        self.assertEqual({path: sha256(path) for path in hashes}, hashes)
+        with closing(read_db(output)) as con:
+            records = dict(con.execute('SELECT source, sha256 FROM derived_metric_sources'))
+            self.assertEqual(records['county_area_inclusive'], hashes[area_path])
+            self.assertEqual(records['natural_areas_inclusive'], hashes[full_path])
+        pd.DataFrame({'GEOID': self.ids, 'area_ha_full_county': [1., 8., 10.]}).to_csv(area_path, index=False)
+        with self.assertRaisesRegex(ValueError, 'exceeds the full county area'):
+            calculate_county_metrics(self.frame, self.root, self.config)
 
     def test_county_and_natural_areas_must_use_the_same_reporting_footprint(self):
         """Reject old natural areas and mismatched county denominator releases."""
@@ -237,7 +287,8 @@ class DerivedMetricsTests(unittest.TestCase):
         pd.testing.assert_frame_equal(attrs, csv, check_dtype=False)
         original, _, _ = read_attributes(source)
         pd.testing.assert_frame_equal(original, attrs[list(original)], check_dtype=False)
-        self.assertEqual(set(attrs) - set(original), set(DERIVED_FIELDS))
+        self.assertEqual(set(attrs) - set(original), {
+            field for field in DERIVED_FIELDS if not field.endswith('_incl_ocean_great_lakes')})
         with closing(read_db(source)) as left, closing(read_db(output)) as right:
             self.assertEqual(left.execute('SELECT fid,geom FROM counties ORDER BY fid').fetchall(),
                              right.execute(f'SELECT fid,"{geom}" FROM "{layer}" ORDER BY fid').fetchall())
