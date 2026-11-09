@@ -10,7 +10,7 @@ provisioning,1.182,User supplied inflation adjustment,USD 2020
 provisioning_irr,1.182,Same adjustment as water provisioning total,USD 2020
 provisioning_pow,1.182,Same adjustment as water provisioning total,USD 2020
 provisioning_pub,1.182,Same adjustment as water provisioning total,USD 2020
-grazing,1,User supplied; CountyGrazingValueYear is already a county total,USD 2024 annual
+grazing,1,Annual forage valued once in CountyGrazingValueMonth before the workbook's eight-month multiplier,USD 2024 annual
 jobs_cultural,1.065,User supplied inflation adjustment,USD 2022 wages
 jobs_raw_materials,1.065,User supplied inflation adjustment,USD 2022 wages
 jobs_processing,1.065,User supplied inflation adjustment,USD 2022 wages

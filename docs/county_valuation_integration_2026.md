@@ -124,7 +124,7 @@ factor, and final output field for each measure.
 
 | Service | Source field and county assignment | Source units/year | Factor |
 | --- | --- | --- | --- |
-| Grazing | Join `CountyGrazingValueYear` by `CountyCode` from the `SNAPPGrazingCalculations` sheet | Annual USD, 2024 | 1 |
+| Grazing | Join `CountyGrazingValueMonth` by `CountyCode` from the `SNAPPGrazingCalculations` sheet; see [grazing valuation](#grazing-valuation) for the time basis | Annual USD, 2024 | 1 |
 | Air-quality avoided mortality | Sum `dollars_annual` across land-cover and pollutant rows by `FIPS` | Annual USD | 1.135 |
 | Nature-related wages | Join the four Total Wages columns from the `totals by county` sheet by `County FIPS`; sum them for the combined wage total | USD wages, 2022 | 1.065 |
 | Timber | Clamp negative `total_annual_rent` to zero, then join by `fips_padded` | Annual USD, 2024 | 1 |
@@ -159,6 +159,29 @@ Explicitly null air-quality contributions propagate to null category and county
 totals; counties with no source coverage are also null. The workflow does not
 independently test whether every expected land-cover/pollutant row is present,
 so source-category completeness remains a separate quality-control consideration.
+
+#### Grazing valuation
+
+The assessment treats the workbook's `MEAN_Biomass_AVG`, a 2016–2025
+Google Earth Engine mean in pounds per acre, as mean **annual** forage
+production. The original Earth Engine script and time aggregation were not
+available to verify directly. The separate 2025 RAP biomass estimate in the
+April workbook is on the same scale. As an independent check, the workbook's
+decade mean for Cherry County, Nebraska is 1,722 lb/acre, comparable to the
+[RAP year-end report](https://rangelands.app/production-report/county#fips=31031;year=2025;doy=353;reference=rolling;metric=ytd;perAcre=true)
+of 1,740 lb/acre for the 2015–2024 annual mean and 1,861 lb/acre for 2025.
+These are scale checks, not evidence of identical inputs or acreage masks.
+
+The workbook multiplies biomass by grazing acres and a 25% usable-forage
+share. Dividing that annual supply by
+[780 lb per animal-unit month](https://www.fs.usda.gov/pnw/pubs/pnw_gtr248.pdf#page=19)
+gives the total animal-unit months the year's forage can support. Pricing
+those months at the workbook's monthly grazing fee gives the annual dollar
+value. The assessment therefore reads the subtotal named
+`CountyGrazingValueMonth` rather than `CountyGrazingValueYear`, which multiplies
+that subtotal by eight. The source workbook is unchanged. The adjustment
+factor remains 1, and land products receive the same county land share of the
+corrected value.
 
 ### State fisheries allocation
 
