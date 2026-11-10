@@ -42,7 +42,7 @@ VALUE_SOURCES = (
 )
 CONFIG_FILES = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv",
                 "export_rules.yaml", "derived_metrics.yaml", "great_lakes_nhd_features.csv",
-                "inland_fisheries_exclusions.csv")
+                "inland_fisheries_exclusions.csv", "county_area_exclusions.yaml")
 
 
 def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.DataFrame, dict, dict]:
@@ -73,12 +73,21 @@ def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.D
     derived = yaml.safe_load((config_dir / "derived_metrics.yaml").read_text(encoding="utf-8"))
     allocation = derived["sources"]["gdp"].get("allocation_crosswalk")
     denominator_paths = [(data_root / source["path"]).resolve() for source in derived["sources"].values()]
+    reporting_area_paths = {
+        (data_root / derived["sources"][name]["path"]).resolve()
+        for name in ("county_area", "natural_areas")
+    }
     if allocation:
         denominator_paths.append((data_root / allocation).resolve())
     for path in [*(paths[name] for name in VALUE_SOURCES),
                  *(config_dir / name for name in CONFIG_FILES),
                  *denominator_paths]:
         if not path.is_file():
+            if path in reporting_area_paths:
+                raise FileNotFoundError(
+                    f"Missing county reporting-area input: {path}. Run "
+                    'python prepare_county_reporting_areas.py --runner "<path to runner.py>" '
+                    "--download-missing first.")
             raise FileNotFoundError(f"Missing valuation input: {path}")
     return paths, factors, rules, derived
 
@@ -114,7 +123,10 @@ def value_zones(
     if set(zones) != set(ZONE_PRODUCTS) or set(raster_sums) != set(zones):
         raise ValueError("Valuation requires the same six geometry and raster products")
     paths, factors, rules, derived = load_valuation_config(data_root, config_dir)
-    counties = zones["counties"]
+    counties = zones["counties"].drop(
+        columns=["pct_public_lands", "pct_conservation_lands", "pct_bbb_lands"], errors="ignore")
+    # Reused zone files may still carry the replaced land-only percentages.
+    zones = dict(zones, counties=counties)
     if not counties.GEOID.astype("string").str[:2].isin(CONUS_STATE_FIPS).all():
         raise ValueError("County inputs must be within CONUS")
     county_base = pd.DataFrame(counties.drop(columns=counties.geometry.name)).set_index("GEOID")
@@ -211,8 +223,8 @@ def value_zones(
                                rtol=1e-12, atol=0.001):
                 raise ValueError("County total with recreation differs from the configured legacy component sum")
             denominators = denominators.drop(columns="es_total").set_axis(zone.index)
-            # The saved footprint hectares exclude water; the published county
-            # polygon area includes it. Keep these separate from land shares.
+            # Reporting area includes inland water other than the Great Lakes;
+            # allocation shares continue to use land-only areas and ALAND.
             footprint_rules = derived["county_footprint_ratios"]
             county_area = denominators[footprint_rules["denominator"]]
             divisor = county_area.where(np.isfinite(county_area) & county_area.gt(0))

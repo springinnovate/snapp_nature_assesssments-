@@ -34,18 +34,19 @@ es_total:
 
 sources:
   county_area:
-    path: analysis_results/zonal_statistics/counties/counties_area_20260910_130816.csv
+    path: analysis_inputs/boundaries/county_reporting_areas/tl_2024_us_county_excl_ocean_great_lakes.csv
     encoding: utf-8-sig
     key: GEOID
-    field: intersect_area_ha_tl_2024_us_county_50_states
-    output: area_ha_county
+    field: area_ha_county_excl_ocean_great_lakes
+    output: area_ha_county_excl_ocean_great_lakes
     scale: 1.0
     require_all_counties: true
   natural_areas:
-    # Mask release to join when the county input has no corrected NLCD areas.
-    path: analysis_results/nlcd_mask_areas/2026_10_26_15_03_29_853049/counties_nlcd_mask_areas_2026_10_26_15_03_29_853049.gpkg
-    layer: tl_2024_us_county_50_states
+    # Five NLCD masks measured on the same ocean/Great-Lakes-excluded footprint.
+    path: analysis_inputs/boundaries/county_reporting_areas/tl_2024_us_county_excl_ocean_great_lakes.gpkg
+    layer: county_reporting_areas
     key: GEOID
+    county_area_field: area_ha_county_excl_ocean_great_lakes
   gdp:
     path: analysis_inputs/CAGDP1_LineCode3_All_States.csv
     encoding: utf-8-sig
@@ -71,16 +72,16 @@ sources:
 
 # Divide es_total by each denominator.
 ratios:
-  es_per_ha: area_ha_county
+  es_per_ha: area_ha_county_excl_ocean_great_lakes
   es_per_ha_natural: area_ha_all_natural
   es_per_gdp: GDP_2024
   es_per_capita: Pop_2024
 
 # CONUS county summaries only. Numerators are land-only footprint hectares;
-# the denominator is the full county polygon area (land and water).
+# the denominator includes inland water, excluding ocean and the five Great Lakes.
 county_footprint_ratios:
-  denominator: area_ha_county
+  denominator: area_ha_county_excl_ocean_great_lakes
   numerators:
-    ratio_public_lands_to_total_county_area: area_ha_public_lands
-    ratio_conservation_lands_to_total_county_area: area_ha_conservation_lands
-    ratio_bbb_lands_to_total_county_area: area_ha_bbb_lands
+    ratio_public_lands_to_county_area_excl_ocean_great_lakes: area_ha_public_lands
+    ratio_conservation_lands_to_county_area_excl_ocean_great_lakes: area_ha_conservation_lands
+    ratio_bbb_lands_to_county_area_excl_ocean_great_lakes: area_ha_bbb_lands

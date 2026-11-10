@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
@@ -43,20 +44,20 @@ FACE_FIELDS = ["STATEFP", "COUNTYFP", "TFID", "LWFLAG", "ATOTAL"]
 BATCH_COUNTIES = 64
 
 
-def face_shapefile(archive: Path, geoid: str) -> str:
+def county_shapefile(archive: Path, stem: str, *, fields: Collection[str] | None = None) -> str:
     """Validate the archive members needed to read one official county file.
 
     Args:
         archive: Path to the downloaded or locally cached county ZIP.
-        geoid: Five-character current Census county identifier.
+        stem: Expected Shapefile basename without its extension.
+        fields: Required fields when also checking ZIP integrity and CRS.
 
     Returns:
         GDAL virtual path to the county's Shapefile, without extracting it.
 
     Raises:
-        ValueError: A required member is absent, duplicated, or empty.
+        ValueError: Required members, integrity, fields, or CRS are invalid.
     """
-    stem = f"tl_2024_{geoid}_faces"
     with ZipFile(archive) as source:
         members = source.infolist()
         for extension in ("shp", "shx", "dbf", "prj"):
@@ -64,7 +65,17 @@ def face_shapefile(archive: Path, geoid: str) -> str:
             matches = [member for member in members if member.filename == name]
             if len(matches) != 1 or matches[0].file_size == 0:
                 raise ValueError(f"{archive} must contain one nonempty {name}")
-    return f"/vsizip/{archive.resolve().as_posix()}/{stem}.shp"
+        if fields is not None and (bad_member := source.testzip()) is not None:
+            raise ValueError(f"{archive} has a corrupt ZIP member: {bad_member}")
+    path = f"/vsizip/{archive.resolve().as_posix()}/{stem}.shp"
+    if fields is not None:
+        try:
+            info = pyogrio.read_info(path)
+        except Exception as error:
+            raise ValueError(f"Cannot read Census Shapefile in {archive}") from error
+        if not set(fields) <= set(info["fields"]) or not info["crs"]:
+            raise ValueError(f"Invalid Census Shapefile schema or CRS in {archive}")
+    return path
 
 
 def publish_new_file(staged: Path, destination: Path) -> None:
@@ -94,28 +105,35 @@ def publish_new_file(staged: Path, destination: Path) -> None:
             raise
 
 
-def download_archive(archive: Path, geoid: str) -> None:
+def download_archive(archive: Path, geoid: str, *, source_url: str = FACES_URL,
+                     validate: Callable[[Path], object] | None = None, timeout: int = 30) -> None:
     """Fetch one missing official archive into the resumable local cache.
 
     Args:
         archive: Destination ZIP path under the explicitly chosen cache directory.
         geoid: Expected current county GEOID.
+        source_url: Census directory URL containing the archive.
+        validate: Pre-publication validation; defaults to checking FACES members.
+        timeout: Network timeout in seconds.
 
     Raises:
         RuntimeError: Census could not supply a downloadable archive after retries.
     """
     if archive.is_file():
         return
+    if validate is None:
+        validate = lambda path: county_shapefile(path, f"tl_2024_{geoid}_faces")
+    archive.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=archive.parent, prefix=f".{geoid}-") as staging:
         staged = Path(staging) / archive.name
-        url = FACES_URL + archive.name
+        url = source_url.rstrip("/") + "/" + archive.name
         for attempt in range(3):
             try:
-                with urlopen(url, timeout=30) as response, staged.open("wb") as target:
+                with urlopen(url, timeout=timeout) as response, staged.open("wb") as target:
                     shutil.copyfileobj(response, target, length=1024 * 1024)
                 # The archive server can return an HTML rejection page with
                 # HTTP 200. Validate the container before retaining it.
-                face_shapefile(staged, geoid)
+                validate(staged)
                 break
             except (URLError, TimeoutError, IncompleteRead, BadZipFile, ValueError) as error:
                 retryable = not isinstance(error, HTTPError) or error.code in {429, 500, 502, 503, 504}
@@ -126,7 +144,7 @@ def download_archive(archive: Path, geoid: str) -> None:
             publish_new_file(staged, archive)
         except FileExistsError:
             # Another explicitly started cache fill finished this county first.
-            face_shapefile(archive, geoid)
+            validate(archive)
 
 
 def integer_values(values: pd.Series, label: str, *, minimum: int = 0) -> np.ndarray:
@@ -166,7 +184,7 @@ def build_county_mask(archive: Path, county) -> dict:
     stat = archive.stat()
     with archive.open("rb") as source:
         checksum = hashlib.file_digest(source, "sha256").hexdigest()
-    shp = face_shapefile(archive, geoid)
+    shp = county_shapefile(archive, f"tl_2024_{geoid}_faces")
     faces = pyogrio.read_dataframe(shp, columns=FACE_FIELDS)
     if faces.empty or faces.crs is None or not set(FACE_FIELDS) <= set(faces.columns):
         raise ValueError(f"{geoid}: expected 2024 Census faces with required fields and a CRS")

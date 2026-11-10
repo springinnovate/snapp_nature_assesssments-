@@ -511,7 +511,7 @@ parts, the calculation uses the total once.
 | Column | Calculation | Units |
 | --- | --- | --- |
 | `es_total` | Sum of the selected adjusted service fields | Dollars across the included valuations |
-| `es_per_ha` | `es_total / area_ha_county` | Dollars per county hectare |
+| `es_per_ha` | `es_total / area_ha_county_excl_ocean_great_lakes` | Dollars per county hectare, excluding ocean and Great Lakes |
 | `es_per_ha_natural` | `es_total / area_ha_all_natural` | Dollars per observed natural-land hectare |
 | `es_per_gdp` | `es_total / GDP_2024` | Ratio; 0.02 means the total is numerically 2% of GDP |
 | `es_per_capita` | `es_total / Pop_2024` | Dollars per resident |
@@ -533,17 +533,24 @@ below maps combined-area codes to their constituent county/city codes.
 
 | Column | Source |
 | --- | --- |
-| `area_ha_county` | `intersect_area_ha_tl_2024_us_county_50_states` in `counties_area_20260910_130816.csv`, matched by `GEOID` |
-| `area_ha_all_natural` | Sum of the NLCD forest, grassland, shrubland, water/snow and wetland areas |
+| `area_ha_county_excl_ocean_great_lakes` | County geometry area after excluding Census ocean/Great Lakes water and connected bays, matched by `GEOID` |
+| `area_ha_all_natural` | Sum of the NLCD forest, grassland, shrubland, water/snow and wetland areas measured within the same reporting footprint |
 | `GDP_2024` | `2024` in `CAGDP1_LineCode3_All_States.csv`, LineCode 3, matched by `GeoFIPS` or allocated from a mapped Virginia combined area. Values are in thousands of dollars and are multiplied by 1,000 |
 | `Pop_2024` | `POPESTIMATE2024` in `co-est2025-alldata.csv`, county rows (`SUMLEV=050`), matched by `GEOFIPS` |
 
 Full source paths are in
 [`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml).
-The GDP and population files are under `data/analysis_inputs/`; the county-area
-and NLCD mask-area files are outputs of their respective analysis steps.
+The GDP and population files are under `data/analysis_inputs/`; prepare the
+county-area and NLCD files together with
+[`prepare_county_reporting_areas.py`](../prepare_county_reporting_areas.py).
+The CSV denominator and GeoPackage natural areas must carry matching county
+areas. A mismatched or older unmasked NLCD release is rejected.
 
-Natural-land area is the area of the five selected NLCD classes.
+The reporting footprint excludes oceans and the five Great Lakes, including
+connected bays, but retains other inland water such as Great Salt Lake and Tahoe.
+It is a reporting denominator, not a replacement for the assessment geometries
+or the land-only `ALAND` used to allocate county services. Natural-land area is
+the area of the five selected NLCD classes within that footprint.
 `area_ha_valid_nlcd` measures the larger footprint with usable NLCD observations.
 The natural-land ratio uses the former. For a county outside NLCD coverage,
 zero observed hectares means the data are unavailable, rather than that the

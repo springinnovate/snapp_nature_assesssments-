@@ -67,6 +67,7 @@ class DerivedMetricsTests(unittest.TestCase):
             self.rules['sources'][name]['path'] = path
         self.rules['sources']['county_area']['field'] = 'hectares'
         self.rules['sources']['natural_areas']['layer'] = 'counties'
+        self.rules['sources']['natural_areas'].pop('county_area_field', None)
         self.config.write_text(yaml.safe_dump(self.rules), encoding='utf-8')
         self.config.with_name('export_rules.yaml').write_bytes(DEFAULT_CONFIG.with_name('export_rules.yaml').read_bytes())
 
@@ -157,9 +158,26 @@ class DerivedMetricsTests(unittest.TestCase):
         self.assertTrue(all(c.endswith('_adj') for c in components))
         self.assertEqual(rules['sources']['gdp']['scale'], 1000.)
         self.assertEqual(rules['sources']['population']['where'], {'SUMLEV': '050'})
-        self.assertEqual(rules['ratios'], {'es_per_ha': 'area_ha_county',
+        self.assertEqual(rules['ratios'], {'es_per_ha': 'area_ha_county_excl_ocean_great_lakes',
                          'es_per_ha_natural': 'area_ha_all_natural', 'es_per_gdp': 'GDP_2024',
                          'es_per_capita': 'Pop_2024'})
+
+    def test_county_and_natural_areas_must_use_the_same_reporting_footprint(self):
+        """Reject old natural areas and mismatched county denominator releases."""
+        area_field = 'area_ha_county_excl_ocean_great_lakes'
+        self.rules['sources']['natural_areas']['county_area_field'] = area_field
+        self.config.write_text(yaml.safe_dump(self.rules), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'must be recalculated'):
+            calculate_county_metrics(self.frame, self.root, self.config,
+                                    natural_areas=self.masks, natural_source=self.mask_path)
+        masks = self.masks.assign(**{area_field: [2., 4., 5.]})
+        result, _ = calculate_county_metrics(self.frame, self.root, self.config,
+                                            natural_areas=masks, natural_source=self.mask_path)
+        np.testing.assert_allclose(result.es_per_ha, [6., 1., 1.])
+        masks.loc['01001', area_field] = 2.5
+        with self.assertRaisesRegex(ValueError, 'different reporting footprints'):
+            calculate_county_metrics(self.frame, self.root, self.config,
+                                    natural_areas=masks, natural_source=self.mask_path)
 
     def test_csv_reader_reports_duplicate_keys_and_nonnumeric_values(self):
         """Use pandas ingestion errors for malformed external CSV records."""

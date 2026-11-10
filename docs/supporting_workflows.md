@@ -16,6 +16,37 @@ python prepare_census_county_land_mask.py --faces-dir 'data/analysis_inputs/boun
 
 Add `--download-missing` to download missing official archives into that directory. Use `--counties` and `--counties-layer` to select the county source. The default output is `data/analysis_inputs/boundaries/county_land/tl_2024_us_county_land_conus.gpkg`, layer `county_land_mask`. Keep its matching `_qa.csv` and `_manifest.json`. Pass the GeoPackage as `--land-mask` in a fresh assessment.
 
+## Prepare county reporting areas and natural-area denominators
+
+Run this when the prepared reporting-area files are missing or the county/water
+sources change:
+
+```cmd
+python prepare_county_reporting_areas.py --runner "..\zonal_stats_toolkit\runner.py" --download-missing
+```
+
+The command reads the 2024 county boundaries and Census land mask, caches
+official county AREAWATER archives under
+`data/analysis_inputs/boundaries/census_areawater/2024/`, and uses
+[`county_area_exclusions.yaml`](../data/workflow_assets/county_integration/county_area_exclusions.yaml)
+to identify ocean, the five Great Lakes, and connected bays. It dissolves
+overlapping exclusions before measuring areas and preserves the county's land.
+Great Salt Lake, Tahoe, and other inland water remain in the reporting area.
+
+Only the five NLCD binary masks are sampled on this footprint. The final
+`tl_2024_us_county_excl_ocean_great_lakes.csv` and matching GeoPackage under
+`data/analysis_inputs/boundaries/county_reporting_areas/` contain the county
+denominator and natural-area metrics. Keep their QA and manifest sidecars.
+Existing final files are not overwritten; use `--output` for a separately named
+replacement and update both county-area and natural-area paths in
+[`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml).
+Do not use a `--geometry-only` result as a finished denominator source: it has
+not calculated the natural-area metrics.
+
+Then [revalue the completed assessment](../README.md#revalue-a-completed-run).
+This leaves ecosystem-service raster sums, service values, fisheries weights,
+and the original assessment geometries unchanged.
+
 ## Prepare the BBB county footprint
 
 Use the full PAD-US combined source with the ownership and management
@@ -55,26 +86,20 @@ python generate_nlcd_reclass_masks.py
 
 The generated TIFFs go under `data/analysis_inputs/masks/`. Point the
 [NLCD zonal profile](../data/workflow_assets/zonal_stats/snapp_assessment_nlcd_masks.yaml)
-at the five mask TIFFs you intend to measure, then run:
+at the five mask TIFFs you intend to measure, then run the
+[county reporting-area preparation](#prepare-county-reporting-areas-and-natural-area-denominators)
+with a new `--output`. This measures the masks on the ocean/Great-Lakes-excluded
+footprint and supplies matching inputs for both area-normalized ES metrics.
+
+For a separate full-county NLCD coverage diagnostic, use:
 
 ```powershell
 python update_nlcd_mask_areas.py --runner '<path to zonal_stats_toolkit/runner.py>' --raster-workers 2
 ```
 
 This prints a verified county CSV/GeoPackage pair under
-`data/analysis_results/nlcd_mask_areas/<timestamp>/`. Select its GeoPackage and
-feature layer under `sources.natural_areas` in
-[`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml).
-
-Add `--county-results '<pre-mask county valuations.gpkg>'` to also write a new county valuation pair with the mask fields, totals and ratios appended. To attach the same mask run to another compatible county valuation without rerunning any zonals, select the exact raw mask GeoPackage and frozen config from that run:
-
-```powershell
-python update_nlcd_mask_areas.py `
-  --mask-results '<raw counties_masks_TIMESTAMP.gpkg>' `
-  --run-config '<matching frozen config.yaml>' `
-  --county-results '<pre-mask county valuations.gpkg>' `
-  --output '<new county valuations.gpkg>'
-```
+`data/analysis_results/nlcd_mask_areas/<timestamp>/`. It includes the entire
+county geometry and is not the reporting-area input for the assessment ratios.
 
 ## Refresh PAD-US footprints
 

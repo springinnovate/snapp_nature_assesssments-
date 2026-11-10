@@ -24,7 +24,7 @@ from county_gdp import allocate_combined_gdp, read_county_source
 
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent / 'data/workflow_assets/county_integration/derived_metrics.yaml'
-DERIVED_FIELDS = ('area_ha_county', 'GDP_2024', 'GDP_2024_is_allocated', 'Pop_2024', 'es_total',
+DERIVED_FIELDS = ('area_ha_county_excl_ocean_great_lakes', 'GDP_2024', 'GDP_2024_is_allocated', 'Pop_2024', 'es_total',
                   'es_per_ha', 'es_per_ha_natural', 'es_per_gdp', 'es_per_capita')
 
 
@@ -100,11 +100,20 @@ def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: 
     # These areas have already been calculated and checked by the mask workflow.
     if natural_areas is None:
         spec = rules['sources']['natural_areas']
+        area_field = spec.get('county_area_field')
         with tqdm(total=1, desc='Read corrected NLCD areas', unit='table') as progress:
             natural_areas = gpd.read_file(
                 paths['natural_areas'], layer=spec['layer'],
-                columns=[spec['key'], *FIELD_DEFINITIONS], read_geometry=False).set_index(spec['key'])
+                columns=[spec['key'], *FIELD_DEFINITIONS, *([area_field] if area_field else [])],
+                read_geometry=False).set_index(spec['key'])
             progress.update(1)
+    area_field = rules['sources']['natural_areas'].get('county_area_field')
+    if area_field:
+        if area_field not in natural_areas:
+            raise ValueError('NLCD areas must be recalculated on the ocean/Great-Lakes-excluded county footprint')
+        county_area = values[rules['sources']['county_area']['output']]
+        if not np.allclose(natural_areas.loc[ids, area_field], county_area, rtol=1e-10, atol=1e-6):
+            raise ValueError('County-area and NLCD sources describe different reporting footprints')
     masks = natural_areas.loc[ids, list(FIELD_DEFINITIONS)]
     values = values.join(masks)
     status['area_ha_all_natural_status'] = np.where(

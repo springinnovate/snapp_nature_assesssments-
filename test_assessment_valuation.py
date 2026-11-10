@@ -14,6 +14,18 @@ import assessment_valuation as valuation
 from assessment_zone_geometry import ZONE_PRODUCTS
 
 
+@pytest.mark.parametrize("source_name", ["county_area", "natural_areas"])
+def test_missing_reporting_area_input_explains_preparation(monkeypatch, source_name):
+    """Show the required preparation command for either reporting-area artifact."""
+    data = Path(valuation.__file__).parent / "data"
+    config = data / "workflow_assets/county_integration"
+    rules = yaml.safe_load((config / "derived_metrics.yaml").read_text(encoding="utf-8"))
+    missing = (data / rules["sources"][source_name]["path"]).resolve()
+    monkeypatch.setattr(Path, "is_file", lambda path: path != missing)
+    with pytest.raises(FileNotFoundError, match="prepare_county_reporting_areas.py.*--runner.*--download-missing"):
+        valuation.load_valuation_config(data, config)
+
+
 @pytest.mark.parametrize("county_total_area", [200.0, 0.0, np.nan])
 def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, county_total_area):
     """Check all product keys, land allocation, totals, factors and the output pair."""
@@ -58,7 +70,8 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     def county_metrics(frame, data_root, config_path):
         """Compute the existing county total for the reconciliation assertion."""
         total = frame[derived["es_total"]["components"]].fillna(0).sum(axis=1)
-        return pd.DataFrame({"es_total": total, "Pop_2024": 10, "area_ha_county": county_total_area}), {}
+        return pd.DataFrame({"es_total": total, "Pop_2024": 10,
+                             "area_ha_county_excl_ocean_great_lakes": county_total_area}), {}
 
     monkeypatch.setattr(valuation, "compute_task", county_task)
     monkeypatch.setattr(valuation, "value_fisheries", lambda zones, *_: vector_values(
@@ -99,11 +112,14 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     )
     assert set(outputs) == set(ZONE_PRODUCTS)
     county = outputs["counties"].iloc[0]
-    ratio_fields = ["ratio_public_lands_to_total_county_area", "ratio_conservation_lands_to_total_county_area",
-                    "ratio_bbb_lands_to_total_county_area"]
+    ratio_fields = [f"ratio_{name}_lands_to_county_area_excl_ocean_great_lakes"
+                    for name in ("public", "conservation", "bbb")]
     expected_ratios = [0.25, 0.125, 0.0] if county_total_area > 0 else [np.nan] * 3
     np.testing.assert_allclose(county[ratio_fields].to_numpy(dtype=float), expected_ratios)
-    assert list(county[["pct_public_lands", "pct_conservation_lands", "pct_bbb_lands"]]) == [50.0, 25.0, 0.0]
+    legacy_pct_fields = {"pct_public_lands", "pct_conservation_lands", "pct_bbb_lands"}
+    assert legacy_pct_fields.isdisjoint(county.index)
+    # Saved zone inputs retain their attributes; only the new exports drop them.
+    assert legacy_pct_fields.issubset(zones["counties"].columns)
     assert county["recreation_adj"] == pytest.approx(400)
     assert county["air_quality_avoided_mortality_annual_value_adj"] == pytest.approx(20 * 1.135)
     assert county["total_ecosystem_services_w_rec"] - county["total_ecosystem_services"] == pytest.approx(400)
@@ -119,6 +135,10 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     assert "es_total" not in county
     assert pd.isna(county["sum_mangrove_coastal_flood_protection_value_adj"])
     for product, frame in outputs.items():
+        retained = zones[product].drop(columns=list(legacy_pct_fields), errors="ignore")
+        pd.testing.assert_frame_equal(frame[retained.columns], retained)
+        assert legacy_pct_fields.isdisjoint(frame.columns)
+        assert not any(name.endswith("_to_total_county_area") for name in frame.columns)
         assert {"sum_totalC_tCO2e_ha_2020", "sum_totalC_tCO2e_ha_2020_adj",
                 "carbon_ha_adj_factor"}.isdisjoint(frame.columns)
         assert "sum_pollination_attributed_annual_crop_yield_value" not in frame
@@ -145,5 +165,6 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         if product == "counties":
             for exported in (pd.read_csv(csv_path), published):
                 np.testing.assert_allclose(exported[ratio_fields].iloc[0], expected_ratios)
+                assert legacy_pct_fields.isdisjoint(exported.columns)
         with pytest.raises(FileExistsError):
             valuation.write_zone_pair(outputs[product], path, product, {})

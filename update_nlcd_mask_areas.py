@@ -26,7 +26,9 @@ from build_county_ecosystem_service_valuations_2026 import (
 )
 from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS, RAW_FIELD, derive_nlcd_mask_areas
 from county_derived_metrics import DEFAULT_CONFIG as DEFAULT_DERIVED_CONFIG, calculate_county_metrics
-from prepare_tif_zonal_stats_config import load_run_config, prepare_config
+from prepare_tif_zonal_stats_config import (
+    ZoneJob, load_and_prepare_rasters, load_run_config, prepare_config, write_runner_config,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -86,7 +88,8 @@ def validate_mask_definition(config_path: Path) -> list[dict]:
 def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
                       county_results: Path | None = None, raster_metadata: list[dict] | None = None,
                       *, derived_config: Path | None = DEFAULT_DERIVED_CONFIG,
-                      data_root: Path | None = None) -> Path:
+                      data_root: Path | None = None,
+                      output_layer: str = "tl_2024_us_county_50_states") -> Path:
     """Publish corrected areas, optionally alongside unchanged service values.
 
     Args:
@@ -99,6 +102,7 @@ def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
         derived_config: Rules for totals/ratios on augmented county outputs.
             None disables that stage for programmatic mask-only testing.
         data_root: Denominator source root; defaults to this repository's data.
+        output_layer: Feature-layer name in the new GeoPackage.
 
     Returns:
         New GeoPackage path, after CSV parity and preservation checks.
@@ -183,9 +187,81 @@ def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
         if sha256(path) != fingerprints[key]:
             raise ValueError(f"Input changed during mask export: {path}")
     write_output(base_path, output, layer, geom, additions, tables, removed_fields=removed,
-                 output_layer="tl_2024_us_county_50_states")
+                 output_layer=output_layer)
     tqdm.write(f"Verified: {output}\nVerified: {output.with_suffix('.csv')}")
     return output
+
+
+def verify_mask_rasters(metadata: list[dict]) -> None:
+    """Confirm that the validated raster inputs are still unchanged.
+
+    Args:
+        metadata: Source file stats captured during mask validation.
+
+    Raises:
+        ValueError: A mask file's size or modification time changed.
+    """
+    for record in metadata:
+        stat = Path(record["path"]).stat()
+        if (stat.st_size, stat.st_mtime_ns) != (record["bytes"], record["mtime_ns"]):
+            raise ValueError(f"Mask changed during computation: {record['path']}")
+
+
+def run_mask_zonals(
+    runner: Path, config_path: Path, frozen_path: Path, results_dir: Path, work_dir: Path,
+    raster_workers: int, *, reporting_zone: tuple[Path, str] | None = None,
+) -> tuple[Path, Path, list[dict]]:
+    """Run the five reviewed masks and verify their raw county results.
+
+    Args:
+        runner: Local toolkit runner script.
+        config_path: Reviewed mask-only profile.
+        frozen_path: New frozen config path for this run.
+        results_dir: Run-specific raw output directory.
+        work_dir: Run-specific toolkit cache directory.
+        raster_workers: Number of concurrent mask rasters.
+        reporting_zone: Explicit (GeoPackage, layer) pair for reporting areas,
+            or None to use the profile's county vector and layer.
+
+    Returns:
+        The verified raw GeoPackage, frozen config, and raster metadata.
+
+    Raises:
+        ValueError: Inputs or outputs do not match the mask-only workflow.
+        subprocess.CalledProcessError: The toolkit runner fails.
+    """
+    runner, config_path = runner.resolve(), config_path.resolve()
+    if not runner.is_file() or raster_workers < 1:
+        raise ValueError("Supply an existing runner.py and a positive raster worker count.")
+    metadata = validate_mask_definition(config_path)
+    command = [sys.executable]
+    if reporting_zone is None:
+        frozen_path = prepare_config(config_path=config_path, output_path=frozen_path,
+                                     results_dir=results_dir, work_dir=work_dir, selected_keys={"counties"})
+    else:
+        profile = load_run_config(config_path)
+        raster_dir = config_path.parent / profile["project"]["raster_dir"]
+        rasters, _ = load_and_prepare_rasters(config_path, raster_dir, work_dir.parent / "derived", apply_scale=False)
+        vector, layer = reporting_zone
+        zone_job = ZoneJob("counties", "County reporting-area NLCD masks", vector, layer, "counties_masks",
+                          "counties", "GEOID", profile["job:counties_masks"]["operations"])
+        write_runner_config(frozen_path, work_dir, results_dir, rasters, [zone_job], config_path)
+        command.append("-B")
+    command.extend([str(runner), str(frozen_path), "--job-workers", "1", "--raster-workers", str(raster_workers)])
+    tqdm.write("Running five NLCD masks only: " + subprocess.list2cmdline(command))
+    subprocess.run(command, check=True)
+    results = list((results_dir / "counties").glob("counties_masks_*.gpkg"))
+    if len(results) != 1 or not results[0].with_suffix(".csv").is_file():
+        raise ValueError(f"Expected exactly one complete raw mask CSV/GeoPackage pair in {results_dir}.")
+    verify_mask_rasters(metadata)
+    raw = results[0]
+    # Ensure both raw formats came from the same completed run.
+    attrs, _, _ = read_attributes(raw)
+    csv = pd.read_csv(raw.with_suffix(".csv"), dtype={"GEOID": str}, float_precision="round_trip")
+    common = [c for c in attrs if RAW_FIELD.fullmatch(c)]
+    pd.testing.assert_frame_equal(attrs.set_index("GEOID")[common].sort_index(),
+                                  csv.set_index("GEOID")[common].sort_index(), check_dtype=False)
+    return raw, frozen_path, metadata
 
 
 def run_mask_update(runner: Path, config_path: Path = DEFAULT_CONFIG,
@@ -210,9 +286,7 @@ def run_mask_update(runner: Path, config_path: Path = DEFAULT_CONFIG,
         subprocess.CalledProcessError: The mask-only runner fails; no final export
             is attempted, and the frozen config and raw work remain for diagnosis.
     """
-    runner, config_path = runner.resolve(), config_path.resolve()
-    if not runner.is_file() or raster_workers < 1:
-        raise ValueError("Supply an existing runner.py and a positive raster worker count.")
+    config_path = config_path.resolve()
     if county_results:
         county_results = county_results.resolve()
         base, _, _ = read_attributes(county_results)
@@ -223,30 +297,13 @@ def run_mask_update(runner: Path, config_path: Path = DEFAULT_CONFIG,
             missing = set(derived_rules["es_total"]["components"]) - set(base)
             if missing:
                 raise ValueError(f"County input lacks required adjusted es_total components: {sorted(missing)}")
-    metadata = validate_mask_definition(config_path)
     stamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S_%f")
     run_root = ROOT / "data/analysis_results/nlcd_mask_areas" / stamp
     frozen_path = config_path.parent / "runs" / f"snapp_assessment_nlcd_masks_{stamp}.yaml"
-    frozen = prepare_config(config_path=config_path, output_path=frozen_path,
-                            results_dir=run_root / "raw", work_dir=ROOT / "data/processing_outputs/nlcd_mask_areas_work" / stamp,
-                            selected_keys={"counties"})
-    command = [sys.executable, str(runner), str(frozen), "--job-workers", "1", "--raster-workers", str(raster_workers)]
-    tqdm.write("Running five NLCD masks only: " + subprocess.list2cmdline(command))
-    subprocess.run(command, check=True)
-    results = list((run_root / "raw/counties").glob("counties_masks_*.gpkg"))
-    if len(results) != 1 or not results[0].with_suffix(".csv").is_file():
-        raise ValueError(f"Expected exactly one complete raw mask CSV/GeoPackage pair in {run_root}.")
-    for record in metadata:
-        stat = Path(record["path"]).stat()
-        if stat.st_size != record["bytes"] or stat.st_mtime_ns != record["mtime_ns"]:
-            raise ValueError(f"Mask changed during computation: {record['path']}")
-    raw = results[0]
-    # Ensure both raw formats came from the same completed run.
-    attrs, _, _ = read_attributes(raw)
-    csv = pd.read_csv(raw.with_suffix(".csv"), dtype={"GEOID": str}, float_precision="round_trip")
-    common = [c for c in attrs if RAW_FIELD.fullmatch(c)]
-    pd.testing.assert_frame_equal(attrs.set_index("GEOID")[common].sort_index(),
-                                  csv.set_index("GEOID")[common].sort_index(), check_dtype=False)
+    raw, frozen, metadata = run_mask_zonals(
+        runner, config_path, frozen_path, run_root / "raw",
+        ROOT / "data/processing_outputs/nlcd_mask_areas_work" / stamp, raster_workers,
+    )
     outputs = [export_mask_areas(raw, run_root / f"counties_nlcd_mask_areas_{stamp}.gpkg", frozen,
                                 raster_metadata=metadata)]
     if county_results:

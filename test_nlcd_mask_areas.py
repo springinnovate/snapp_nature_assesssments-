@@ -20,7 +20,9 @@ from shapely.geometry import box
 from build_county_ecosystem_service_valuations_2026 import read_attributes, read_db, sha256
 from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS, derive_nlcd_mask_areas
 from prepare_tif_zonal_stats_config import prepare_config
-from update_nlcd_mask_areas import DEFAULT_CONFIG, export_mask_areas, run_mask_update, validate_mask_definition
+from update_nlcd_mask_areas import (
+    DEFAULT_CONFIG, export_mask_areas, run_mask_update, run_mask_zonals, validate_mask_definition,
+)
 
 
 def mask_statistics() -> pd.DataFrame:
@@ -221,6 +223,34 @@ class MaskAreaTests(unittest.TestCase):
             self.assertIn("--job-workers", launch.call_args.args[0])
             self.assertEqual(len(list((root / "runs").glob("*.yaml"))), 1)
             self.assertFalse((root / "data/analysis_results/combined").exists())
+
+    def test_shared_runner_keeps_raster_and_raw_pair_checks(self):
+        """Reject changed inputs and disagreeing raw outputs in the shared run."""
+        for problem, error in (("changed raster", ValueError), ("raw parity", AssertionError)):
+            with self.subTest(problem=problem), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                profile, base = write_fixture(root)
+                results = root / "raw"
+                raw = results / "counties/counties_masks_test.gpkg"
+                raw.parent.mkdir(parents=True)
+                stats = mask_statistics()
+                geometry = gpd.read_file(base).geometry
+                gpd.GeoDataFrame(stats, geometry=geometry).to_file(raw, layer="counties", driver="GPKG")
+                if problem == "raw parity":
+                    stats.iloc[0, 1] += 1
+                stats.to_csv(raw.with_suffix(".csv"), index=False)
+
+                def fake_runner(command, check):
+                    """Simulate a source-file change after input validation."""
+                    self.assertEqual(command[1], "-B")
+                    self.assertTrue(check)
+                    if problem == "changed raster":
+                        with next((root / "masks").rglob("*.tif")).open("ab") as stream:
+                            stream.write(b"changed")
+
+                with patch("update_nlcd_mask_areas.subprocess.run", side_effect=fake_runner), self.assertRaises(error):
+                    run_mask_zonals(Path(__file__), profile, root / "run.yaml", results,
+                                    root / "work", 1, reporting_zone=(base, "tl_2024_us_county_50_states"))
 
     @unittest.skipUnless(os.environ.get("SNAPP_TEST_ZONAL_RUNNER"), "Set SNAPP_TEST_ZONAL_RUNNER for real toolkit integration")
     def test_real_toolkit_mask_only_workflow(self):

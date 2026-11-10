@@ -29,11 +29,8 @@ CONSERVATION_GAP_CODES = (1, 2, 3)
 COUNTY_AREA_FIELDS = (
     "area_ha_county_land",
     "area_ha_public_lands",
-    "pct_public_lands",
     "area_ha_conservation_lands",
-    "pct_conservation_lands",
     "area_ha_bbb_lands",
-    "pct_bbb_lands",
     "area_ha_public_manager_overlap",
     "area_ha_conservation_manager_overlap",
 )
