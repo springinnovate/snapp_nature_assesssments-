@@ -13,34 +13,45 @@ six layers, each as a CSV and GeoPackage pair:
 
 ## How the assessment works
 
-1. [Define analysis areas](#define-analysis-areas). Select counties and county
-   equivalents, filter PAD-US for public and conservation lands, and add the
-   [BBB candidate lands](#identify-bbb-candidate-lands).
-2. [Measure area and shoreline](#measure-area-and-shoreline). Calculate land,
-   county, and natural areas, plus shoreline and inland water for fisheries.
-3. [Summarize raster values](#summarize-raster-values). Sum the values of
-   pixels in each analysis area.
-4. [Allocate service values](#allocate-service-values). Join county tables
-   and use land shares, fisheries measures, or mapped coastal features to
-   allocate estimates.
-5. [Calculate totals and county ratios](#calculate-totals-and-county-ratios).
-   Split combined Virginia GDP estimates by population before calculating
-   county GDP ratios.
-6. [Write the six outputs](#4-find-the-output-files).
+County boundaries provide a common basis for comparing whole counties with
+the lands within them. Some service estimates are mapped pixel by pixel;
+others are available only by county or state. The assessment brings these
+sources together for each area it reports.
+
+1. [Define the analysis areas](#define-analysis-areas). The assessment covers
+   every county and county equivalent in the contiguous United States. Within
+   each county, it estimates values separately for public lands and conservation
+   lands, both in total and by manager type. A separate
+   [BBB analysis](#identify-bbb-candidate-lands) estimates the value of services
+   on lands that meet the mapped criteria of the sale proposal.
+2. [Measure the areas](#measure-area-and-shoreline) and
+   [summarize mapped values](#summarize-raster-values). Measurements of land
+   area, shoreline length, and inland water area support comparisons and
+   allocations. Sum the raster estimates within each analysis area.
+3. [Combine and allocate service estimates](#allocate-service-values). Match
+   county estimates to each county. Use land shares to allocate values such
+   as grazing and timber to selected lands. State fisheries estimates are
+   allocated by shoreline length or inland water area, and coastal protection
+   estimates are assigned using mapped coral sites and mangrove study areas.
+4. [Calculate and report the results](#calculate-totals-and-county-ratios).
+   Combine service values into totals and calculate county ratios. For the
+   GDP ratios, divide combined Virginia GDP estimates among counties and
+   independent cities by population. Save each layer as a
+   [CSV and GeoPackage pair](#4-find-the-output-files).
 
 ## Methods
 
 ### Define analysis areas
 
-An analysis area is either a full county or the part of a county selected
-by a land filter. The
+Use the Census Bureau's
 [2024 TIGER/Line county boundaries](https://www.census.gov/cgi-bin/geo/shapefiles/index.php?layergroup=Counties+%28and+equivalent%29&year=2024)
-are the Census Bureau's boundaries for counties and county equivalents,
-including independent cities and Connecticut planning regions.
+to define the whole-county analysis and divide selected lands by county.
+The boundary file includes county equivalents such as independent cities and
+Connecticut planning regions.
 
-The USGS [PAD-US 4.1 Vector Analysis file](https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-spatial-analysis-and-reports)
-maps public lands and protected areas and records their management and
-conservation status.
+Use the USGS [PAD-US 4.1 Vector Analysis file](https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-spatial-analysis-and-reports)
+to identify public and conservation lands. The file maps public lands and
+protected areas and records their management and conservation status.
 
 - **Public lands.** Apply the [public-land filter](config/padus_land_rules.rules)
   to select records with federal, state, local government, special district,
@@ -55,6 +66,9 @@ can overlap; the county-level layer gives the unduplicated category area.
 
 ### Measure area and shoreline
 
+Land area supports the allocation of county service estimates, while county
+area and natural area provide denominators for per-hectare comparisons.
+Shoreline length and inland water area are used to allocate fisheries values.
 Vector areas and lengths are measured in EPSG:6933, an equal-area projection.
 
 - **Land area** is measured by intersecting each analysis area with the 2024
@@ -77,7 +91,7 @@ Vector areas and lengths are measured in EPSG:6933, an equal-area projection.
   counts as natural area; NoData does not.
 - **Shoreline and inland water** are measured by intersecting each analysis
   area with 2019 TIGER/Line shoreline and National Hydrography Dataset (NHD)
-  water polygons. These lengths and areas are the fisheries weights.
+  water polygons.
 
 ### Identify BBB candidate lands
 
@@ -103,10 +117,10 @@ to recreate the footprint.
 
 ### Summarize raster values
 
-Sum the values of valid raster cells whose centers fall inside each
-analysis area.
+For each service mapped as a raster, the estimate for an analysis area is
+the sum of valid pixel values whose centers fall inside its boundaries.
 Boundary simplification is capped at 15 m, with smaller tolerances for small
-or narrow polygon parts. Overlapping manager footprints are measured separately.
+or narrow polygon parts. Overlapping manager areas are measured separately.
 The [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml)
 lists the sources and units.
 
