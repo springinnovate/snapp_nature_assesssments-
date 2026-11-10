@@ -357,8 +357,10 @@ Each row names the output field and its denominator:
 | `es_per_capita` | `Pop_2024` | 2024 Census population estimate |
 | `es_per_gdp` | `GDP_2024` | 2024 gross domestic product from the U.S. Bureau of Economic Analysis (BEA), in dollars |
 
-*Adjustment to source data:* BEA reports some Virginia counties and independent
-cities together rather than separately. We divide each combined area's GDP
+*Adjustment to source data:* The
+[U.S. Bureau of Economic Analysis (BEA)](https://www.bea.gov/data/gdp/gdp-by-county)
+reports some Virginia counties and independent cities together rather than
+separately. We divide each combined area's GDP
 among its counties and cities in proportion to their 2024 Census populations.
 The [Virginia GDP allocation table](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
 identifies the groups. `GDP_2024_is_allocated` flags the population-based
