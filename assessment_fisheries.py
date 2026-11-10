@@ -64,7 +64,7 @@ def _read_state_totals(path: Path, field: str) -> pd.Series:
     return pd.Series(numbers(frame.loc[ids.index, field]).to_numpy(), index=ids.to_numpy())
 
 
-def _read_marine_shoreline(path: Path, counties: gpd.GeoDataFrame) -> shapely.STRtree:
+def read_marine_shoreline(path: Path, counties: gpd.GeoDataFrame) -> shapely.STRtree:
     """Index marine shoreline after scoping it in the source CRS.
 
     Args:
@@ -91,7 +91,7 @@ def _read_marine_shoreline(path: Path, counties: gpd.GeoDataFrame) -> shapely.ST
     return shapely.STRtree(gpd.GeoSeries(clipped, crs=coast.crs).to_crs(AREA_CRS).to_numpy())
 
 
-def _read_excluded_lakes(path: Path, features: Path, label: str):
+def read_excluded_lakes(path: Path, features: Path, label: str):
     """Read and dissolve NHD footprints to subtract from inland weights.
 
     Args:
@@ -199,10 +199,10 @@ def value_fisheries(
         by_county[product] = ids.groupby(ids, sort=False).indices
 
     totals = {service: _read_state_totals(paths[service], field) for service, field in _FIELDS.items()}
-    marine_tree = _read_marine_shoreline(paths["coastline_lines"], zones["counties"])
+    marine_tree = read_marine_shoreline(paths["coastline_lines"], zones["counties"])
     water_path = paths["freshwater_polygons"]
-    great_lakes = _read_excluded_lakes(water_path, paths["great_lakes_features"], "Great Lakes")
-    great_salt_lake = _read_excluded_lakes(
+    great_lakes = read_excluded_lakes(water_path, paths["great_lakes_features"], "Great Lakes")
+    great_salt_lake = read_excluded_lakes(
         water_path, paths["inland_fisheries_exclusions"], "Great Salt Lake",
     )
     water_info = read_info(water_path)

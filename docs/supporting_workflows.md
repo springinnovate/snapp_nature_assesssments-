@@ -22,16 +22,22 @@ Run this when the prepared reporting-area files are missing or the county/water
 sources change:
 
 ```cmd
-python prepare_county_reporting_areas.py --runner "..\zonal_stats_toolkit\runner.py" --download-missing
+set "PROJ_NETWORK=OFF"
+python prepare_county_reporting_areas.py --runner "..\zonal_stats_toolkit\runner.py"
 ```
 
-The command reads the 2024 county boundaries and Census land mask, caches
-official county AREAWATER archives under
-`data/analysis_inputs/boundaries/census_areawater/2024/`, and uses
-[`county_area_exclusions.yaml`](../data/workflow_assets/county_integration/county_area_exclusions.yaml)
-to identify ocean, the five Great Lakes, and connected bays. It dissolves
-overlapping exclusions before measuring areas and preserves the county's land.
-Great Salt Lake, Tahoe, and other inland water remain in the reporting area.
+The command uses local inputs only: 2024 county boundaries and Census land
+mask, `boundaries/usa_boundary/usa_vector.gpkg` under `data/analysis_inputs/`,
+and the TIGER coastline, clipped NHD water polygons, and Great Lakes feature
+list configured in [`sources.csv`](../data/workflow_assets/county_integration/sources.csv).
+It uses the marine shoreline to identify connected water outside the U.S.
+boundary, including water shared across county lines, and removes the five
+selected NHD Great Lakes footprints. Overlapping exclusions are counted once
+and Census land is preserved. Great Salt Lake, Tahoe, and other inland water
+remain in the reporting area. The generalized boundary approximates the
+coastal cutoff; some tidal waters may remain.
+Use `--usa-boundary` for a different local boundary and `--sources` for a
+different source table.
 
 Only the five NLCD binary masks are sampled on this footprint. The final
 `tl_2024_us_county_excl_ocean_great_lakes.csv` and matching GeoPackage under

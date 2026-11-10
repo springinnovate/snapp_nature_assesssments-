@@ -86,8 +86,7 @@ def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.D
             if path in reporting_area_paths:
                 raise FileNotFoundError(
                     f"Missing county reporting-area input: {path}. Run "
-                    'python prepare_county_reporting_areas.py --runner "<path to runner.py>" '
-                    "--download-missing first.")
+                    'python prepare_county_reporting_areas.py --runner "<path to runner.py>" first.')
             raise FileNotFoundError(f"Missing valuation input: {path}")
     return paths, factors, rules, derived
 

@@ -1,16 +1,5 @@
-# Census TIGER/Line 2024 hydrography used ONLY for reporting-area denominators.
+# The local U.S. outline is used only for reporting-area denominators.
 # The assessment geometries and fisheries allocation rules are unchanged.
-schema_version: 1
+schema_version: 2
 census_vintage: 2024
-source_url: https://www2.census.gov/geo/tiger/TIGER2024/AREAWATER/
-documentation_url: https://www2.census.gov/geo/pdfs/maps-data/data/tiger/tgrshp2024/TGRSHP2024_TechDoc.pdf
-ocean_mtfcc: H2053
-# A bay is excluded only when connected to an excluded ocean or Great Lake.
-# Inland bays in other lakes are retained.
-connected_bay_mtfcc: H2051
-great_lakes_names:
-  Superior: [Lake Superior, Lk Superior]
-  Michigan: [Lake Michigan, Lk Michigan]
-  Huron: [Lake Huron, Lk Huron]
-  Erie: [Lake Erie, Lk Erie]
-  Ontario: [Lake Ontario, Lk Ontario]
+usa_boundary: analysis_inputs/boundaries/usa_boundary/usa_vector.gpkg

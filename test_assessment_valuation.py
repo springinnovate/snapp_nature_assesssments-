@@ -22,7 +22,7 @@ def test_missing_reporting_area_input_explains_preparation(monkeypatch, source_n
     rules = yaml.safe_load((config / "derived_metrics.yaml").read_text(encoding="utf-8"))
     missing = (data / rules["sources"][source_name]["path"]).resolve()
     monkeypatch.setattr(Path, "is_file", lambda path: path != missing)
-    with pytest.raises(FileNotFoundError, match="prepare_county_reporting_areas.py.*--runner.*--download-missing"):
+    with pytest.raises(FileNotFoundError, match="prepare_county_reporting_areas.py.*--runner"):
         valuation.load_valuation_config(data, config)
 
 

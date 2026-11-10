@@ -533,7 +533,7 @@ below maps combined-area codes to their constituent county/city codes.
 
 | Column | Source |
 | --- | --- |
-| `area_ha_county_excl_ocean_great_lakes` | County geometry area after excluding Census ocean/Great Lakes water and connected bays, matched by `GEOID` |
+| `area_ha_county_excl_ocean_great_lakes` | County geometry area after subtracting mapped ocean water and the five NHD Great Lakes footprints, matched by `GEOID` |
 | `area_ha_all_natural` | Sum of the NLCD forest, grassland, shrubland, water/snow and wetland areas measured within the same reporting footprint |
 | `GDP_2024` | `2024` in `CAGDP1_LineCode3_All_States.csv`, LineCode 3, matched by `GeoFIPS` or allocated from a mapped Virginia combined area. Values are in thousands of dollars and are multiplied by 1,000 |
 | `Pop_2024` | `POPESTIMATE2024` in `co-est2025-alldata.csv`, county rows (`SUMLEV=050`), matched by `GEOFIPS` |
@@ -546,11 +546,15 @@ county-area and NLCD files together with
 The CSV denominator and GeoPackage natural areas must carry matching county
 areas. A mismatched or older unmasked NLCD release is rejected.
 
-The reporting footprint excludes oceans and the five Great Lakes, including
-connected bays, but retains other inland water such as Great Salt Lake and Tahoe.
-It is a reporting denominator, not a replacement for the assessment geometries
-or the land-only `ALAND` used to allocate county services. Natural-land area is
-the area of the five selected NLCD classes within that footprint.
+The reporting footprint uses the TIGER marine shoreline to identify connected
+nonland water outside the local U.S. boundary, including across county lines.
+It also excludes the five selected Great Lakes footprints from the clipped
+NHD layer. It preserves Census land and retains other inland water such as
+Great Salt Lake and Tahoe. The generalized boundary approximates the coastal
+cutoff; some tidal waters may remain. This reporting denominator does not
+replace the assessment geometries or the land-only `ALAND` used to allocate
+county services. Natural-land area is the area of the five selected NLCD
+classes within that footprint.
 `area_ha_valid_nlcd` measures the larger footprint with usable NLCD observations.
 The natural-land ratio uses the former. For a county outside NLCD coverage,
 zero observed hectares means the data are unavailable, rather than that the
