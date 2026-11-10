@@ -24,8 +24,10 @@ from county_gdp import allocate_combined_gdp, read_county_source
 
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent / 'data/workflow_assets/county_integration/derived_metrics.yaml'
-DERIVED_FIELDS = ('area_ha_county_excl_ocean_great_lakes', 'GDP_2024', 'GDP_2024_is_allocated', 'Pop_2024', 'es_total',
-                  'es_per_ha', 'es_per_ha_natural', 'es_per_gdp', 'es_per_capita')
+DERIVED_FIELDS = ('area_ha_county', 'area_ha_county_incl_ocean_great_lakes',
+                  'area_ha_all_natural_incl_ocean_great_lakes', 'GDP_2024', 'GDP_2024_is_allocated', 'Pop_2024', 'es_total',
+                  'es_per_ha', 'es_per_ha_incl_ocean_great_lakes', 'es_per_ha_natural',
+                  'es_per_ha_natural_incl_ocean_great_lakes', 'es_per_gdp', 'es_per_capita')
 
 
 def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: Path = DEFAULT_CONFIG,
@@ -73,7 +75,9 @@ def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: 
     issues = []
     input_counts = {}
     source_values = {}
-    for name in tqdm(('county_area', 'gdp', 'population'), desc='Join county denominators', unit='table'):
+    tabular_sources = [name for name in ('county_area', 'county_area_inclusive', 'gdp', 'population')
+                       if name in rules['sources']]
+    for name in tqdm(tabular_sources, desc='Join county denominators', unit='table'):
         spec = rules['sources'][name]
         series, input_counts[name] = read_county_source(paths[name], spec)
         source_values[name] = series
@@ -97,6 +101,12 @@ def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: 
     values['GDP_2024_is_allocated'] = ids.isin(allocated_ids).astype('int64')
     status.loc[ids.isin(allocated_ids), 'GDP_2024_status'] = 'population_allocated'
 
+    if 'county_area_inclusive' in source_values:
+        retained = values[rules['sources']['county_area']['output']]
+        whole = values[rules['sources']['county_area_inclusive']['output']]
+        if ((retained > whole) & ~np.isclose(retained, whole, rtol=1e-10, atol=1e-6)).any():
+            raise ValueError('County area excluding ocean/Great Lakes exceeds the full county area')
+
     # These areas have already been calculated and checked by the mask workflow.
     if natural_areas is None:
         spec = rules['sources']['natural_areas']
@@ -114,7 +124,24 @@ def calculate_county_metrics(frame: pd.DataFrame, data_root: Path, config_path: 
         county_area = values[rules['sources']['county_area']['output']]
         if not np.allclose(natural_areas.loc[ids, area_field], county_area, rtol=1e-10, atol=1e-6):
             raise ValueError('County-area and NLCD sources describe different reporting footprints')
-    masks = natural_areas.loc[ids, list(FIELD_DEFINITIONS)]
+    masks = natural_areas.loc[ids, list(FIELD_DEFINITIONS)].copy()
+    if 'natural_areas_inclusive' in paths:
+        spec = rules['sources']['natural_areas_inclusive']
+        with tqdm(total=1, desc='Read full-county NLCD areas', unit='table') as progress:
+            full = gpd.read_file(paths['natural_areas_inclusive'], layer=spec['layer'],
+                                 columns=[spec['key'], spec['field'], 'area_ha_valid_nlcd'],
+                                 read_geometry=False).set_index(spec['key'])
+            progress.update(1)
+        if not full.index.is_unique or not ids.isin(full.index).all():
+            raise ValueError('Full-county NLCD areas require exactly one matching row for each county')
+        input_counts['natural_areas_inclusive'] = len(full)
+        inclusive = full.loc[ids, spec['field']]
+        if not np.isfinite(inclusive).all() or inclusive.lt(0).any():
+            raise ValueError('Full-county natural areas must be finite and nonnegative')
+        masks.insert(masks.columns.get_loc('area_ha_all_natural') + 1, spec['output'], inclusive)
+        status[spec['output'] + '_status'] = np.where(
+            full.loc[ids, 'area_ha_valid_nlcd'] > 0,
+            np.where(inclusive > 0, 'available', 'zero'), 'no_nlcd_coverage')
     values = values.join(masks)
     status['area_ha_all_natural_status'] = np.where(
         masks.area_ha_valid_nlcd > 0,

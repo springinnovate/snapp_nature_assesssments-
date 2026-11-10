@@ -27,7 +27,9 @@ for standalone raster zonal-statistics and PAD-US commands.
 The valuation builder includes county NLCD areas from the mask-area GeoPackage
 selected in `derived_metrics.yaml`: `area_ha_valid_nlcd`, five
 `area_ha_nlcd_<class>` values, `area_ha_all_natural`, and five
-`proportion_nlcd_<class>_of_valid` values.
+`proportion_nlcd_<class>_of_valid` values. These fields use the reporting
+footprint excluding ocean and the Great Lakes. The paired natural-area total
+`area_ha_all_natural_incl_ocean_great_lakes` uses the full-county NLCD source.
 These observed areas are not the full county polygon area. Source NLCD NoData
 has zero observed coverage and undefined (null) class proportions.
 The area fields are nonmonetary: no adjustment factor is applied. Use the
@@ -502,7 +504,7 @@ or independence.
 ### What the summary columns mean
 
 Each county row contains `es_total`, the sum of 19 adjusted service values,
-and four ways to compare that total with the county's size, economy and
+and ratios comparing that total with the county's size, economy and
 population. The [component list](../data/workflow_assets/county_integration/derived_metrics.yaml)
 gives the exact fields used. Annual flood benefits are included; flood NPV is
 kept separately. Where the table contains both a service total and its component
@@ -511,8 +513,10 @@ parts, the calculation uses the total once.
 | Column | Calculation | Units |
 | --- | --- | --- |
 | `es_total` | Sum of the selected adjusted service fields | Dollars across the included valuations |
-| `es_per_ha` | `es_total / area_ha_county_excl_ocean_great_lakes` | Dollars per county hectare, excluding ocean and Great Lakes |
-| `es_per_ha_natural` | `es_total / area_ha_all_natural` | Dollars per observed natural-land hectare |
+| `es_per_ha` | `es_total / area_ha_county` | Dollars per county hectare, excluding ocean and Great Lakes |
+| `es_per_ha_incl_ocean_great_lakes` | `es_total / area_ha_county_incl_ocean_great_lakes` | Dollars per full county hectare |
+| `es_per_ha_natural` | `es_total / area_ha_all_natural` | Dollars per observed natural-cover hectare, excluding ocean and Great Lakes |
+| `es_per_ha_natural_incl_ocean_great_lakes` | `es_total / area_ha_all_natural_incl_ocean_great_lakes` | Dollars per observed natural-cover hectare in the full county |
 | `es_per_gdp` | `es_total / GDP_2024` | Ratio; 0.02 means the total is numerically 2% of GDP |
 | `es_per_capita` | `es_total / Pop_2024` | Dollars per resident |
 
@@ -527,38 +531,44 @@ stays blank, so you can distinguish missing coverage from an estimated zero.
 
 ### Where the denominators come from
 
-The output keeps all four denominator columns. Direct matches use five-digit
+The output keeps both county-area denominators, both natural-area denominators,
+GDP and population. Direct matches use five-digit
 county FIPS, preserving leading zeroes. The Virginia GDP allocation described
 below maps combined-area codes to their constituent county/city codes.
 
 | Column | Source |
 | --- | --- |
-| `area_ha_county_excl_ocean_great_lakes` | County geometry area after subtracting mapped ocean water and the five NHD Great Lakes footprints, matched by `GEOID` |
-| `area_ha_all_natural` | Sum of the NLCD forest, grassland, shrubland, water/snow and wetland areas measured within the same reporting footprint |
+| `area_ha_county` | County geometry area after subtracting mapped ocean water and the five NHD Great Lakes footprints, matched by `GEOID` |
+| `area_ha_county_incl_ocean_great_lakes` | `area_ha_full_county` from the reporting-area preparation QA CSV, matched by `GEOID` |
+| `area_ha_all_natural` | Sum of the NLCD forest, grassland, shrubland, water/snow and wetland areas within the reporting footprint excluding ocean and the Great Lakes |
+| `area_ha_all_natural_incl_ocean_great_lakes` | The same five NLCD classes measured across the full county, from the configured full-county NLCD GeoPackage |
 | `GDP_2024` | `2024` in `CAGDP1_LineCode3_All_States.csv`, LineCode 3, matched by `GeoFIPS` or allocated from a mapped Virginia combined area. Values are in thousands of dollars and are multiplied by 1,000 |
 | `Pop_2024` | `POPESTIMATE2024` in `co-est2025-alldata.csv`, county rows (`SUMLEV=050`), matched by `GEOFIPS` |
 
 Full source paths are in
 [`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml).
-The GDP and population files are under `data/analysis_inputs/`; prepare the
-county-area and NLCD files together with
-[`prepare_county_reporting_areas.py`](../prepare_county_reporting_areas.py).
-The CSV denominator and GeoPackage natural areas must carry matching county
-areas. A mismatched or older unmasked NLCD release is rejected.
+The GDP and population files are under `data/analysis_inputs/`. Use the CSV,
+GeoPackage, and QA CSV from the same
+[`prepare_county_reporting_areas.py`](../prepare_county_reporting_areas.py)
+run. The restricted CSV denominator and GeoPackage natural areas must carry
+matching county areas. Use the separate full-county NLCD GeoPackage only for
+the inclusive natural-area denominator. The paired columns can reuse these
+prepared inputs without recalculating masks.
 
 The reporting footprint uses the TIGER marine shoreline to identify connected
 nonland water outside the local U.S. boundary, including across county lines.
 It also excludes the five selected Great Lakes footprints from the clipped
 NHD layer. It preserves Census land and retains other inland water such as
 Great Salt Lake and Tahoe. The generalized boundary approximates the coastal
-cutoff; some tidal waters may remain. This reporting denominator does not
-replace the assessment geometries or the land-only `ALAND` used to allocate
-county services. Natural-land area is the area of the five selected NLCD
-classes within that footprint.
-`area_ha_valid_nlcd` measures the larger footprint with usable NLCD observations.
-The natural-land ratio uses the former. For a county outside NLCD coverage,
-zero observed hectares means the data are unavailable, rather than that the
-county has no natural land.
+cutoff; some tidal waters may remain. The reporting area does not replace the
+assessment geometries or the land-only `ALAND` used to allocate county services.
+The land-footprint ratios use the same land-only numerators for both county-area
+denominators.
+The natural-area denominators count only the five selected NLCD classes;
+even the inclusive version does not treat unobserved water as natural area.
+`area_ha_valid_nlcd` measures usable NLCD coverage in the excluded-water
+footprint. For a county outside NLCD coverage, zero observed hectares means
+the data are unavailable, rather than that the county has no natural land.
 
 ### Virginia combined-area GDP
 
