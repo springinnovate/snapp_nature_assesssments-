@@ -28,7 +28,7 @@ The pipeline follows four stages:
    [summing raster values](#summarize-ecosystem-service-rasters) and
    [assigning estimates from tables and study sites](#allocate-service-values).
 3. [Apply monetary adjustments](#adjust-monetary-values) and
-   [calculate totals and county comparisons](#calculate-totals-and-county-ratios).
+   [calculate totals and county comparisons](#combine-service-estimates-and-compare-counties).
 4. Report the results in the [six output layers](#output-fields-and-units),
    including public and conservation land breakdowns by manager type.
 
@@ -37,8 +37,9 @@ The pipeline follows four stages:
 ### Define analysis areas
 
 To report both countywide ecosystem-service totals and the values associated
-with different kinds of land, we identify counties, public lands, conservation lands, and
-their manager types. We also evaluate a separate scenario for Bureau of Land
+with different kinds of land, we identify counties, public lands, and
+conservation lands, then distinguish manager types within the two land
+categories. We also evaluate a separate scenario for Bureau of Land
 Management lands that meet mapped criteria in the BBB land-sale proposal.
 Water bodies and shoreline within these areas support the fisheries
 calculations described below.
@@ -139,17 +140,24 @@ identifies the source files and units.
 Service-specific calculations and coverage caveats are:
 
 - **Carbon stock.** The source gives tonnes of CO₂e per hectare on a 30 m grid.
-  We multiply the sum of these densities by the pixel area, 0.09 hectares,
-  to calculate total tonnes of CO₂e. We value that stock using the carbon
-  price and [monetary adjustments](#adjust-monetary-values) below.
+
+  **Adjustment to source data:** We multiply the sum of these densities by
+  the pixel area, 0.09 hectares, to calculate total tonnes of CO₂e. We value
+  that stock using the carbon price and
+  [monetary adjustments](#adjust-monetary-values) below.
 - **Pollination.** The source gives annual crop-yield value per hectare.
-  We multiply its sum by 0.09 hectares per pixel to calculate the area's
-  annual pollination value.
+
+  **Adjustment to source data:** We multiply its sum by 0.09 hectares per pixel
+  to calculate the area's annual pollination value.
 - **Flood mitigation.** The annual-value and net-present-value rasters both
-  contain dollars per hectare. We multiply each sum by 0.09 hectares per pixel
+  contain dollars per hectare.
+
+  **Adjustment to source data:** We multiply each sum by 0.09 hectares per pixel
   and report the annual value and NPV separately.
 - **Mental health.** We sum the supplied values for benefits from existing
-  greenness. **Coverage caveat:** the model has gaps and sparse coverage in
+  greenness.
+
+  **Coverage caveat:** The model has gaps and sparse coverage in
   Connecticut, Washington, DC, and other locations. Where it supplies no valid
   pixels, a zero sum indicates missing coverage rather than no benefits.
 - **Surface-water provisioning.** We sum per-pixel values for irrigation,
@@ -183,21 +191,34 @@ their paths.
   We value the forage available to livestock over one year, treating mean
   forage biomass as annual production. The workbook calculates how many
   animal-unit months (one animal unit fed for one month) the usable forage can
-  support, then applies the fee per animal-unit month. This prices the year's
-  forage, so we use the subtotal before the workbook's additional multiplication
-  by eight. The [grazing calculation](docs/county_valuation_integration_2026.md#grazing-valuation)
-  documents the annual-production assumption and calculation.
+  support, then applies the fee per animal-unit month.
+
+  **Adjustment to source data:** The workbook labels this subtotal as a monthly
+  value and multiplies it by eight to calculate its annual total. Under our
+  annual-biomass assumption, the subtotal already values a full year's forage,
+  so the extra multiplier overstates the value eightfold. We correct this
+  during processing by reading the earlier subtotal, `CountyGrazingValueMonth`.
+  The [grazing calculation](docs/county_valuation_integration_2026.md#grazing-valuation)
+  documents the evidence for treating biomass as annual production.
 - **[Timber](data/analysis_inputs/ecosystem_services/timber/total_valuation_all_regions_fvs.csv).**
-  We use the supplied annual county timber rents. Negative or missing source
-  estimates contribute zero when we assemble the county values, before
-  distributing them among land categories.
+  The supplied annual county timber rents equal timberland acreage multiplied
+  by estimated net return per acre.
+
+  **Adjustment to source data:** Negative rents reflect negative estimated
+  net returns, not missing observations. We set these rents to zero for this
+  assessment before geographic allocation. Separately, we assign zero to
+  missing timber estimates. The source distinguishes missing estimates due to
+  no timberland from those due to no species coverage; lack of species coverage
+  does not establish that timber has no value.
 - **[Ecosystem-related wages](data/analysis_inputs/ecosystem_services/jobs/Finalized%20Flagged%20and%20Sorted%20Industry%20and%20County%20Codes.xlsx).**
   We sum wages from cultural activities, raw materials, processing, and
   harvesting for each county, and report both the sector values and their total.
 - **[Air-quality benefits](data/analysis_inputs/ecosystem_services/air_quality/snapp_air_quality.csv).**
   We sum avoided-mortality values across the source's pollutant and land-cover
-  categories within each county. **County-code correction:** the table uses
-  Shannon County's former code, `46113`, for Oglala Lakota County, South Dakota.
+  categories within each county.
+
+  **Adjustment to source data:** The table uses Shannon County's former code,
+  `46113`, for Oglala Lakota County, South Dakota.
   We [map it to the current code, `46102`](data/workflow_assets/county_integration/air_quality_county_aliases.csv),
   so these values join to the correct county.
 - **[Urban-heat mitigation](data/analysis_inputs/ecosystem_services/urban_heat/HEAT_all_tracts_2021.csv).**
@@ -211,12 +232,19 @@ their paths.
   cannot identify the value within public, conservation, or BBB subareas, so
   we report recreation only in the final county summary.
 
-**Shared geographic correction—Connecticut.** Census county geography changed
-from eight counties to nine planning regions, with different boundaries and
-identifiers. Several source tables still use the eight counties. To match
-those estimates to the assessment's planning regions, we distribute each old
-county's value among the regions in proportion to shared land area, using the
-[Connecticut crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv).
+- **Connecticut county geography.** The Census Bureau replaced Connecticut's
+  eight historical counties with nine planning regions for statistical
+  reporting. Several service tables use the historical counties, whose
+  boundaries and identifiers differ from those of the planning regions.
+
+  **Adjustment to source data:** We distribute each historical county's value
+  among the planning regions in proportion to their shared land area. Our
+  [county-to-planning-region allocation table](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
+  links the two geographies and records these shares. We derived it from the
+  Census Bureau's
+  [2022 county-subdivision to 2020 block-group relationship file](https://www.census.gov/geographies/reference-files/2022/geo/relationship-files.html),
+  using the overlapping land areas defined in the
+  [record-layout documentation](https://www.census.gov/programs-surveys/geography/technical-documentation/records-layout/2022-connecticut-record-layout.html).
 
 #### Fisheries
 
@@ -225,10 +253,15 @@ counties and land categories, we calculate each area's share of the state's
 eligible shoreline length or inland water area, measured across its counties.
 
 - **Marine fisheries.** We multiply the state value by each area's share of
-  marine shoreline length. We exclude Great Lakes shoreline from this calculation.
+  marine shoreline length.
+
+  **Adjustment to source data:** The shoreline dataset includes the Great
+  Lakes. We exclude that shoreline when allocating marine fisheries values.
 - **Inland fisheries.** We multiply the state value by each area's share of
-  NHD water area. We exclude the Great Lakes and, in Utah, Great Salt Lake
-  before calculating the shares.
+  NHD water area.
+
+  **Adjustment to source data:** We exclude the Great Lakes and, in Utah,
+  Great Salt Lake from the water-area weights before calculating the shares.
 
 #### Coastal protection
 
@@ -248,10 +281,11 @@ categories as follows:
 
 ### Adjust monetary values
 
-Because the source data express monetary values in different price years, we
-apply the following price-year adjustments. These multipliers and the source
-units are recorded in the
-[adjustment table](data/workflow_assets/county_integration/adjustment_factors.csv).
+The source data express monetary values in different price years.
+
+**Adjustment to source data:** We apply the price-year multipliers below. The
+[adjustment table](data/workflow_assets/county_integration/adjustment_factors.csv)
+records the source units and the multiplier used for each service.
 
 | Services | Price-year multiplier |
 | --- | --- |
@@ -261,54 +295,57 @@ units are recorded in the
 | Marine fisheries, physical health | 1.027 |
 | Corals | 1.368 |
 
-Carbon also requires a monetary price: we apply $3.66 per tonne of CO₂e to
-the stock calculated from the density raster. Combined with the price-year
-adjustment, this gives $4.32612 per tonne. The output records the adjusted
-service values and the factors applied to them.
+For carbon, this adjustment also includes a monetary price of $3.66 per tonne
+of CO₂e applied to the stock calculated from the density raster. Combined
+with the price-year adjustment, this gives $4.32612 per tonne. The output
+records the adjusted service values and the factors applied to them.
 
-### Calculate totals and county ratios
+### Combine service estimates and compare counties
 
 We add the adjusted service values to summarize ecosystem-service value in
-each analysis area. The following choices determine how to read those totals:
+each analysis area. County summaries also express these values per hectare,
+per resident, and relative to GDP.
 
-- **Which services are included?** To provide the same basis for comparison
+#### Totals and their interpretation
+
+- **Services included.** To provide the same basis for comparison
   across the six layers, we sum the same 18 services in each layer. The
   [service list](data/workflow_assets/county_integration/derived_metrics.yaml)
   identifies them. County summaries also include a second total that adds
   recreation.
-- **How are flood NPV and service subcategories handled?** We include annual
-  flood benefits in the total and report flood NPV separately. For water
-  provisioning and wages, we include the combined value once and retain the
-  subcategories as additional detail.
-- **How do missing estimates affect the total?** Missing values contribute
-  zero to the sum. A blank service field denotes missing data; raster sums
-  with no valid pixels can also be zero.
-- **Is the total an annual value?** It combines annual benefits, wages, and
-  stock values. Some estimates may also overlap economically. Interpret the
-  total as a combined value of the selected estimates, rather than an annual
-  contribution to the economy.
+- **Separate values.** We include annual flood benefits in the total and
+  report flood NPV separately. For water provisioning and wages, we include
+  the combined value once and retain the subcategories as additional detail.
+- **Missing estimates.** Missing values contribute zero to the sum.
+  A blank service field denotes missing data; raster sums with no valid
+  pixels can also be zero.
+- **Time basis.** The total combines annual benefits, wages, and stock values.
+  Some estimates may also overlap economically. Interpret the total as a
+  combined value of the selected estimates, rather than an annual contribution
+  to the economy.
 
 #### County comparisons
 
-For comparisons among counties of different sizes, we use the total that
-includes recreation and calculate:
+Each comparison below uses the county's ecosystem-service total including
+recreation. We leave a result blank when its denominator is missing, zero,
+or negative.
 
-- **Value per hectare of county area:** divide by the county's area.
-- **Value per hectare of natural area:** divide by its NLCD natural area.
-- **Value per resident:** divide by its 2024 Census population estimate.
-- **Value relative to GDP:** divide by its 2024 gross domestic product from
-  the U.S. Bureau of Economic Analysis (BEA).
+- **Value per hectare of county area.** We divide by county area, calculating
+  one value with ocean and Great Lakes water excluded and another using the
+  full county footprint.
+- **Value per hectare of natural area.** We divide by NLCD natural area,
+  measured on each of those same two county footprints.
+- **Value per resident.** We divide by the county's 2024 Census population
+  estimate.
+- **Value relative to GDP.** We divide by the county's 2024 gross domestic
+  product from the U.S. Bureau of Economic Analysis (BEA).
 
-Both per-hectare comparisons are calculated twice: once using areas excluding
-ocean and Great Lakes water, and once using the full county footprint.
-Ratios with missing or nonpositive denominators are blank.
-
-**GDP geography caveat.** BEA combines some Virginia counties and independent
-cities into a single reporting area. To obtain a GDP value for each county or
-city in our analysis, we divide the group's GDP among its members in proportion
-to their 2024 Census populations. The
-[Virginia crosswalk](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
-identifies the groups, and the output flags these population-based estimates.
+  **Adjustment to source data:** BEA reports some Virginia counties and
+  independent cities together rather than separately. We divide each combined
+  area's GDP among its counties and cities in proportion to their 2024 Census
+  populations. The
+  [Virginia GDP allocation table](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
+  identifies the groups, and the output flags these population-based estimates.
 
 ## Output fields and units
 
