@@ -9,7 +9,129 @@ publishes six output layers, each as a matching CSV and GeoPackage pair:
 3. Public lands by county and manager type
 4. Conservation lands by county
 5. Conservation lands by county and manager type
-6. BBB candidate lands by county
+6. Big Beautiful Bill (BBB) candidate lands by county
+
+## Methods
+
+### Zones, area, and shoreline
+
+The assessment clips PAD-US 4.1 VectorAnalysis polygons to 2024 TIGER/Line
+county boundaries. [Public lands](config/padus_land_rules.rules) include federal,
+state, local, district, joint, and territorial managers. A designation list
+determines inclusion when the manager is explicitly unknown. Conservation lands
+are selected independently by GAP status (1–3). Within each county, polygons
+are merged into a single footprint for each land category and, separately,
+for each manager type. Manager footprints can overlap; use the county-level
+footprint for a category total.
+
+Vector areas and lengths are measured in EPSG:6933, an equal-area projection.
+
+- **Land area** is the area of a footprint intersected with the 2024 Census
+  land mask, which comes from TIGER/Line Faces classified as land. A
+  footprint's land share is its land area divided by Census county land area
+  (`ALAND`). Raster and fisheries measurements use the full zone geometry.
+- **County area** is measured from the county polygon. `area_ha_county`
+  excludes the [NHD Great Lakes polygons](data/workflow_assets/county_integration/great_lakes_nhd_features.csv)
+  and water outside the U.S. boundary connected to the TIGER marine shoreline.
+  The Census land mask protects land from removal. The generalized coastal
+  boundary can leave some tidal water. Other inland water, including Great Salt
+  Lake and Lake Tahoe, stays in the area. `area_ha_county_incl_ocean_great_lakes`
+  measures the full county polygon. Both versions of the public, conservation,
+  and BBB land ratios divide land-only hectares by the corresponding county
+  area.
+- **Natural area** is the sum of forest, grassland, shrubland, water/snow, and
+  wetland area in the 2023 National Land Cover Database (NLCD). Count the pixels
+  in each class and multiply by 0.09 hectares per 30 m pixel. The two natural
+  area fields use the corresponding county footprints. Classified water/snow
+  counts as natural area; NoData does not.
+- **Shoreline and inland water** are measured by intersecting each zone with
+  2019 TIGER/Line shoreline and National Hydrography Dataset (NHD) water
+  polygons. These lengths and areas are the fisheries weights.
+
+### BBB candidate lands
+
+The BBB footprint represents a land-sale scenario based on
+[Section 50301 of the June 2025 Senate proposal](https://www.congress.gov/amendment/119th-congress/senate-amendment/2368/text).
+The screen:
+
+1. Selects federally owned fee lands managed by the Bureau of Land Management
+   in Arizona, California, Colorado, Idaho, Nevada, New Mexico, Oregon, Utah,
+   Washington, and Wyoming.
+2. Removes federally protected areas mapped in PAD-US, including parks,
+   monuments, recreation and conservation areas, wildlife refuges, wilderness,
+   wild and scenic rivers, and national trails. National Park Service and Fish
+   and Wildlife Service proclamation boundaries supplement these designations.
+3. Keeps land within five statute miles of an incorporated municipality's
+   boundary or a Census-designated place's published center point. Both types
+   of places must have at least 1,000 residents in the 2020 Census.
+
+Candidate land is clipped and merged by county. The screen does not establish
+sale eligibility, account for grazing permits or existing rights, or assess
+suitability for housing. See the [BBB input workflow](docs/supporting_workflows.md#prepare-the-bbb-county-footprint)
+to recreate the footprint.
+
+### Raster summaries
+
+For each zone, sum valid raster cells whose centers fall inside the zone.
+Boundary simplification is capped at 15 m, with smaller tolerances for small
+or narrow polygon parts. Overlapping manager footprints are measured separately.
+The [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml)
+lists the sources and units.
+
+- **Carbon stock:** Multiply the per-hectare sum by 0.09 hectares per pixel to
+  get tonnes of CO₂e, then apply $3.66 per tonne and a 1.182 inflation factor.
+- **Pollination and flood mitigation:** Multiply per-hectare values by
+  0.09 hectares per pixel.
+- **Mental health:** The supplied model raster has sparse coverage in
+  Connecticut and Washington, DC, including four Connecticut planning regions
+  with no valid pixels. A zero zonal sum can reflect missing model coverage
+  rather than an estimate of zero.
+
+### Service allocations
+
+**County estimates.** Grazing, timber, jobs, air quality, urban heat, and
+physical health values are matched by county and allocated to footprints by
+land share. The [Connecticut crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
+splits values for historical counties among current planning regions by land
+area. Air quality uses [county-code corrections](data/workflow_assets/county_integration/air_quality_county_aliases.csv)
+before aggregation. Negative timber rents are set to zero. The
+[grazing estimate](docs/county_valuation_integration_2026.md#grazing-valuation)
+treats mean forage biomass as annual production and values the resulting
+animal-unit months.
+
+**Recreation.** Spencer Wood's [Outdoor Recreation & Data Lab](https://outdoorrd.org/)
+at the University of Washington supplied estimates by county. Recreation
+appears only in the county output.
+
+**Fisheries.** State marine values are allocated by shoreline length; state
+inland values are allocated by NHD water area. Each zone's length or area is
+divided by the eligible statewide measure across full counties. The Great
+Lakes are excluded from both weights, and Great Salt Lake is excluded from
+Utah's inland weights. These allocations do not measure local catch.
+
+**Coastal protection.** Coral point values go to the nearest county in the
+national reference layer, with a value reported only for CONUS assignments.
+A footprint receives the value when it covers the assigned point. Mangrove
+study-unit values are allocated by each zone's share of the unit's total
+overlap with CONUS counties.
+
+### Totals and county ratios
+
+`total_ecosystem_services` sums [adjusted service values](data/workflow_assets/county_integration/derived_metrics.yaml)
+without recreation. The total includes annual flood benefits and total
+surface-water provisioning; flood net present value is reported separately.
+Missing estimates contribute zero to the sum. The components combine annual
+benefits, wages, and stock values and may overlap economically.
+
+The county field `total_ecosystem_services_w_rec` adds recreation and is the
+numerator for county ecosystem-service ratios. `es_per_ha` uses county area and
+`es_per_ha_natural` uses NLCD natural area. Both have an
+`_incl_ocean_great_lakes` counterpart. `es_per_capita` uses 2024 Census
+population; `es_per_gdp` uses 2024 BEA GDP.
+[Combined Virginia county and independent city GDP estimates](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
+are split by each member's share of the group's 2024 Census population.
+`GDP_2024_is_allocated` identifies those population-based estimates. Ratios with
+missing or nonpositive denominators are blank.
 
 ## Run the assessment
 
@@ -44,6 +166,7 @@ data/
 │   ├── boundaries/usa_boundary/                U.S. boundary used for reporting-area ocean exclusion
 │   ├── boundaries/county_reporting_areas/      County area and NLCD metrics excluding ocean/Great Lakes
 │   ├── ecosystem_services/                     Service TIFFs, tables, coral and mangrove layers
+│   ├── masks/                                  Five 2023 NLCD class masks
 │   ├── hydrography/nhdfreshwater/                NHD water polygons for inland fisheries and Great Lakes exclusion
 │   ├── linear_features/coastline/               TIGER shoreline for marine fisheries and ocean identification
 │   ├── recreation/                             County recreation table
@@ -67,21 +190,17 @@ Use these files to locate the exact inputs or select replacements:
 See [supporting workflows](docs/supporting_workflows.md) to prepare or replace
 the county land mask, BBB footprint, or other prepared data sources.
 
-If the reporting-area files are not in the supplied data stack, prepare them
-once. This uses local vector inputs and runs only the five NLCD masks, not
-ecosystem-service raster zonals:
+If the reporting-area files are missing, generate them from local vectors
+and the five NLCD masks:
 
 ```cmd
 set "PROJ_NETWORK=OFF"
 python prepare_county_reporting_areas.py --runner "..\zonal_stats_toolkit\runner.py"
 ```
 
-Keep the resulting CSV, GeoPackage, QA, and manifest together under
-`data/analysis_inputs/boundaries/county_reporting_areas/`. The CSV and GeoPackage
-supply the county and natural areas excluding ocean and the Great Lakes. The QA
-CSV supplies the full county area (`area_ha_full_county`); the configured
-full-county NLCD GeoPackage supplies the inclusive natural area. Reuse those
-prepared inputs without running masks again.
+Keep the CSV, GeoPackage, QA CSV, and manifest together under
+`data/analysis_inputs/boundaries/county_reporting_areas/`. Keep the separate
+full-county NLCD GeoPackage selected in `derived_metrics.yaml`.
 
 ### 3. Validate and launch
 
@@ -99,10 +218,8 @@ python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county
 python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --run-id conus-assessment
 ```
 
-The first command checks the input files, TIFF inventory, and vector metadata.
-Run the second after validation passes. It prepares the output geometries,
-calculates raster sums, and publishes the valuations. Use `--help` for worker settings and
-additional input options.
+Run the second command after validation passes. Use `--help` for worker
+settings and additional input options.
 
 ### 4. Find the final files
 
@@ -124,127 +241,13 @@ paths in `run_manifest.json`.
 
 ### Revalue a completed run
 
-For changes to valuation tables, allocations, or adjustment factors, reuse
-the saved zones and raster sums. Use the original run ID in the same checkout
-with the original projection settings and the current valuation inputs:
+To update valuations or ratios, reuse the saved zones and raster sums. Pass
+the original zonal run ID and a new output ID:
 
 ```cmd
 python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued"
 ```
 
-The command checks the saved results and publishes six new pairs, leaving the
-source run intact. Add `--validate-only` to check reuse before launching.
-Use a fresh assessment when changing the zones or source rasters.
-
-This also updates GDP allocations and ratios without rerunning zonals. Use the
-original run that calculated the raster sums, not a valuation-only derivative.
-With the prepared reporting-area files and full-county NLCD GeoPackage in place,
-the paired area and ratio columns require no mask recalculation.
-
-## Methods for reporting
-
-**Zones and land shares.** The workflow clips PAD-US 4.1 VectorAnalysis
-polygons to CONUS counties. The public rule selects federal, state, local,
-district, joint, and territorial managers; it uses a designation allowlist
-for explicit unknown managers. Conservation independently selects GAP status
-1–3. County/manager rows are keyed by `GEOID` and `Mang_Type`; county-level
-footprints are unions within each county. The BBB product uses the supplied
-county-clipped candidate BLM footprint, a spatial screen for mapped criteria.
-Footprints and manager groups can overlap; use the county-level union for
-product totals rather than adding manager rows.
-
-Land hectares are the area of the intersection with the 2024 Census land
-mask in EPSG:6933. The mask dissolves TIGER/Line Faces classified as land for
-Census area measurement, and its area is checked against Census `ALAND`.
-The land share is footprint land area divided by county `ALAND`; the county
-export reports hectares (`area_ha_*_lands`)
-for public, conservation, and BBB lands. Raster and spatial valuations use
-the full zone geometries, including water.
-
-The county CSV and GeoPackage report `ratio_public_lands_to_county_area`,
-`ratio_conservation_lands_to_county_area`, and `ratio_bbb_lands_to_county_area`.
-Each is followed by its `_incl_ocean_great_lakes` counterpart. Both divide the
-same land-only footprint hectares by a county area; the short name uses
-`area_ha_county` (excluding ocean and the Great Lakes), while the suffixed
-name uses `area_ha_county_incl_ocean_great_lakes` (the full county area).
-They are fractions (0.25 means 25%). Neither changes the land-share allocation.
-The shorter field's denominator retains other inland water, including Great
-Salt Lake and Tahoe. Ocean is identified using the local U.S. boundary and
-TIGER marine shoreline; the five Great Lakes use the
-[selected NHD polygons](data/workflow_assets/county_integration/great_lakes_nhd_features.csv).
-Census land is preserved. The generalized boundary approximates the coastal
-cutoff and may retain some tidal waters. [Reuse a completed raster run](#revalue-a-completed-run)
-to apply these reporting inputs without recalculating ecosystem-service zonals.
-
-**Raster sums.** The toolkit reprojects zones to each raster's native CRS and
-sums valid first-band pixels whose centers fall inside the zone. Geometry
-simplification is capped at 15 m, with tighter limits for small or narrow parts.
-Overlapping manager types are sampled separately. A raster sum of zero can
-represent either zero-valued pixels or no valid pixels. Unit conversions are
-applied once during valuation: pollination and flood values per hectare use
-0.09 ha per 30 m pixel. Carbon stock is calculated from the per-hectare raster
-sum multiplied by 0.09, then valued at $3.66 per tonne CO₂e multiplied by a 1.182
-inflation adjustment.
-Only the area-integrated carbon value and its dollar factor are published;
-the density sum remains an internal input, not a second monetary total.
-
-**County tables.** Grazing, timber, jobs, air quality, urban heat, and physical
-health are joined by county. A [land-area crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
-maps Connecticut source IDs to the target county release.
-Air-quality records use the reviewed [county-code aliases](data/workflow_assets/county_integration/air_quality_county_aliases.csv)
-before aggregation; the supplied CSV is not modified.
-Grazing treats mean biomass as annual production and prices the resulting
-animal-unit months once, using the workbook subtotal before its eight-month
-multiplier. See the [grazing method and evidence](docs/county_valuation_integration_2026.md#grazing-valuation).
-Negative timber rents are set to zero before allocation. Footprints receive
-these county values in proportion to their land shares. Recreation is joined
-directly by county from `county_cs_2024usd` and reported for counties.
-
-**Fisheries.** Each supplied state total is allocated by eligible shoreline
-length for marine fisheries or eligible NHD water area for inland fisheries.
-A footprint uses its own intersected length or area divided by the same
-statewide denominator measured across full counties. The five Laurentian
-Great Lakes are excluded from both weights, and Great Salt Lake is also
-excluded from Utah's inland weights. The exclusions change the distribution
-of values, while preserving the supplied state totals. Values are
-area- or length-based allocations, not observations of local catch.
-
-**Coastal protection.** Coral `BC_USD11` point values are assigned to the
-nearest county in the national reference, then retained for CONUS
-assignments. A footprint receives an assigned point's value if it covers the
-point. Each U.S. mangrove study unit's `Ben_Stock_2020` is distributed by
-intersected area using the unit's total overlap with CONUS counties as the
-denominator for both counties and footprints.
-
-**Totals and ratios.** Service columns end in `_adj` and their multipliers
-are reported as `_adj_factor`. `total_ecosystem_services` sums the
-[configured components](data/workflow_assets/county_integration/derived_metrics.yaml)
-without recreation. The total uses annual flood benefits, total surface-water
-provisioning, and per-pixel carbon value; flood net present value is reported
-separately. County `total_ecosystem_services_w_rec` adds recreation and is the
-numerator for all county ecosystem-service ratios. `es_per_ha` divides by
-`area_ha_county`; `es_per_ha_natural` divides by `area_ha_all_natural`, the sum of
-five NLCD classes (forest, grassland, shrubland, water/snow, and wetland) within
-the same ocean/Great-Lakes-excluded footprint. Each area and per-hectare field
-is followed by its `_incl_ocean_great_lakes` counterpart. The inclusive natural
-area counts those five classes across the full county, not unobserved water.
-`es_per_gdp` and `es_per_capita` use 2024 BEA GDP in dollars and 2024 Census
-population, respectively. Missing service estimates
-remain blank in service columns and contribute zero to totals. Ratios with
-missing or nonpositive denominators are blank. The total is an assessment
-summary of components with different time bases and possible economic overlap.
-
-**GDP geography.** County GDP matches BEA geographic codes directly except for
-the Virginia combined county/city areas listed in the
-[GDP crosswalk](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv).
-Each combined-area total is split using the members' shares of 2024 Census
-population. The full group's population is used even for a subset of counties,
-and allocated GDP sums back to the original total. These estimates have
-`GDP_2024_is_allocated = 1`; other rows have `0`. The GeoPackage's
-`derived_metric_gdp_allocations` and `derived_metric_gdp_group_checks` tables
-record the source amounts, weights, and reconciliation. Population allocation
-does not constitute an official BEA estimate for each member jurisdiction.
-
-For reproducibility, report the input releases, code and toolkit revisions,
-and the run ID. Keep `run_manifest.json` with the final pairs; it records the
-configured input paths, configuration hashes, and valuation coverage checks.
+Add `--validate-only` to check reuse before launching. Use a fresh assessment
+when changing zones or service rasters. Keep `run_manifest.json` with the
+outputs to record the inputs and settings for each run.
