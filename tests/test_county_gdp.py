@@ -12,7 +12,7 @@ from county_gdp import allocate_combined_gdp, read_county_source
 
 def test_reviewed_crosswalk_covers_each_virginia_member_once():
     """Keep the checked BEA groups and Census member identifiers unambiguous."""
-    path = Path(__file__).parent / 'data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv'
+    path = Path(__file__).resolve().parents[1] / 'data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv'
     crosswalk = pd.read_csv(path, dtype=str)
     assert len(crosswalk) == crosswalk.county_geoid.nunique() == 51
     assert crosswalk.bea_geofips.nunique() == 23

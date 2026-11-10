@@ -26,7 +26,7 @@ class PreparePadusProductsTests(unittest.TestCase):
         self.layer = "vector_analysis"
         self.boundary = self.root / "boundary.gpkg"
         self.output = self.root / "products"
-        self.rules = Path(__file__).parent / "config" / "padus_land_rules.rules"
+        self.rules = Path(__file__).resolve().parents[1] / "config" / "padus_land_rules.rules"
         gpd.GeoDataFrame(
             {
                 "Unit_Nm": ["federal", "unknown_park", "ngo", "unlisted", "outside"],

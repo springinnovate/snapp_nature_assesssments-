@@ -19,7 +19,7 @@ from county_derived_metrics import DEFAULT_CONFIG, DERIVED_FIELDS, calculate_cou
 from finalize_county_ecosystem_services import finalize_counties
 from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS
 from prepare_tif_zonal_stats_config import prepare_config
-from test_nlcd_mask_areas import mask_statistics, write_fixture
+from tests.test_nlcd_mask_areas import mask_statistics, write_fixture
 from update_nlcd_mask_areas import export_mask_areas
 
 

@@ -1,4 +1,4 @@
-__pycache__/**
+__pycache__/
 data/*
 !data/workflow_assets/
 data/workflow_assets/*
