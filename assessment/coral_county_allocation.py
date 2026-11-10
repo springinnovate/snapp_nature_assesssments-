@@ -9,7 +9,7 @@ import shapely
 from shapely.geometry import Point
 from tqdm import tqdm
 
-from geometry_utils import repair_polygonal_geometry
+from assessment.geometry_utils import repair_polygonal_geometry
 
 
 def allocate_coral_values(counties, points):

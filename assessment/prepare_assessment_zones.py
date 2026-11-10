@@ -17,13 +17,13 @@ import pyogrio
 import shapely
 from tqdm import tqdm
 
-from assessment_geography import CONUS_STATE_FIPS, county_bounds_in_crs
-from assessment_zone_geometry import MAX_LAND_MASK_ERROR_PCT, ZONE_PRODUCTS, build_county_zones
-from geometry_utils import repair_polygonal_geometry
-from padus_land_rules import load_rule_config
+from assessment import REPO_ROOT as ROOT
+from assessment.assessment_geography import CONUS_STATE_FIPS, county_bounds_in_crs
+from assessment.assessment_zone_geometry import MAX_LAND_MASK_ERROR_PCT, ZONE_PRODUCTS, build_county_zones
+from assessment.geometry_utils import repair_polygonal_geometry
+from assessment.padus_land_rules import load_rule_config
 
 
-ROOT = Path(__file__).resolve().parent
 AREA_CRS = "EPSG:6933"
 CONSERVATION_GAP_CODES = (1, 2, 3)
 COUNTY_AREA_FIELDS = (

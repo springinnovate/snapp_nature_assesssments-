@@ -26,8 +26,8 @@ import shapely
 from shapely import wkb
 from tqdm import tqdm
 
-from geometry_utils import repair_polygonal_geometry
-from padus_land_rules import (
+from assessment.geometry_utils import repair_polygonal_geometry
+from assessment.padus_land_rules import (
     PADUS_RULE_FIELDS,
     VIRTUAL_MANAGER_VALUES,
     RuleConfigError,

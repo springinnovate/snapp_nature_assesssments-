@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import LineString, MultiLineString, Polygon, box
 
-from assessment_fisheries import read_marine_shoreline, value_fisheries
-from assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.assessment_fisheries import read_marine_shoreline, value_fisheries
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 
 
 class FootprintFisheriesTests(TestCase):

@@ -9,7 +9,7 @@ from math import fsum, isfinite
 import shapely
 from shapely import Geometry
 
-from geometry_utils import repair_polygonal_geometry
+from assessment.geometry_utils import repair_polygonal_geometry
 
 ZONE_PRODUCTS = (
     "counties",

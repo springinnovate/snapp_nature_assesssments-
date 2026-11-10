@@ -14,7 +14,7 @@ import shapely
 from shapely import wkb
 from tqdm import tqdm
 
-from geometry_utils import repair_polygonal_geometry
+from assessment.geometry_utils import repair_polygonal_geometry
 
 gdal.UseExceptions()
 ogr.UseExceptions()

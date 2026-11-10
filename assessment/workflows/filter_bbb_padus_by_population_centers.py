@@ -38,7 +38,7 @@ from shapely.ops import transform
 from shapely.strtree import STRtree
 from tqdm import tqdm
 
-from geometry_utils import repair_polygonal_geometry
+from assessment.geometry_utils import repair_polygonal_geometry
 
 
 gdal.UseExceptions()

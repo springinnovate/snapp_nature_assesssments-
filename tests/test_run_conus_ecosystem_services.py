@@ -77,11 +77,11 @@ class ConusEcosystemServicesTests(unittest.TestCase):
 
     def fake_subprocess(self, command, *, cwd, check, **_) -> subprocess.CompletedProcess:
         """Produce the prepared zone files or simulate the toolkit process."""
-        script = Path(command[2])
         self.assertEqual(cwd, self.root)
         self.assertTrue(check)
-        self.calls.append(script.name)
-        if script.name == "prepare_assessment_zones.py":
+        self.assertEqual(command[1], "-B")
+        if command[2:4] == ["-m", "assessment.prepare_assessment_zones"]:
+            self.calls.append(command[3])
             self.assertEqual(command[command.index("--bbb-by-county") + 1], str(self.bbb))
             self.assertEqual(command[command.index("--bbb-layer") + 1], "bbb_input")
             self.assertEqual(command[command.index("--land-mask") + 1], str(self.land_mask))
@@ -108,13 +108,14 @@ class ConusEcosystemServicesTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-        elif script == self.runner:
+        elif Path(command[2]) == self.runner:
+            self.calls.append(self.runner.name)
             self.assertEqual(Path(command[3]), self.frozen)
             self.assertTrue(self.frozen.is_file())
             if self.fail_runner:
                 raise subprocess.CalledProcessError(17, command)
         else:
-            self.fail(f"Unexpected script: {script}")
+            self.fail(f"Unexpected command: {command}")
         return subprocess.CompletedProcess(command, 0)
 
     def fake_freeze(self, zones, config, frozen, work, raw, **_) -> SimpleNamespace:
@@ -171,7 +172,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         self.assertEqual(manifest["valuation_inputs"]["air_quality_county_aliases"], str(self.air_aliases))
         self.assertEqual(manifest["zone_inputs"]["bbb_by_county"], [str(self.bbb), "bbb_input"])
         self.assertEqual(manifest["zone_inputs"]["land_mask"], [str(self.land_mask), "county_land_mask"])
-        self.assertEqual(self.calls, ["prepare_assessment_zones.py", "runner.py"])
+        self.assertEqual(self.calls, ["assessment.prepare_assessment_zones", "runner.py"])
         self.assertEqual(list(manifest["stages"].items()), [
             ("Prepare six assessment zones", "complete"),
             ("Freeze raw raster zonal jobs", "complete"),

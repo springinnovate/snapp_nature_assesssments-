@@ -10,10 +10,10 @@ import pyogrio
 import shapely
 from tqdm import tqdm
 
-from assessment_geography import CONUS_STATE_FIPS
-from assessment_zone_geometry import ZONE_PRODUCTS
-from coral_county_allocation import allocate_coral_values
-from mangrove_county_allocation import _project_polygons, allocate_mangrove_values
+from assessment.assessment_geography import CONUS_STATE_FIPS
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.coral_county_allocation import allocate_coral_values
+from assessment.mangrove_county_allocation import _project_polygons, allocate_mangrove_values
 
 
 AREA_CRS = "EPSG:6933"

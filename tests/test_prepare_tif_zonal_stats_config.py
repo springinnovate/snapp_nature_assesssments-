@@ -12,7 +12,7 @@ import fiona
 import numpy as np
 from osgeo import gdal, osr
 
-from prepare_tif_zonal_stats_config import (
+from assessment.prepare_tif_zonal_stats_config import (
     DEFAULT_CONFIG,
     RasterInput,
     discover_zone_jobs,

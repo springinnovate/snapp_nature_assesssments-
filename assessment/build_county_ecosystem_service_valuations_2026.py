@@ -36,11 +36,11 @@ import yaml
 from osgeo import gdal, ogr
 from tqdm import tqdm
 
-from coral_county_allocation import allocate_coral_values
-from mangrove_county_allocation import allocate_mangrove_values
-from county_derived_metrics import calculate_county_metrics
+from assessment import REPO_ROOT as ROOT
+from assessment.coral_county_allocation import allocate_coral_values
+from assessment.mangrove_county_allocation import allocate_mangrove_values
+from assessment.county_derived_metrics import calculate_county_metrics
 
-ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "data/workflow_assets/county_integration"
 AREA_CRS = "EPSG:6933"  # Equal area, including Alaska, Hawaii and US territories.
 # Assessment scope: do not assign neighboring countries' study-unit totals
@@ -1114,11 +1114,11 @@ def run(data_root, config_dir, output=None, workers=8, geometry_workers=8, resum
             if destination.exists():
                 raise FileExistsError(destination)
     script_hash = sha256(__file__)
-    allocator_path = ROOT / "mangrove_county_allocation.py"
+    allocator_path = Path(__file__).with_name("mangrove_county_allocation.py")
     allocator_hash = sha256(allocator_path)
-    coral_allocator_path = ROOT / "coral_county_allocation.py"
+    coral_allocator_path = Path(__file__).with_name("coral_county_allocation.py")
     coral_allocator_hash = sha256(coral_allocator_path)
-    geometry_utils_path = ROOT / "geometry_utils.py"
+    geometry_utils_path = Path(__file__).with_name("geometry_utils.py")
     geometry_utils_hash = sha256(geometry_utils_path)
     config_names = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv",
                     "export_rules.yaml", "derived_metrics.yaml")

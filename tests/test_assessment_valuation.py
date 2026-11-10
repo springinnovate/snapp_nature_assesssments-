@@ -10,19 +10,21 @@ import pytest
 from shapely.geometry import MultiPolygon, box
 import yaml
 
-import assessment_valuation as valuation
-from assessment_zone_geometry import ZONE_PRODUCTS
+from assessment import REPO_ROOT
+import assessment.assessment_valuation as valuation
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 
 
 @pytest.mark.parametrize("source_name", ["county_area", "county_area_inclusive", "natural_areas"])
 def test_missing_reporting_area_input_explains_preparation(monkeypatch, source_name):
     """Show the preparation command for each missing reporting-area artifact."""
-    data = Path(valuation.__file__).parent / "data"
+    data = REPO_ROOT / "data"
     config = data / "workflow_assets/county_integration"
     rules = yaml.safe_load((config / "derived_metrics.yaml").read_text(encoding="utf-8"))
     missing = (data / rules["sources"][source_name]["path"]).resolve()
     monkeypatch.setattr(Path, "is_file", lambda path: path != missing)
-    with pytest.raises(FileNotFoundError, match="prepare_county_reporting_areas.py.*--runner"):
+    command = r"python -m assessment\.workflows\.prepare_county_reporting_areas --runner"
+    with pytest.raises(FileNotFoundError, match=command):
         valuation.load_valuation_config(data, config)
 
 
@@ -31,7 +33,7 @@ def test_missing_reporting_area_input_explains_preparation(monkeypatch, source_n
 ])
 def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, county_area, inclusive_area, reuse_zones):
     """Check all product keys, land allocation, totals, factors and the output pair."""
-    config = Path(valuation.__file__).parent / "data/workflow_assets/county_integration"
+    config = REPO_ROOT / "data/workflow_assets/county_integration"
     factors = pd.read_csv(config / "adjustment_factors.csv").set_index("service")
     rules = valuation.load_export_rules(config / "export_rules.yaml")
     derived = yaml.safe_load((config / "derived_metrics.yaml").read_text(encoding="utf-8"))

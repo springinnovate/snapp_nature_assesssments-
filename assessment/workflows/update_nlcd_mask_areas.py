@@ -21,17 +21,17 @@ import rasterio
 from tqdm import tqdm
 import yaml
 
-from build_county_ecosystem_service_valuations_2026 import (
+from assessment import REPO_ROOT as ROOT, nlcd_mask_areas
+from assessment.build_county_ecosystem_service_valuations_2026 import (
     read_attributes, sha256, write_output,
 )
-from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS, RAW_FIELD, derive_nlcd_mask_areas
-from county_derived_metrics import DEFAULT_CONFIG as DEFAULT_DERIVED_CONFIG, calculate_county_metrics
-from prepare_tif_zonal_stats_config import (
+from assessment.nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS, RAW_FIELD, derive_nlcd_mask_areas
+from assessment.county_derived_metrics import DEFAULT_CONFIG as DEFAULT_DERIVED_CONFIG, calculate_county_metrics
+from assessment.prepare_tif_zonal_stats_config import (
     ZoneJob, load_and_prepare_rasters, load_run_config, prepare_config, write_runner_config,
 )
 
 
-ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "data/workflow_assets/zonal_stats/snapp_assessment_nlcd_masks.yaml"
 
 
@@ -124,7 +124,7 @@ def export_mask_areas(mask_results: Path, output: Path, run_config: Path,
             or not mask_results.stem.startswith(expected.stem + "_")):
         raise ValueError("Mask results path does not match this frozen run's output location.")
     inputs = {"mask_results": mask_results, "base_results": base_path, "run_config": run_config,
-              "area_calculator": Path(__file__).with_name("nlcd_mask_areas.py"), "workflow": Path(__file__)}
+              "area_calculator": Path(nlcd_mask_areas.__file__), "workflow": Path(__file__)}
     fingerprints = {name: sha256(path) for name, path in tqdm(inputs.items(), desc="Hash mask workflow inputs", unit="file")}
     masks, _, _ = read_attributes(mask_results)
     base, layer, geom = read_attributes(base_path)

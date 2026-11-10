@@ -14,7 +14,7 @@ import geopandas as gpd
 import shapely
 from tqdm import tqdm
 
-from geometry_utils import polygonal_multipolygon, repair_polygonal_geometry
+from assessment.geometry_utils import polygonal_multipolygon, repair_polygonal_geometry
 
 COUNTY_VECTOR_PATH = Path(
     "data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg"

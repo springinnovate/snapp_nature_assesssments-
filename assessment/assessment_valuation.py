@@ -17,11 +17,11 @@ import shapely
 from tqdm import tqdm
 import yaml
 
-from assessment_coastal import value_coastal
-from assessment_fisheries import value_fisheries
-from assessment_geography import CONUS_STATE_FIPS
-from assessment_zone_geometry import ZONE_PRODUCTS
-from build_county_ecosystem_service_valuations_2026 import (
+from assessment.assessment_coastal import value_coastal
+from assessment.assessment_fisheries import value_fisheries
+from assessment.assessment_geography import CONUS_STATE_FIPS
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.build_county_ecosystem_service_valuations_2026 import (
     BASE_FIELDS,
     adjusted_county_fields,
     compute_task,
@@ -31,7 +31,7 @@ from build_county_ecosystem_service_valuations_2026 import (
     read_db,
     validate_crosswalk,
 )
-from county_derived_metrics import calculate_county_metrics
+from assessment.county_derived_metrics import calculate_county_metrics
 
 
 COUNTY_TABLES = ("grazing", "timber", "air_quality", "urban_heat", "physical_health", "jobs", "recreation")
@@ -86,7 +86,8 @@ def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.D
             if path in reporting_area_paths:
                 raise FileNotFoundError(
                     f"Missing county reporting-area input: {path}. Run "
-                    'python prepare_county_reporting_areas.py --runner "<path to runner.py>" first.')
+                    'python -m assessment.workflows.prepare_county_reporting_areas '
+                    '--runner "<path to runner.py>" first.')
             raise FileNotFoundError(f"Missing valuation input: {path}")
     return paths, factors, rules, derived
 

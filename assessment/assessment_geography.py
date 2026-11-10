@@ -1,10 +1,18 @@
-"""Geographic scope shared by the six-zone CONUS assessment."""
+"""Geographic scope and shared geographic input defaults."""
 
 from __future__ import annotations
 
 from math import inf, isfinite, nextafter
+from pathlib import Path
 
 import geopandas as gpd
+
+
+PADUS_ANALYSIS_PATH = Path(
+    "data/analysis_inputs/padus/PADUS4_1VectorAnalysis_PADUS_Only (1)"
+    "/PADUS4_1VectorAnalysis_PADUS_Only.gdb"
+)
+PADUS_ANALYSIS_LAYER = "PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP"
 
 
 # The contiguous 48 states and Washington, DC. Use an allowlist so Alaska,

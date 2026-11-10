@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Point, box
 
-from coral_county_allocation import allocate_coral_values
-from build_county_ecosystem_service_valuations_2026 import (
+from assessment.coral_county_allocation import allocate_coral_values
+from assessment.build_county_ecosystem_service_valuations_2026 import (
     BASE_FIELDS, CONFIG, adjusted_county_fields, compute_task, load_checkpoint,
     load_export_rules, plan_county_export, read_attributes, save_checkpoint,
     sha256, write_output,

@@ -9,7 +9,7 @@ from pyproj import CRS, Transformer
 from shapely.geometry import Point, box
 from shapely.ops import transform
 
-from filter_bbb_padus_by_population_centers import (
+from assessment.workflows.filter_bbb_padus_by_population_centers import (
     BBB_CANDIDATE_LAND_TYPE,
     CDP_LAYER,
     DEFAULT_OUTPUT_LAYER,

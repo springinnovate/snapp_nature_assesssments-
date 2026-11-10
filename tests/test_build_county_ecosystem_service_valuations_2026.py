@@ -15,7 +15,7 @@ import yaml
 from shapely.geometry import box
 from osgeo import ogr
 
-from build_county_ecosystem_service_valuations_2026 import (
+from assessment.build_county_ecosystem_service_valuations_2026 import (
     BASE_FIELDS, NON_SUM_FIELD, adjusted_county_fields, load_export_rules, plan_county_export,
     air_quality_summary, compute_task, county_values, fips, numbers,
     read_attributes, sha256, state_values, validate_crosswalk, write_output,
@@ -748,7 +748,7 @@ class CountyLayerNameTests(unittest.TestCase):
                 base, layer=new, driver="GPKG")
             fields = pd.DataFrame({"timber_adj": [1.0]}, index=pd.Index(["72001"], name="GEOID"))
             _, _, geom = read_attributes(base)
-            with patch("build_county_ecosystem_service_valuations_2026.ogr.Open",
+            with patch("assessment.build_county_ecosystem_service_valuations_2026.ogr.Open",
                        side_effect=AssertionError("No rename is necessary")):
                 write_output(base, output, new, geom, fields, {}, output_layer=new)
             self.assertEqual(read_attributes(output)[1], new)

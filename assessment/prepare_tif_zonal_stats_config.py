@@ -24,7 +24,10 @@ from osgeo import gdal
 from tqdm import tqdm
 
 
-DEFAULT_CONFIG = Path(__file__).resolve().parent / (
+from assessment import REPO_ROOT
+
+
+DEFAULT_CONFIG = REPO_ROOT / (
     "data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml"
 )
 TIMESTAMP_SUFFIX = re.compile(r"_(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})\.gpkg$")

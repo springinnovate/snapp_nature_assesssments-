@@ -5,7 +5,7 @@ from unittest import TestCase
 import shapely
 from shapely.geometry import box
 
-from assessment_zone_geometry import ZONE_PRODUCTS, build_county_zones
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS, build_county_zones
 
 
 class CountyZoneGeometryTests(TestCase):

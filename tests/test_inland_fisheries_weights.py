@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import box
 
-from build_county_ecosystem_service_valuations_2026 import compute_task, inland_freshwater_weights, state_values
+from assessment.build_county_ecosystem_service_valuations_2026 import compute_task, inland_freshwater_weights, state_values
 
 
 class InlandFisheriesWeightsTest(unittest.TestCase):

@@ -14,9 +14,9 @@ from pyproj import Transformer
 import shapely
 from tqdm import tqdm
 
-from assessment_geography import CONUS_STATE_FIPS, county_bounds_in_crs
-from build_county_ecosystem_service_valuations_2026 import AREA_CRS, STATE_NAMES, close, numbers
-from geometry_utils import repair_polygonal_geometry
+from assessment.assessment_geography import CONUS_STATE_FIPS, county_bounds_in_crs
+from assessment.build_county_ecosystem_service_valuations_2026 import AREA_CRS, STATE_NAMES, close, numbers
+from assessment.geometry_utils import repair_polygonal_geometry
 
 _FIELDS = {
     "marine_fisheries": "ncp_value",

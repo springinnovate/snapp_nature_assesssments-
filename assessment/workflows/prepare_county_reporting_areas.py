@@ -28,18 +28,18 @@ import shapely
 from tqdm import tqdm
 import yaml
 
-from assessment_fisheries import read_excluded_lakes, read_marine_shoreline
-from assessment_geography import CONUS_STATE_FIPS
-from assessment_zone_geometry import MAX_LAND_MASK_ERROR_PCT
-from build_county_ecosystem_service_valuations_2026 import read_attributes, sha256
-from geometry_utils import repair_polygonal_geometry
-from nlcd_mask_areas import FIELD_DEFINITIONS
-from prepare_assessment_zones import project_polygons, read_polygons
-from prepare_census_county_land_mask import publish_new_file
-from update_nlcd_mask_areas import export_mask_areas, run_mask_zonals, verify_mask_rasters
+from assessment import REPO_ROOT as ROOT
+from assessment.assessment_fisheries import read_excluded_lakes, read_marine_shoreline
+from assessment.assessment_geography import CONUS_STATE_FIPS
+from assessment.assessment_zone_geometry import MAX_LAND_MASK_ERROR_PCT
+from assessment.build_county_ecosystem_service_valuations_2026 import read_attributes, sha256
+from assessment.geometry_utils import repair_polygonal_geometry
+from assessment.nlcd_mask_areas import FIELD_DEFINITIONS
+from assessment.prepare_assessment_zones import project_polygons, read_polygons
+from assessment.workflows.prepare_census_county_land_mask import publish_new_file
+from assessment.workflows.update_nlcd_mask_areas import export_mask_areas, run_mask_zonals, verify_mask_rasters
 
 
-ROOT = Path(__file__).resolve().parent
 AREA_CRS = "EPSG:6933"
 LAYER = "county_reporting_areas"
 AREA_FIELD = "area_ha_county_excl_ocean_great_lakes"

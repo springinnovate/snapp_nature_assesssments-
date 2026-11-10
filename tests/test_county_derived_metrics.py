@@ -14,13 +14,13 @@ import pandas as pd
 from shapely.geometry import Point, box
 import yaml
 
-from build_county_ecosystem_service_valuations_2026 import read_attributes, read_db, sha256
-from county_derived_metrics import DEFAULT_CONFIG, DERIVED_FIELDS, calculate_county_metrics
-from finalize_county_ecosystem_services import finalize_counties
-from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS
-from prepare_tif_zonal_stats_config import prepare_config
+from assessment.build_county_ecosystem_service_valuations_2026 import read_attributes, read_db, sha256
+from assessment.county_derived_metrics import DEFAULT_CONFIG, DERIVED_FIELDS, calculate_county_metrics
+from assessment.workflows.finalize_county_ecosystem_services import finalize_counties
+from assessment.nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS
+from assessment.prepare_tif_zonal_stats_config import prepare_config
 from tests.test_nlcd_mask_areas import mask_statistics, write_fixture
-from update_nlcd_mask_areas import export_mask_areas
+from assessment.workflows.update_nlcd_mask_areas import export_mask_areas
 
 
 class DerivedMetricsTests(unittest.TestCase):
@@ -329,7 +329,7 @@ class DerivedMetricsTests(unittest.TestCase):
 
     def test_primary_builder_uses_post_adjustment_values(self):
         """Check that totals use adjusted coral, recreation, and raster values."""
-        import build_county_ecosystem_service_valuations_2026 as builder
+        import assessment.build_county_ecosystem_service_valuations_2026 as builder
 
         raw_field = builder.BASE_FIELDS['pollination']
         coral_field = 'sum_aeb_coral_BC_USD11_adj'

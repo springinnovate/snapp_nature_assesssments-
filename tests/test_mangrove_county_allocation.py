@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon, box
 
-from mangrove_county_allocation import allocate_mangrove_values
+from assessment.mangrove_county_allocation import allocate_mangrove_values
 
 
 class MangroveAllocationTests(unittest.TestCase):
