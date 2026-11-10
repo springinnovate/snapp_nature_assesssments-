@@ -2,50 +2,40 @@
 
 import argparse
 import configparser
-import io
 import json
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
-from zipfile import ZipFile
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pyogrio
 import pytest
-from shapely.geometry import box
-import yaml
+import shapely
+from shapely.geometry import LineString, MultiPolygon, box
 
-import prepare_census_county_land_mask as census
 import prepare_county_reporting_areas as builder
 import update_nlcd_mask_areas as masks
 from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS
 from prepare_tif_zonal_stats_config import RasterInput
 
 
-@pytest.fixture
-def rules():
-    """Provide reviewed selection rules without depending on production data."""
-    return {"schema_version": 1, "census_vintage": 2024, "source_url": "https://example.invalid/",
-            "ocean_mtfcc": "H2053", "connected_bay_mtfcc": "H2051",
-            "great_lakes_names": {name: [f"Lk {name}", f"Lake {name}"]
-                                  for name in ("Superior", "Michigan", "Huron", "Erie", "Ontario")}}
-
-
-def test_bays_connect_across_counties_but_inland_bays_remain(rules):
-    """Follow a bay chain globally, not merely within each county file."""
-    water = gpd.GeoDataFrame({
-        "MTFCC": ["H2053", "H2051", "H2051", "H2051", "H2030"],
-        "great_lake": [None, None, None, None, "Superior"],
-        "county_geoid": ["01001", "01001", "01003", "01003", "26083"],
-    }, geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1), box(2, 0, 3, 1),
-                 box(10, 0, 11, 1), box(20, 0, 21, 1)], crs=builder.NATIVE_CRS)
-    selected = builder.select_connected_water(water, rules, require_all_lakes=False)
-    assert selected.index.tolist() == [0, 1, 2, 4]
-    assert selected.selection_reason.tolist() == ["ocean", "connected_bay", "connected_bay", "great_lake"]
-    with pytest.raises(ValueError, match="missing Great Lakes"):
-        builder.select_connected_water(water, rules, require_all_lakes=True)
+def test_ocean_follows_shoreline_connected_water_across_counties():
+    """Keep disconnected inland border water; a single point does not connect it."""
+    counties = gpd.GeoDataFrame({
+        "GEOID": ["01001", "01003", "27077", "12011"],
+        "AWATER": [6_000_000] * 4,
+    }, geometry=[*[box(0, y, 2500, y + 3000) for y in (0, 3000, 10000)],
+                 box(2500, 6000, 5000, 9000)], crs=builder.AREA_CRS)
+    land = gpd.GeoDataFrame({"GEOID": counties.GEOID},
+                           geometry=[*[box(0, y, 500, y + 3000) for y in (0, 3000, 10000)],
+                                     box(4500, 6000, 5000, 9000)],
+                           crs=builder.AREA_CRS).set_index("GEOID")
+    usa = box(0, 0, 300, 13000)
+    coast = shapely.STRtree([LineString([(500, 0), (500, 1000)])])
+    selected = builder.select_ocean_water(counties, land, usa, coast, workers=2)
+    assert shapely.union_all(selected).equals(box(500, 0, 2500, 6000))
 
 
 def test_exclusion_union_counts_overlap_once_and_preserves_land():
@@ -65,58 +55,70 @@ def test_exclusion_union_counts_overlap_once_and_preserves_land():
 
 
 @pytest.fixture
-def preparation_inputs(tmp_path, monkeypatch, rules):
-    """Create two inland counties and cached water files, with no network use."""
+def preparation_inputs(tmp_path, monkeypatch):
+    """Create inland, Great Lakes and coastal counties with local vector sources."""
     monkeypatch.setattr(builder, "ROOT", tmp_path)
-    shapes = [box(-112, 40, -111.99, 40.01), box(-120, 39, -119.99, 39.01)]
-    land_shapes = [box(-112, 40, -111.995, 40.01), box(-120, 39, -119.995, 39.01)]
-    frame = gpd.GeoDataFrame({"GEOID": ["49011", "06061"]}, geometry=shapes, crs=builder.NATIVE_CRS)
-    land = gpd.GeoDataFrame({"GEOID": frame.GEOID}, geometry=land_shapes, crs=builder.NATIVE_CRS)
-    projected = frame.to_crs(builder.AREA_CRS)
-    frame["ALAND"] = np.round(land.to_crs(builder.AREA_CRS).area).astype("int64")
-    frame["AWATER"] = np.round(projected.area - frame.ALAND).astype("int64")
+    locations = [(0, 0), (10000, 0), (20000, 0), (30000, 0)]
+    shapes = [box(x, y, x + 100, y + 100) for x, y in locations]
+    land_shapes = [box(x, y, x + 50, y + 100) for x, y in locations]
+    frame = gpd.GeoDataFrame({"GEOID": ["49011", "06061", "26083", "12099"], "ALAND": [5000] * 4,
+                              "AWATER": [5000] * 4}, geometry=shapes, crs=builder.AREA_CRS)
+    land = gpd.GeoDataFrame({"GEOID": frame.GEOID}, geometry=land_shapes, crs=builder.AREA_CRS)
     counties_path, land_path = tmp_path / "counties.gpkg", tmp_path / "land.gpkg"
     pyogrio.write_dataframe(frame, counties_path, layer="counties")
     pyogrio.write_dataframe(land, land_path, layer="county_land_mask")
-    archive_dir = tmp_path / "water"
-    archive_dir.mkdir()
-    for geoid, shape, name in zip(frame.GEOID, shapes, ["Great Salt Lk", "Lk Tahoe"]):
-        stem = f"tl_2024_{geoid}_areawater"
-        shape_dir = tmp_path / stem
-        shape_dir.mkdir()
-        water = gpd.GeoDataFrame({"HYDROID": [geoid], "FULLNAME": [name], "MTFCC": ["H2030"],
-                                 "ALAND": [0], "AWATER": [1]}, geometry=[shape], crs=builder.NATIVE_CRS)
-        pyogrio.write_dataframe(water, shape_dir / f"{stem}.shp")
-        with ZipFile(archive_dir / f"{stem}.zip", "w") as archive:
-            for file in shape_dir.iterdir():
-                archive.write(file, file.name)
-    rules_path = tmp_path / "rules.yaml"
-    rules_path.write_text(yaml.safe_dump(rules), encoding="utf-8")
+    data = tmp_path / "data"
+    data.mkdir()
+    usa, coast = data / "usa.gpkg", data / "coast.gpkg"
+    water, crosswalk = data / "water.gpkg", data / "lakes.csv"
+    pyogrio.write_dataframe(gpd.GeoDataFrame(
+        geometry=[MultiPolygon([box(-1000, -1000, 40, 1000), box(1000, -1000, 30060, 1000)])],
+        crs=builder.AREA_CRS), usa, layer="usa")
+    pyogrio.write_dataframe(gpd.GeoDataFrame(
+        {"NAME": ["Pacific", "Great Lakes"]},
+        geometry=[LineString([(30070, 0), (30070, 100)]), LineString([(80, 0), (80, 100)])],
+        crs=builder.AREA_CRS), coast, layer="coast")
+    pyogrio.write_dataframe(gpd.GeoDataFrame(
+        {"source_layer": ["NHDWaterbody"] * 7, "source_fid": range(1, 8)},
+        geometry=[box(20040, 0, 20090, 100), *[box(x, 0, x + 25, 100) for x in range(22000, 24000, 500)],
+                  box(50, 0, 100, 100), box(10050, 0, 10100, 100)],
+        crs=builder.AREA_CRS), water, layer="water")
+    pd.DataFrame({"lake": [f"Lake {name}" for name in ("Superior", "Michigan", "Huron", "Erie", "Ontario")],
+                  "source_fid": range(1, 6)}).to_csv(crosswalk, index=False)
+    sources = data / "sources.csv"
+    pd.DataFrame({"source": ["coastline_lines", "freshwater_polygons", "great_lakes_features"],
+                  "path": [coast.name, water.name, crosswalk]}).to_csv(sources, index=False)
     runner = tmp_path / "runner.py"
     runner.write_text("# test runner\n", encoding="utf-8")
     args = argparse.Namespace(counties=counties_path, counties_layer="counties", land_mask=land_path,
-                              land_mask_layer="county_land_mask", areawater_dir=archive_dir, download_missing=False,
-                              rules=rules_path, mask_config=builder.DEFAULT_MASK_CONFIG, runner=runner,
+                              land_mask_layer="county_land_mask", usa_boundary=usa, usa_boundary_layer=None,
+                              sources=sources,
+                              rules=builder.DEFAULT_RULES, mask_config=builder.DEFAULT_MASK_CONFIG,
+                              runner=runner,
                               output=tmp_path / "reporting.gpkg", geometry_only=True,
-                              geoids=["49011", "06061"], workers=2, raster_workers=2, run_id="test-reporting")
+                              geoids=["49011", "06061", "26083", "12099"], workers=2, raster_workers=2,
+                              run_id="test-reporting")
     return args
 
 
-def test_geometry_only_preserves_salt_lake_and_tahoe(preparation_inputs):
-    """Keep both non-Great-Lakes water bodies and label partial geometry-only outputs."""
+def test_geometry_only_keeps_inland_water_but_excludes_ocean_and_great_lakes(preparation_inputs):
+    """Protect land and subtract only the union of selected water polygons."""
     args = preparation_inputs
     path = builder.prepare_reporting_areas(args)
     assert path.name == "reporting_geometry.gpkg"
     frame = pyogrio.read_dataframe(path, layer=builder.LAYER).set_index("GEOID")
     assert set(FIELD_DEFINITIONS).isdisjoint(frame.columns)
     qa = pd.read_csv(path.with_name(path.stem + "_qa.csv"), dtype={"GEOID": str}).set_index("GEOID")
-    assert (qa.area_ha_excluded_water == 0).all()
-    np.testing.assert_allclose(frame[builder.AREA_FIELD].sort_index(), qa.area_ha_full_county.sort_index())
+    np.testing.assert_allclose(qa.loc[args.geoids, "area_ha_excluded_water"], [0, 0, .4, .4])
+    np.testing.assert_allclose(frame.loc[args.geoids, builder.AREA_FIELD], [1, 1, .6, .6])
     manifest = json.loads(path.with_name(path.stem + "_manifest.json").read_text())
     assert manifest["scope"] == "subset_verification"
     assert manifest["status"] == "geometry_only"
-    assert len(manifest["water_archives"]) == 2
-    assert all(len(row["sha256"]) == 64 for row in manifest["water_archives"])
+    assert "water_archives" not in manifest
+    assert Path(manifest["source_paths"]["usa_boundary"]) == args.usa_boundary
+    assert len(manifest["selected_water_sha256"]) == 64
+    for name in ("rules", "usa_boundary", "coastline_lines", "freshwater_polygons", "great_lakes_features"):
+        assert manifest["source_hashes"][name] == builder.sha256(Path(manifest["source_paths"][name]))
     with pytest.raises(FileExistsError):
         builder.prepare_reporting_areas(args)
 
@@ -180,22 +182,16 @@ def test_complete_artifact_runs_only_mask_job(preparation_inputs, monkeypatch):
     np.testing.assert_allclose(frame.area_ha_valid_nlcd, .9)
     with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert connection.execute("SELECT COUNT(*) FROM county_reporting_area_qa").fetchone()[0] == 2
-        assert connection.execute("SELECT COUNT(*) FROM county_reporting_water_selection").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM county_reporting_area_qa").fetchone()[0] == 4
+        selection = connection.execute("SELECT selection_reason FROM county_reporting_water_selection").fetchall()
+        assert sorted(selection) == [("great_lakes",), ("shoreline_connected_ocean",)]
         embedded = json.loads(connection.execute(
             "SELECT manifest_json FROM county_reporting_area_run").fetchone()[0])
-        assert embedded["rules"]["census_vintage"] == 2024
-        assert embedded["source_hashes"]["rules"] == builder.sha256(args.rules)
+        assert Path(embedded["source_paths"]["usa_boundary"]) == args.usa_boundary
     manifest = json.loads(path.with_name(path.stem + "_manifest.json").read_text())
     assert manifest["status"] == "complete"
     assert manifest["raster_metadata"] == metadata
     assert manifest["mask_config_sha256"] == builder.sha256(Path(manifest["mask_config"]))
-
-
-def test_missing_archive_does_not_download_without_flag(tmp_path, rules):
-    """Fail closed when a required Census archive was not supplied."""
-    with pytest.raises(FileNotFoundError, match="download-missing"):
-        builder.read_county_water("12099", tmp_path / "missing.zip", rules, False)
 
 
 def test_subset_cannot_replace_full_default(preparation_inputs):
@@ -205,55 +201,13 @@ def test_subset_cannot_replace_full_default(preparation_inputs):
         builder.prepare_reporting_areas(preparation_inputs)
 
 
-def test_download_retries_rejected_and_wrong_archives_before_caching(preparation_inputs, monkeypatch):
-    """Never preserve an HTTP-200 rejection page or an unrelated valid ZIP."""
+def test_missing_local_lake_feature_fails_without_publishing(preparation_inputs):
+    """Do not silently produce reporting areas when a listed lake feature is absent."""
     args = preparation_inputs
-    original = args.areawater_dir / "tl_2024_49011_areawater.zip"
-    target = args.output.parent / "downloaded" / original.name
-    wrong = io.BytesIO()
-    with ZipFile(wrong, "w") as zipped:
-        zipped.writestr("wrong.txt", "not a water Shapefile")
-    responses = iter([b"<html>The requested URL was rejected</html>", wrong.getvalue(), original.read_bytes()])
-    calls = []
-
-    def response(url, timeout):
-        """Serve successive fake network responses without touching cached files."""
-        assert not target.exists()
-        assert timeout == 60
-        calls.append(url)
-        return io.BytesIO(next(responses))
-
-    monkeypatch.setattr(census, "urlopen", response)
-    monkeypatch.setattr(census, "sleep", lambda _: None)
-    rules = yaml.safe_load(args.rules.read_text())
-    _, record = builder.read_county_water("49011", target, rules, True)
-    assert len(calls) == 3
-    assert target.read_bytes() == original.read_bytes()
-    assert record["sha256"] == builder.sha256(original)
-
-
-def test_rejected_download_never_leaves_a_cached_archive(tmp_path, rules, monkeypatch):
-    """Abort after a bounded number of bad responses without poisoning the cache."""
-    target = tmp_path / "water" / "tl_2024_12099_areawater.zip"
-    calls = []
-
-    def response(url, timeout):
-        """Return an HTTP-200 HTML error body for every attempted download."""
-        calls.append(url)
-        return io.BytesIO(b"<html>not a ZIP</html>")
-
-    monkeypatch.setattr(census, "urlopen", response)
-    monkeypatch.setattr(census, "sleep", lambda _: None)
-    with pytest.raises(RuntimeError, match="not a zip"):
-        builder.read_county_water("12099", target, rules, True)
-    assert len(calls) == 3
-    assert not target.exists()
-
-
-def test_zero_awater_county_requires_no_archive(tmp_path, rules, monkeypatch):
-    """Retain no-water counties without requiring a nonexistent water download."""
-    monkeypatch.setattr(builder, "download_archive", lambda *_args, **_kwargs: pytest.fail("Unexpected download"))
-    frame, record = builder.read_county_water("20071", tmp_path / "missing.zip", rules, True, expected_water_m2=0)
-    assert frame.empty
-    assert record["reason"] == "County AWATER is zero"
-    assert record["path"] is None
+    crosswalk = args.sources.parent / "lakes.csv"
+    lakes = pd.read_csv(crosswalk)
+    lakes.loc[0, "source_fid"] = 999
+    lakes.to_csv(crosswalk, index=False)
+    with pytest.raises(ValueError, match="Missing Great Lakes features"):
+        builder.prepare_reporting_areas(args)
+    assert not args.output.with_name("reporting_geometry.gpkg").exists()

@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import LineString, MultiLineString, Polygon, box
 
-from assessment_fisheries import _read_marine_shoreline, value_fisheries
+from assessment_fisheries import read_marine_shoreline, value_fisheries
 from assessment_zone_geometry import ZONE_PRODUCTS
 
 
@@ -177,7 +177,7 @@ class FootprintFisheriesTests(TestCase):
         counties = gpd.GeoDataFrame(
             {"GEOID": ["06001"]}, geometry=[box(-125, 30, -118, 42)], crs=4269,
         )
-        tree = _read_marine_shoreline(path, counties)
+        tree = read_marine_shoreline(path, counties)
         expected = gpd.GeoSeries(
             [local, LineString([(-125, 35), (-124, 35)])], crs=4269,
         ).to_crs(6933).length.to_numpy()

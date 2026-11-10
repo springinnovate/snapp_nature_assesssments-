@@ -41,10 +41,11 @@ data/
 │   │   ├── counties/                           2024 TIGER/Line county GeoPackage
 │   │   └── bbb_candidate_blm_lands_by_county/    BBB candidate county GeoPackage
 │   ├── boundaries/county_land/                 Census county land-mask GeoPackage
+│   ├── boundaries/usa_boundary/                U.S. boundary used for reporting-area ocean exclusion
 │   ├── boundaries/county_reporting_areas/      County area and NLCD metrics excluding ocean/Great Lakes
 │   ├── ecosystem_services/                     Service TIFFs, tables, coral and mangrove layers
-│   ├── hydrography/nhdfreshwater/                NHD water polygons for inland fisheries
-│   ├── linear_features/coastline/               TIGER shoreline for marine fisheries
+│   ├── hydrography/nhdfreshwater/                NHD water polygons for inland fisheries and Great Lakes exclusion
+│   ├── linear_features/coastline/               TIGER shoreline for marine fisheries and ocean identification
 │   ├── recreation/                             County recreation table
 │   ├── CAGDP1_LineCode3_All_States.csv            County GDP
 │   └── co-est2025-alldata.csv                    County population estimates
@@ -66,11 +67,12 @@ See [supporting workflows](docs/supporting_workflows.md) to prepare or replace
 the county land mask, BBB footprint, or other prepared data sources.
 
 If the reporting-area CSV and GeoPackage are not in the supplied data stack,
-prepare them once. This downloads and caches official 2024 Census water polygons
-and runs only the five NLCD masks, not ecosystem-service raster zonals:
+prepare them once. This uses local vector inputs and runs only the five NLCD
+masks, not ecosystem-service raster zonals:
 
 ```cmd
-python prepare_county_reporting_areas.py --runner "..\zonal_stats_toolkit\runner.py" --download-missing
+set "PROJ_NETWORK=OFF"
+python prepare_county_reporting_areas.py --runner "..\zonal_stats_toolkit\runner.py"
 ```
 
 Keep the resulting CSV, GeoPackage, QA, and manifest together under
@@ -158,13 +160,14 @@ The county CSV and GeoPackage report `ratio_public_lands_to_county_area_excl_oce
 `ratio_bbb_lands_to_county_area_excl_ocean_great_lakes`. These divide land-only
 footprint hectares by `area_ha_county_excl_ocean_great_lakes`. They are fractions
 (0.25 means 25%). The reporting denominator retains other inland water,
-including Great Salt Lake and Tahoe; it removes ocean, the five Great Lakes,
-and bays connected to those waters. It does not change the land-share allocation.
-The [reviewed water rules](data/workflow_assets/county_integration/county_area_exclusions.yaml)
-select Census water polygons; overlapping excluded polygons are dissolved so
-their area is removed once. The same footprint is used to measure all five
-NLCD masks. [Reuse a completed raster run](#revalue-a-completed-run) to apply
-these reporting inputs without recalculating ecosystem-service zonals.
+including Great Salt Lake and Tahoe. Ocean is identified using the local U.S.
+boundary and TIGER marine shoreline; the five Great Lakes use the
+[selected NHD polygons](data/workflow_assets/county_integration/great_lakes_nhd_features.csv).
+Census land is preserved. The generalized boundary approximates the coastal
+cutoff and may retain some tidal waters. The same footprint is used to
+measure all five NLCD masks. It does not change the land-share allocation.
+[Reuse a completed raster run](#revalue-a-completed-run) to apply these reporting
+inputs without recalculating ecosystem-service zonals.
 
 **Raster sums.** The toolkit reprojects zones to each raster's native CRS and
 sums valid first-band pixels whose centers fall inside the zone. Geometry
