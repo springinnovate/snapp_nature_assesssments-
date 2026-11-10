@@ -370,12 +370,12 @@ estimates in the county output.
 
 The assessment produces six output layers, each with a CSV and GeoPackage:
 
-1. Counties — `counties`
-2. Public lands by county — `public_lands_by_county`
-3. Public lands by county and manager type — `public_lands_by_county_and_manager_type`
-4. Conservation lands by county — `conservation_lands_by_county`
-5. Conservation lands by county and manager type — `conservation_lands_by_county_and_manager_type`
-6. BBB candidate lands by county — `bbb_lands_by_county`
+1. Counties: `counties`
+2. Public lands by county: `public_lands_by_county`
+3. Public lands by county and manager type: `public_lands_by_county_and_manager_type`
+4. Conservation lands by county: `conservation_lands_by_county`
+5. Conservation lands by county and manager type: `conservation_lands_by_county_and_manager_type`
+6. BBB candidate lands by county: `bbb_lands_by_county`
 
 Each row describes the county, land category, or county–manager combination
 named by its layer. The CSV and GeoPackage contain the same attributes; the
