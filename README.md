@@ -1,8 +1,8 @@
 # CONUS Ecosystem Services Assessment
 
-This SNAPP assessment estimates ecosystem-service values for counties and
-selected land footprints in the contiguous 48 states and Washington, DC. It
-publishes six output layers, each as a matching CSV and GeoPackage pair:
+This assessment estimates the value of ecosystem services for counties and
+selected lands in the contiguous 48 states and Washington, DC. It produces
+six layers, each as a CSV and GeoPackage pair:
 
 1. Counties
 2. Public lands by county
@@ -11,25 +11,56 @@ publishes six output layers, each as a matching CSV and GeoPackage pair:
 5. Conservation lands by county and manager type
 6. Big Beautiful Bill (BBB) candidate lands by county
 
+## How the assessment works
+
+1. [Define analysis areas](#define-analysis-areas). Select counties and county
+   equivalents, filter PAD-US for public and conservation lands, and add the
+   [BBB candidate lands](#identify-bbb-candidate-lands).
+2. [Measure area and shoreline](#measure-area-and-shoreline). Calculate land,
+   county, and natural areas, plus shoreline and inland water for fisheries.
+3. [Summarize raster values](#summarize-raster-values). Sum the values of
+   pixels in each analysis area.
+4. [Allocate service values](#allocate-service-values). Join county tables
+   and use land shares, fisheries measures, or mapped coastal features to
+   allocate estimates.
+5. [Calculate totals and county ratios](#calculate-totals-and-county-ratios).
+   Split combined Virginia GDP estimates by population before calculating
+   county GDP ratios.
+6. [Write the six outputs](#4-find-the-output-files).
+
 ## Methods
 
-### Zones, area, and shoreline
+### Define analysis areas
 
-The assessment clips PAD-US 4.1 VectorAnalysis polygons to 2024 TIGER/Line
-county boundaries. [Public lands](config/padus_land_rules.rules) include federal,
-state, local, district, joint, and territorial managers. A designation list
-determines inclusion when the manager is explicitly unknown. Conservation lands
-are selected independently by GAP status (1–3). Within each county, polygons
-are merged into a single footprint for each land category and, separately,
-for each manager type. Manager footprints can overlap; use the county-level
-footprint for a category total.
+An analysis area is either a full county or the part of a county selected
+by a land filter. The
+[2024 TIGER/Line county boundaries](https://www.census.gov/cgi-bin/geo/shapefiles/index.php?layergroup=Counties+%28and+equivalent%29&year=2024)
+are the Census Bureau's boundaries for counties and county equivalents,
+including independent cities and Connecticut planning regions.
+
+The USGS [PAD-US 4.1 Vector Analysis file](https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-spatial-analysis-and-reports)
+maps public lands and protected areas and records their management and
+conservation status.
+
+- **Public lands.** Apply the [public-land filter](config/padus_land_rules.rules)
+  to select records with federal, state, local government, special district,
+  joint, or territorial manager types. For records coded as having an unknown
+  manager type, select only the designations listed in the rule.
+- **Conservation lands.** Select records with GAP status 1, 2, or 3, regardless
+  of whether they pass the public-land filter.
+
+Clip the selected polygons to county boundaries, then merge them by land
+category and separately by manager type within each category. Manager areas
+can overlap; the county-level layer gives the unduplicated category area.
+
+### Measure area and shoreline
 
 Vector areas and lengths are measured in EPSG:6933, an equal-area projection.
 
-- **Land area** is the area of a footprint intersected with the 2024 Census
-  land mask, which comes from TIGER/Line Faces classified as land. A
-  footprint's land share is its land area divided by Census county land area
-  (`ALAND`). Raster and fisheries measurements use the full zone geometry.
+- **Land area** is measured by intersecting each analysis area with the 2024
+  Census land mask, which uses TIGER/Line Faces classified as land. For selected
+  lands, divide that area by Census county land area (`ALAND`) to get the land
+  share. Raster and fisheries measurements use the full analysis area.
 - **County area** is measured from the county polygon. `area_ha_county`
   excludes the [NHD Great Lakes polygons](data/workflow_assets/county_integration/great_lakes_nhd_features.csv)
   and water outside the U.S. boundary connected to the TIGER marine shoreline.
@@ -44,11 +75,11 @@ Vector areas and lengths are measured in EPSG:6933, an equal-area projection.
   in each class and multiply by 0.09 hectares per 30 m pixel. The two natural
   area fields use the corresponding county footprints. Classified water/snow
   counts as natural area; NoData does not.
-- **Shoreline and inland water** are measured by intersecting each zone with
-  2019 TIGER/Line shoreline and National Hydrography Dataset (NHD) water
-  polygons. These lengths and areas are the fisheries weights.
+- **Shoreline and inland water** are measured by intersecting each analysis
+  area with 2019 TIGER/Line shoreline and National Hydrography Dataset (NHD)
+  water polygons. These lengths and areas are the fisheries weights.
 
-### BBB candidate lands
+### Identify BBB candidate lands
 
 The BBB footprint represents a land-sale scenario based on
 [Section 50301 of the June 2025 Senate proposal](https://www.congress.gov/amendment/119th-congress/senate-amendment/2368/text).
@@ -70,9 +101,10 @@ sale eligibility, account for grazing permits or existing rights, or assess
 suitability for housing. See the [BBB input workflow](docs/supporting_workflows.md#prepare-the-bbb-county-footprint)
 to recreate the footprint.
 
-### Raster summaries
+### Summarize raster values
 
-For each zone, sum valid raster cells whose centers fall inside the zone.
+Sum the values of valid raster cells whose centers fall inside each
+analysis area.
 Boundary simplification is capped at 15 m, with smaller tolerances for small
 or narrow polygon parts. Overlapping manager footprints are measured separately.
 The [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml)
@@ -87,11 +119,11 @@ lists the sources and units.
   with no valid pixels. A zero zonal sum can reflect missing model coverage
   rather than an estimate of zero.
 
-### Service allocations
+### Allocate service values
 
 **County estimates.** Grazing, timber, jobs, air quality, urban heat, and
-physical health values are matched by county and allocated to footprints by
-land share. The [Connecticut crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
+physical health values are matched by county and allocated to selected lands
+by land share. The [Connecticut crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
 splits values for historical counties among current planning regions by land
 area. Air quality uses [county-code corrections](data/workflow_assets/county_integration/air_quality_county_aliases.csv)
 before aggregation. Negative timber rents are set to zero. The
@@ -103,19 +135,19 @@ animal-unit months.
 at the University of Washington supplied estimates by county. Recreation
 appears only in the county output.
 
-**Fisheries.** State marine values are allocated by shoreline length; state
-inland values are allocated by NHD water area. Each zone's length or area is
-divided by the eligible statewide measure across full counties. The Great
-Lakes are excluded from both weights, and Great Salt Lake is excluded from
+**Fisheries.** Allocate state marine values by shoreline length and state
+inland values by NHD water area. Divide each analysis area's eligible length or
+area by the statewide measure across full counties. The Great Lakes are
+excluded from both weights, and Great Salt Lake is excluded from
 Utah's inland weights. These allocations do not measure local catch.
 
-**Coastal protection.** Coral point values go to the nearest county in the
-national reference layer, with a value reported only for CONUS assignments.
-A footprint receives the value when it covers the assigned point. Mangrove
-study-unit values are allocated by each zone's share of the unit's total
+**Coastal protection.** Assign coral point values to the nearest county in
+the national reference layer and report the assignments within CONUS. A
+selected area receives the value if it covers the assigned point. Allocate
+each mangrove study unit's value by the analysis area's share of its total
 overlap with CONUS counties.
 
-### Totals and county ratios
+### Calculate totals and county ratios
 
 `total_ecosystem_services` sums [adjusted service values](data/workflow_assets/county_integration/derived_metrics.yaml)
 without recreation. The total includes annual flood benefits and total
@@ -221,7 +253,7 @@ python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county
 Run the second command after validation passes. Use `--help` for worker
 settings and additional input options.
 
-### 4. Find the final files
+### 4. Find the output files
 
 ```text
 data/analysis_results/assessment_runs/<run-id>/
@@ -241,13 +273,13 @@ paths in `run_manifest.json`.
 
 ### Revalue a completed run
 
-To update valuations or ratios, reuse the saved zones and raster sums. Pass
-the original zonal run ID and a new output ID:
+To update valuations or ratios, reuse the saved analysis boundaries and
+raster sums. Pass the original zonal run ID and a new output ID:
 
 ```cmd
 python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued"
 ```
 
 Add `--validate-only` to check reuse before launching. Use a fresh assessment
-when changing zones or service rasters. Keep `run_manifest.json` with the
-outputs to record the inputs and settings for each run.
+when changing analysis boundaries or service rasters. Keep `run_manifest.json`
+with the outputs to record the inputs and settings for each run.
