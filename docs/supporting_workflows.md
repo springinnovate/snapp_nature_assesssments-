@@ -42,9 +42,13 @@ different source table.
 Only the five NLCD binary masks are sampled on this footprint. The final
 `tl_2024_us_county_excl_ocean_great_lakes.csv` and matching GeoPackage under
 `data/analysis_inputs/boundaries/county_reporting_areas/` contain the county
-denominator and natural-area metrics. Keep their QA and manifest sidecars.
+denominator and natural-area metrics excluding ocean and the Great Lakes.
+Keep their QA CSV and manifest: the QA CSV's `area_ha_full_county` supplies
+the inclusive county denominator. Keep the separately prepared full-county
+NLCD GeoPackage for the inclusive natural-area denominator. If these files
+are already available, the paired outputs require no NLCD rerun.
 Existing final files are not overwritten; use `--output` for a separately named
-replacement and update both county-area and natural-area paths in
+replacement and update the reporting-area CSV, GeoPackage, and QA CSV paths in
 [`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml).
 Do not use a `--geometry-only` result as a finished denominator source: it has
 not calculated the natural-area metrics.
@@ -95,17 +99,21 @@ The generated TIFFs go under `data/analysis_inputs/masks/`. Point the
 at the five mask TIFFs you intend to measure, then run the
 [county reporting-area preparation](#prepare-county-reporting-areas-and-natural-area-denominators)
 with a new `--output`. This measures the masks on the ocean/Great-Lakes-excluded
-footprint and supplies matching inputs for both area-normalized ES metrics.
+footprint and supplies the denominators for the unsuffixed area-normalized ES
+metrics.
 
-For a separate full-county NLCD coverage diagnostic, use:
+If the full-county NLCD GeoPackage is missing or its masks need replacement, use:
 
 ```powershell
 python update_nlcd_mask_areas.py --runner '<path to zonal_stats_toolkit/runner.py>' --raster-workers 2
 ```
 
 This prints a verified county CSV/GeoPackage pair under
-`data/analysis_results/nlcd_mask_areas/<timestamp>/`. It includes the entire
-county geometry and is not the reporting-area input for the assessment ratios.
+`data/analysis_results/nlcd_mask_areas/<timestamp>/`. Select its GeoPackage in
+[`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml)
+as the full-county natural-area source. Its `area_ha_all_natural` field is
+exported as `area_ha_all_natural_incl_ocean_great_lakes` in the assessment.
+Both NLCD sources use the same five masks; neither counts NoData as natural area.
 
 ## Refresh PAD-US footprints
 
