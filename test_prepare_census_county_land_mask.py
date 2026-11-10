@@ -185,3 +185,42 @@ def test_refuses_to_overwrite_existing_sidecar(inputs):
         builder.main(args)
     assert list(output.parent.iterdir()) == [sidecar]
     assert sidecar.read_text(encoding="utf-8") == "prior file"
+
+
+def test_shared_download_validates_zip_and_schema_before_caching(inputs, monkeypatch):
+    """Reuse the downloader for an alternate product with stronger validation."""
+    _, _, faces_dir, _ = inputs
+    source = faces_dir / "tl_2024_11001_faces.zip"
+    target = faces_dir / "other cache" / source.name
+    payload = source.read_bytes()
+    calls, delays = [], []
+    read_info = builder.pyogrio.read_info
+    testzip = ZipFile.testzip
+
+    def download(url, *, timeout):
+        """Serve the local ZIP without publishing it before validation."""
+        assert not target.exists()
+        calls.append((url, timeout))
+        return BytesIO(payload)
+
+    def verify_members(archive):
+        """Simulate one corrupt download, then perform real CRC checks."""
+        return source.stem + ".dbf" if len(calls) == 1 else testzip(archive)
+
+    def inspect_schema(path):
+        """Simulate one mismatched schema before returning real metadata."""
+        info = read_info(path)
+        if len(calls) == 2:
+            info["fields"] = []
+        return info
+
+    monkeypatch.setattr(builder, "urlopen", download)
+    monkeypatch.setattr(builder, "sleep", delays.append)
+    monkeypatch.setattr(ZipFile, "testzip", verify_members)
+    monkeypatch.setattr(builder.pyogrio, "read_info", inspect_schema)
+    builder.download_archive(target, "11001", source_url="https://example.invalid/other", timeout=60,
+                             validate=lambda path: builder.county_shapefile(path, source.stem, fields=["TFID"]))
+
+    assert calls == [("https://example.invalid/other/" + source.name, 60)] * 3
+    assert delays == [1, 2]
+    assert target.read_bytes() == payload

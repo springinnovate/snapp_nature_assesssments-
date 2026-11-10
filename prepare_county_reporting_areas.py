@@ -17,12 +17,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
-import subprocess
-import sys
 import tempfile
-from time import sleep
-from urllib.request import urlopen
-from zipfile import ZipFile
 
 import geopandas as gpd
 import numpy as np
@@ -36,13 +31,10 @@ from assessment_geography import CONUS_STATE_FIPS
 from assessment_zone_geometry import MAX_LAND_MASK_ERROR_PCT
 from build_county_ecosystem_service_valuations_2026 import read_attributes, sha256
 from geometry_utils import repair_polygonal_geometry
-from nlcd_mask_areas import FIELD_DEFINITIONS, RAW_FIELD
+from nlcd_mask_areas import FIELD_DEFINITIONS
 from prepare_assessment_zones import project_polygons, read_polygons
-from prepare_census_county_land_mask import publish_new_file
-from prepare_tif_zonal_stats_config import (
-    ZoneJob, load_and_prepare_rasters, load_run_config, write_runner_config,
-)
-from update_nlcd_mask_areas import export_mask_areas, validate_mask_definition
+from prepare_census_county_land_mask import county_shapefile, download_archive, publish_new_file
+from update_nlcd_mask_areas import export_mask_areas, run_mask_zonals, verify_mask_rasters
 
 
 ROOT = Path(__file__).resolve().parent
@@ -82,28 +74,8 @@ def read_county_water(geoid: str, archive: Path, rules: dict, download: bool,
     if not archive.is_file():
         if not download:
             raise FileNotFoundError(f"Missing {archive}; supply it or use --download-missing")
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        for attempt in range(3):
-            try:
-                with tempfile.TemporaryDirectory(dir=archive.parent, prefix=".areawater-download-") as temporary:
-                    staged = Path(temporary) / archive.name
-                    with urlopen(rules["source_url"].rstrip("/") + "/" + archive.name, timeout=60) as source, staged.open("xb") as target:
-                        shutil.copyfileobj(source, target)
-                    with ZipFile(staged) as zipped:
-                        members = zipped.namelist()
-                        expected = [f"{archive.stem}.{extension}" for extension in ("shp", "shx", "dbf", "prj")]
-                        if any(members.count(name) != 1 for name in expected) or zipped.testzip() is not None:
-                            raise ValueError(f"Incomplete or corrupt Census archive: {archive.name}")
-                    info = pyogrio.read_info(f"/vsizip/{staged.as_posix()}/{archive.stem}.shp")
-                    if not set(fields) <= set(info["fields"]) or not info["crs"]:
-                        raise ValueError(f"Invalid Census water Shapefile: {archive.name}")
-                    publish_new_file(staged, archive)
-                break
-            except Exception:
-                if attempt == 2:
-                    raise
-                tqdm.write(f"Retry {attempt + 1}/2 downloading {archive.name}")
-                sleep(attempt + 1)
+        download_archive(archive, geoid, source_url=rules["source_url"], timeout=60,
+                         validate=lambda staged: county_shapefile(staged, archive.stem, fields=fields))
     before = archive.stat()
     path = f"/vsizip/{archive.resolve().as_posix()}/{archive.stem}.shp"
     try:
@@ -322,30 +294,13 @@ def prepare_reporting_areas(args: argparse.Namespace) -> Path:
             shutil.copyfile(geometry_path, stage)
             areas.drop(columns="geometry").to_csv(stage.with_suffix(".csv"), index=False)
         else:
-            raster_metadata = validate_mask_definition(args.mask_config)
-            profile = load_run_config(args.mask_config)
-            raster_dir = args.mask_config.parent / profile["project"]["raster_dir"]
-            rasters, _ = load_and_prepare_rasters(args.mask_config, raster_dir, work / "derived", apply_scale=False)
             frozen = ROOT / "data/workflow_assets/zonal_stats/runs" / f"county_reporting_masks_{args.run_id}.yaml"
-            job = ZoneJob("counties", "County reporting-area NLCD masks", geometry_path, LAYER,
-                          "counties_masks", "counties", "GEOID", profile["job:counties_masks"]["operations"])
-            write_runner_config(frozen, work / "toolkit_cache", work / "raw", rasters, [job], args.mask_config)
-            subprocess.run([sys.executable, "-B", str(args.runner.resolve()), str(frozen),
-                            "--job-workers", "1", "--raster-workers", str(args.raster_workers)], check=True)
-            raw = list((work / "raw/counties").glob("counties_masks_*.gpkg"))
-            if len(raw) != 1 or not raw[0].with_suffix(".csv").is_file():
-                raise ValueError("Expected one complete mask-only raw CSV/GeoPackage pair")
-            attrs, _, _ = read_attributes(raw[0])
-            csv = pd.read_csv(raw[0].with_suffix(".csv"), dtype={"GEOID": str}, float_precision="round_trip")
-            fields = [field for field in attrs if RAW_FIELD.fullmatch(field)]
-            pd.testing.assert_frame_equal(attrs.set_index("GEOID")[fields].sort_index(),
-                                          csv.set_index("GEOID")[fields].sort_index(), check_dtype=False)
-            export_mask_areas(raw[0], stage, frozen, raster_metadata=raster_metadata,
+            raw, frozen, raster_metadata = run_mask_zonals(
+                args.runner, args.mask_config, frozen, work / "raw", work / "toolkit_cache",
+                args.raster_workers, reporting_zone=(geometry_path, LAYER))
+            export_mask_areas(raw, stage, frozen, raster_metadata=raster_metadata,
                               derived_config=None, output_layer=LAYER)
-            for record in raster_metadata:
-                stat = Path(record["path"]).stat()
-                if (stat.st_size, stat.st_mtime_ns) != (record["bytes"], record["mtime_ns"]):
-                    raise ValueError(f"NLCD mask changed during preparation: {record['path']}")
+            verify_mask_rasters(raster_metadata)
             attrs, _, _ = read_attributes(stage)
             if not set(FIELD_DEFINITIONS) <= set(attrs):
                 raise ValueError("Reporting artifact is missing corrected NLCD fields")

@@ -17,7 +17,9 @@ import pytest
 from shapely.geometry import box
 import yaml
 
+import prepare_census_county_land_mask as census
 import prepare_county_reporting_areas as builder
+import update_nlcd_mask_areas as masks
 from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS
 from prepare_tif_zonal_stats_config import RasterInput
 
@@ -131,19 +133,24 @@ def test_complete_artifact_runs_only_mask_job(preparation_inputs, monkeypatch):
         metadata.append({"class": name, "path": str(path), "bytes": path.stat().st_size,
                          "mtime_ns": path.stat().st_mtime_ns, "pixel_area_ha": .09})
         rasters.append(RasterInput(name, path, "binary", path, 1.))
-    monkeypatch.setattr(builder, "validate_mask_definition", lambda _: metadata)
-    monkeypatch.setattr(builder, "load_and_prepare_rasters", lambda *_, **__: (rasters, []))
+    monkeypatch.setattr(masks, "validate_mask_definition", lambda _: metadata)
+    monkeypatch.setattr(masks, "load_and_prepare_rasters", lambda *_, **__: (rasters, []))
     calls = []
 
     def fake_runner(command, check):
         """Write small, internally consistent binary-mask stats for the real exporter."""
         calls.append(command)
         assert check
+        assert command[1:3] == ["-B", str(args.runner.resolve())]
+        assert command[4:] == ["--job-workers", "1", "--raster-workers", str(args.raster_workers)]
         config_path = Path(command[3])
         config = configparser.ConfigParser(interpolation=None)
         config.read(config_path, encoding="utf-8")
         assert config.sections() == ["project", "job:counties_masks"]
         job = config["job:counties_masks"]
+        assert job["agg_layer"] == builder.LAYER
+        assert job["agg_field"] == "GEOID"
+        assert set(job["operations"].replace(" ", "").split(",")) == set(OPERATIONS)
         vector = (config_path.parent / job["agg_vector"]).resolve()
         frame = pyogrio.read_dataframe(vector, layer=builder.LAYER)
         raw_path = (config_path.parent / job["output_gpkg"]).resolve()
@@ -158,7 +165,7 @@ def test_complete_artifact_runs_only_mask_job(preparation_inputs, monkeypatch):
         frame.drop(columns="geometry").to_csv(raw_path.with_suffix(".csv"), index=False)
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(builder.subprocess, "run", fake_runner)
+    monkeypatch.setattr(masks.subprocess, "run", fake_runner)
     path = builder.prepare_reporting_areas(args)
     assert len(calls) == 1
     frame = pyogrio.read_dataframe(path, layer=builder.LAYER)
@@ -181,6 +188,7 @@ def test_complete_artifact_runs_only_mask_job(preparation_inputs, monkeypatch):
         assert embedded["source_hashes"]["rules"] == builder.sha256(args.rules)
     manifest = json.loads(path.with_name(path.stem + "_manifest.json").read_text())
     assert manifest["status"] == "complete"
+    assert manifest["raster_metadata"] == metadata
     assert manifest["mask_config_sha256"] == builder.sha256(Path(manifest["mask_config"]))
 
 
@@ -211,11 +219,12 @@ def test_download_retries_rejected_and_wrong_archives_before_caching(preparation
     def response(url, timeout):
         """Serve successive fake network responses without touching cached files."""
         assert not target.exists()
+        assert timeout == 60
         calls.append(url)
         return io.BytesIO(next(responses))
 
-    monkeypatch.setattr(builder, "urlopen", response)
-    monkeypatch.setattr(builder, "sleep", lambda _: None)
+    monkeypatch.setattr(census, "urlopen", response)
+    monkeypatch.setattr(census, "sleep", lambda _: None)
     rules = yaml.safe_load(args.rules.read_text())
     _, record = builder.read_county_water("49011", target, rules, True)
     assert len(calls) == 3
@@ -233,9 +242,9 @@ def test_rejected_download_never_leaves_a_cached_archive(tmp_path, rules, monkey
         calls.append(url)
         return io.BytesIO(b"<html>not a ZIP</html>")
 
-    monkeypatch.setattr(builder, "urlopen", response)
-    monkeypatch.setattr(builder, "sleep", lambda _: None)
-    with pytest.raises(Exception, match="not a zip"):
+    monkeypatch.setattr(census, "urlopen", response)
+    monkeypatch.setattr(census, "sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="not a zip"):
         builder.read_county_water("12099", target, rules, True)
     assert len(calls) == 3
     assert not target.exists()
@@ -243,7 +252,7 @@ def test_rejected_download_never_leaves_a_cached_archive(tmp_path, rules, monkey
 
 def test_zero_awater_county_requires_no_archive(tmp_path, rules, monkeypatch):
     """Retain no-water counties without requiring a nonexistent water download."""
-    monkeypatch.setattr(builder, "urlopen", lambda *_args, **_kwargs: pytest.fail("Unexpected download"))
+    monkeypatch.setattr(builder, "download_archive", lambda *_args, **_kwargs: pytest.fail("Unexpected download"))
     frame, record = builder.read_county_water("20071", tmp_path / "missing.zip", rules, True, expected_water_m2=0)
     assert frame.empty
     assert record["reason"] == "County AWATER is zero"
