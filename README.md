@@ -360,7 +360,11 @@ Each row names the output field and its denominator:
 *Adjustment to source data:* The
 [U.S. Bureau of Economic Analysis (BEA)](https://www.bea.gov/data/gdp/gdp-by-county)
 reports some Virginia counties and independent cities together rather than
-separately. We divide each combined area's GDP
+separately. This grouping originated because essential source records could
+not be reliably assigned to the separate jurisdictions, as explained in
+[BEA's local-area methodology](https://apps.bea.gov/scb/pdf/regional/perinc/meth/lapi6992.pdf#page=2).
+[County GDP uses the same combined geography as BEA's personal-income estimates](https://www.bea.gov/news/blog/2019-11-21/first-official-county-gdp-stats-coming-dec-12).
+We divide each combined area's GDP
 among its counties and cities in proportion to their 2024 Census populations.
 The [Virginia GDP allocation table](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
 identifies the groups. `GDP_2024_is_allocated` flags the population-based
