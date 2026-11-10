@@ -1,8 +1,9 @@
 # CONUS Ecosystem Services Assessment
 
-We estimate the monetary value of ecosystem services for counties and selected
-lands in the contiguous 48 states and Washington, DC (CONUS). The assessment
-produces six output layers, each as a CSV and GeoPackage pair:
+This repository implements a data pipeline that estimates the monetary value
+of ecosystem services across the contiguous 48 states and Washington, DC
+(CONUS). It combines raster, tabular, and vector datasets and produces six
+output layers, each as a CSV and GeoPackage pair:
 
 1. Counties
 2. Public lands by county
@@ -13,42 +14,45 @@ produces six output layers, each as a CSV and GeoPackage pair:
 
 ## How the assessment works
 
-County boundaries provide a common geography for comparing ecosystem-service
-estimates across counties and the lands within them. We combine spatial models
-of services such as carbon storage and flood mitigation with county and state
-estimates of services such as grazing and fisheries. Public and conservation
-lands are separate, overlapping classifications. The BBB layer represents a
-separate candidate land-sale scenario.
+The assessment brings together ecosystem-service estimates supplied as raster
+maps, county and state tables, and mapped study sites. We summarize or
+distribute these estimates across counties and the public, conservation, and
+BBB lands within them. We then apply unit conversions and monetary adjustments
+to report individual service values, combined totals, and county comparisons.
 
-The methods follow four stages:
+The pipeline follows four stages:
 
-1. [Define analysis areas](#define-analysis-areas) from county boundaries,
-   public and conservation lands, and [BBB candidate lands](#identify-bbb-candidate-lands)
-   to establish the geography of each output.
-2. [Measure area and shoreline](#measure-area-and-shoreline) to compare
-   differently sized counties and distribute county and state service totals
-   to the lands within them. [Sum raster estimates](#summarize-raster-values)
-   of ecosystem services within each analysis area.
-3. [Allocate service estimates](#allocate-service-values) supplied by county,
-   state, or study area to the analysis areas, then [adjust monetary
-   values](#adjust-monetary-values) for the source price years.
-4. [Calculate totals and county ratios](#calculate-totals-and-county-ratios)
-   to report ecosystem-service value per hectare, per resident, and relative
-   to county GDP alongside the individual service estimates.
+1. [Define the analysis areas](#define-analysis-areas) and
+   [measure their land, water, and shoreline](#measure-area-and-shoreline).
+2. Estimate ecosystem-service values for each area by
+   [summing raster values](#summarize-ecosystem-service-rasters) and
+   [assigning estimates from tables and study sites](#allocate-service-values).
+3. [Apply monetary adjustments](#adjust-monetary-values) and
+   [calculate totals and county comparisons](#calculate-totals-and-county-ratios).
+4. Report the results in the [six output layers](#output-fields-and-units),
+   including public and conservation land breakdowns by manager type.
 
 ## Methods
 
 ### Define analysis areas
 
-We use the Census Bureau's
-[2024 TIGER/Line county boundaries](https://www.census.gov/cgi-bin/geo/shapefiles/index.php?layergroup=Counties+%28and+equivalent%29&year=2024)
-to define the whole-county analysis and divide selected lands by county.
-The boundary file includes county equivalents such as independent cities and
-Connecticut planning regions.
+To report both countywide ecosystem-service totals and the values associated
+with different kinds of land, we identify counties, public lands, conservation lands, and
+their manager types. We also evaluate a separate scenario for Bureau of Land
+Management lands that meet mapped criteria in the BBB land-sale proposal.
+Water bodies and shoreline within these areas support the fisheries
+calculations described below.
 
-We use the USGS [PAD-US 4.1 Vector Analysis file](https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-spatial-analysis-and-reports)
-to identify public and conservation lands. The file maps public lands and
-protected areas and records their management and conservation status.
+To locate counties and divide land holdings between them, we use the Census
+Bureau's
+[2024 TIGER/Line county boundaries](https://www.census.gov/cgi-bin/geo/shapefiles/index.php?layergroup=Counties+%28and+equivalent%29&year=2024)
+file. These boundaries include county equivalents such as independent cities
+and Connecticut planning regions.
+
+To identify public and conservation lands, we use the U.S. Geological Survey's
+[PAD-US 4.1 Vector Analysis file](https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-spatial-analysis-and-reports).
+It maps public lands and protected areas and records their management and
+conservation status.
 
 - **Public lands.** The [public-land filter](config/padus_land_rules.rules)
   selects records with federal, state, local government, special district,
@@ -57,12 +61,14 @@ protected areas and records their management and conservation status.
 - **Conservation lands.** We select records with GAP status 1, 2, or 3,
   independently of the public-land filter.
 
-We clip the selected polygons to county boundaries, then merge overlapping
-polygons within each land category and within each category's manager types.
-The county-level public and conservation layers each contain the union of
-their selected polygons. Manager areas can overlap, so their areas and service
-estimates are not necessarily additive. Public and conservation estimates
-also overlap and should be compared separately.
+Land holdings can cross county boundaries, and multiple PAD-US records can
+cover the same ground. To report one public-land or conservation-land estimate
+per county, we split holdings at county boundaries and merge overlapping
+polygons within each category. We also group the polygons by manager type to
+show how each category's services are distributed among managers. Overlap
+between manager groups can make their summed values exceed the category's
+county total. Public and conservation lands can also overlap, so the two
+classifications represent separate views of the landscape.
 
 ### Measure area and shoreline
 
@@ -71,10 +77,8 @@ counties of different sizes and allocate county service estimates to public,
 conservation, and BBB lands. Shoreline length and inland water area let us
 distribute statewide fisheries totals among counties and land categories.
 
-We retain the full county-clipped polygons, including any water, for raster
-summaries and spatial service allocations, and measure land-only hectares
-separately. We measure vector areas and lengths in the equal-area projection
-EPSG:6933.
+We calculate polygon areas and shoreline lengths in the equal-area projection
+EPSG:6933. The measurements serve different purposes:
 
 - **Land area.** We intersect public, conservation, and BBB polygons with the
   2024 Census land mask, constructed from TIGER/Line Faces classified as land. The
@@ -82,7 +86,7 @@ EPSG:6933.
   fraction of county land in each category. County land hectares come directly
   from `ALAND`, converted from square metres.
 - **County area.** We measure two areas for each county. The first excludes the
-  [NHD Great Lakes polygons](data/workflow_assets/county_integration/great_lakes_nhd_features.csv)
+  [National Hydrography Dataset (NHD) Great Lakes polygons](data/workflow_assets/county_integration/great_lakes_nhd_features.csv)
   and water outside the U.S. boundary connected to the TIGER marine shoreline.
   The Census land mask protects land from removal; the generalized coastal
   boundary can retain some tidal water. Other inland water, including Great
@@ -96,7 +100,7 @@ EPSG:6933.
   area on both county footprints described above. Classified water and snow
   contribute to natural area; NoData pixels do not.
 - **Shoreline and inland water.** We intersect each analysis area with 2019
-  TIGER/Line shoreline and National Hydrography Dataset (NHD) water polygons,
+  TIGER/Line shoreline and NHD water polygons,
   applying the lake exclusions described under [fisheries](#fisheries).
 
 ### Identify BBB candidate lands
@@ -122,198 +126,265 @@ suitability, and tract selection requires a separate review.
 See the [BBB input workflow](docs/supporting_workflows.md#prepare-the-bbb-county-footprint)
 to recreate the footprint.
 
-### Summarize raster values
+### Summarize ecosystem-service rasters
 
-The raster sources represent carbon stock, pollination, flood mitigation,
-mental-health benefits, surface-water provisioning, and avoided dredging,
-drinking-water health, and water-treatment costs. We sum valid pixel values
-whose centers fall within each analysis area. For raster sampling, boundary
+For services supplied as raster maps, we calculate each analysis area's value
+by summing values for valid pixels whose centers fall within its boundaries.
+This includes service pixels over land or water inside the polygon. Boundary
 simplification is capped at 15 m, with smaller tolerances for small or narrow
-polygon parts. We sample overlapping manager areas separately. The
+polygon parts, and we sample overlapping manager areas separately. The
 [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml)
 identifies the source files and units.
 
-Carbon stock is supplied as tonnes of CO₂e per hectare. We multiply the sum
-of those densities by 0.09 hectares per 30 m pixel to obtain total tonnes of
-CO₂e, then multiply by $3.66 per tonne and a 1.182 inflation factor to obtain
-the stock's monetary value. Pollination and flood-mitigation rasters also
-contain per-hectare values, so we multiply their sums by 0.09 hectares per
-pixel. We sum rasters already expressed as values per pixel directly.
+Service-specific calculations and coverage caveats are:
 
-The supplied mental-health model has gaps and sparse coverage in Connecticut,
-Washington, DC, and other locations. A zero sum where the model has no valid
-pixels indicates missing coverage, not an absence of mental-health benefits.
+- **Carbon stock.** The source gives tonnes of CO₂e per hectare on a 30 m grid.
+  We multiply the sum of these densities by the pixel area, 0.09 hectares,
+  to calculate total tonnes of CO₂e. We value that stock using the carbon
+  price and [monetary adjustments](#adjust-monetary-values) below.
+- **Pollination.** The source gives annual crop-yield value per hectare.
+  We multiply its sum by 0.09 hectares per pixel to calculate the area's
+  annual pollination value.
+- **Flood mitigation.** The annual-value and net-present-value rasters both
+  contain dollars per hectare. We multiply each sum by 0.09 hectares per pixel
+  and report the annual value and NPV separately.
+- **Mental health.** We sum the supplied values for benefits from existing
+  greenness. **Coverage caveat:** the model has gaps and sparse coverage in
+  Connecticut, Washington, DC, and other locations. Where it supplies no valid
+  pixels, a zero sum indicates missing coverage rather than no benefits.
+- **Surface-water provisioning.** We sum per-pixel values for irrigation,
+  power generation, public water supply, and the supplied combined total.
+- **Avoided dredging costs.** We sum the supplied cost savings per pixel.
+- **Avoided drinking-water health costs.** We sum the supplied health-cost
+  savings per pixel.
+- **Avoided water-treatment costs.** We sum the supplied treatment-cost
+  savings per pixel.
+
+We apply the adjustments listed below to these area totals before combining
+them with the other services.
 
 ### Allocate service values
 
 #### County-based services
 
-We assemble county estimates of
-[grazing](data/analysis_inputs/ecosystem_services/grazing/SNAPPGrazingDataset_final_062326.xlsx),
-[timber](data/analysis_inputs/ecosystem_services/timber/total_valuation_all_regions_fvs.csv),
-[ecosystem-related wages](data/analysis_inputs/ecosystem_services/jobs/Finalized%20Flagged%20and%20Sorted%20Industry%20and%20County%20Codes.xlsx),
-[air-quality benefits](data/analysis_inputs/ecosystem_services/air_quality/snapp_air_quality.csv),
-[urban-heat mitigation](data/analysis_inputs/ecosystem_services/urban_heat/HEAT_all_tracts_2021.csv),
-and [physical-health benefits](data/analysis_inputs/ecosystem_services/physical_health/hypertension_linear_us_counties_all.gpkg).
-These source-file links point into the downloaded
+Grazing, timber, wages, air quality, urban heat, and physical health estimates
+are supplied by county or can be summed to counties. To estimate the value
+associated with public, conservation, or BBB lands, we multiply each county
+estimate by the fraction of county land in that category. We calculate
+manager-type values using the same procedure for each manager's land area.
+
+The entries below describe the source data and the modifications needed to
+report each service. Source links identify files in the downloaded
 [assessment data stack](https://drive.google.com/drive/folders/141tOj6sf8Go0UttVogSc_T3Jet1wXzlu);
-the data files are not hosted on GitHub. The tracked
-[source list](data/workflow_assets/county_integration/sources.csv) records their paths.
+the [source list](data/workflow_assets/county_integration/sources.csv) records
+their paths.
 
-Within each county, we multiply each service estimate by the fraction of
-county land in the public, conservation, or BBB category. We apply the same
-calculation to each public or conservation manager type. This assumes a
-uniform service value per land hectare within the county. Urban-heat estimates
-are first summed from Census tracts to counties; the wage estimate sums
-cultural, raw-materials, processing, and harvesting wages.
+- **[Grazing](data/analysis_inputs/ecosystem_services/grazing/SNAPPGrazingDataset_final_062326.xlsx).**
+  We value the forage available to livestock over one year, treating mean
+  forage biomass as annual production. The workbook calculates how many
+  animal-unit months (one animal unit fed for one month) the usable forage can
+  support, then applies the fee per animal-unit month. This prices the year's
+  forage, so we use the subtotal before the workbook's additional multiplication
+  by eight. The [grazing calculation](docs/county_valuation_integration_2026.md#grazing-valuation)
+  documents the annual-production assumption and calculation.
+- **[Timber](data/analysis_inputs/ecosystem_services/timber/total_valuation_all_regions_fvs.csv).**
+  We use the supplied annual county timber rents. Negative or missing source
+  estimates contribute zero when we assemble the county values, before
+  distributing them among land categories.
+- **[Ecosystem-related wages](data/analysis_inputs/ecosystem_services/jobs/Finalized%20Flagged%20and%20Sorted%20Industry%20and%20County%20Codes.xlsx).**
+  We sum wages from cultural activities, raw materials, processing, and
+  harvesting for each county, and report both the sector values and their total.
+- **[Air-quality benefits](data/analysis_inputs/ecosystem_services/air_quality/snapp_air_quality.csv).**
+  We sum avoided-mortality values across the source's pollutant and land-cover
+  categories within each county. **County-code correction:** the table uses
+  Shannon County's former code, `46113`, for Oglala Lakota County, South Dakota.
+  We [map it to the current code, `46102`](data/workflow_assets/county_integration/air_quality_county_aliases.csv),
+  so these values join to the correct county.
+- **[Urban-heat mitigation](data/analysis_inputs/ecosystem_services/urban_heat/HEAT_all_tracts_2021.csv).**
+  We sum the supplied Census-tract dollar savings within each county.
+- **[Physical-health benefits](data/analysis_inputs/ecosystem_services/physical_health/hypertension_linear_us_counties_all.gpkg).**
+  We match the supplied hypertension-related values to counties by their
+  county identifiers.
+- **Recreation.** Spencer Wood's [Outdoor Recreation & Data Lab](https://outdoorrd.org/)
+  at the University of Washington supplied county-level aggregates of annual
+  recreation use value for protected areas, in 2024 dollars. Those aggregates
+  cannot identify the value within public, conservation, or BBB subareas, so
+  we report recreation only in the final county summary.
 
-We prepare the source estimates as follows:
-
-- **Connecticut geography.** The Census county geography changed from eight
-  counties to nine planning regions, with different boundaries and identifiers.
-  Some service sources use the eight counties. We use the
-  [Connecticut crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
-  to distribute each old county's estimate among the planning regions in
-  proportion to their shared land area.
-- **Air-quality county codes.** The source identifies Shannon County, South
-  Dakota, by its former code `46113`. We [replace it with Oglala Lakota County's code
-  `46102`](data/workflow_assets/county_integration/air_quality_county_aliases.csv)
-  so those records join to the current county before we sum their values.
-- **Timber values.** Some source counties have negative estimated timber rents.
-  We report these as zero timber value before combining counties or allocating
-  their values to land categories.
-- **Grazing time basis.** We value the forage available to livestock over one
-  year, treating mean forage biomass as annual production. The workbook
-  calculates how many animal-unit months (one animal unit fed for one month)
-  the usable forage can support, then applies the fee per animal-unit month.
-  This already values
-  the year's forage, so we omit the workbook's additional multiplication by
-  eight. See the
-  [grazing calculation](docs/county_valuation_integration_2026.md#grazing-valuation).
-
-#### Recreation
-
-Spencer Wood's [Outdoor Recreation & Data Lab](https://outdoorrd.org/) at the
-University of Washington supplied county totals of annual recreation use value
-for protected areas, in 2024 dollars. The supplied estimates have no
-within-county breakdown by land category, so we report recreation only in the
-county output.
+**Shared geographic correction—Connecticut.** Census county geography changed
+from eight counties to nine planning regions, with different boundaries and
+identifiers. Several source tables still use the eight counties. To match
+those estimates to the assessment's planning regions, we distribute each old
+county's value among the regions in proportion to shared land area, using the
+[Connecticut crosswalk](data/workflow_assets/county_integration/ct_county_crosswalk.csv).
 
 #### Fisheries
 
-The fisheries sources provide state totals. We distribute marine fisheries
-value in proportion to shoreline length and inland fisheries value in
-proportion to NHD water area, assuming a uniform value per unit length or area
-within each state. For each county and land category, we multiply the state
-total by its share of the state's eligible shoreline or water area, measured
-across full counties. We exclude the Great Lakes from both measurements and
-Great Salt Lake from Utah's inland water area before calculating these shares.
+The fisheries datasets provide statewide values. To distribute them among
+counties and land categories, we calculate each area's share of the state's
+eligible shoreline length or inland water area, measured across its counties.
+
+- **Marine fisheries.** We multiply the state value by each area's share of
+  marine shoreline length. We exclude Great Lakes shoreline from this calculation.
+- **Inland fisheries.** We multiply the state value by each area's share of
+  NHD water area. We exclude the Great Lakes and, in Utah, Great Salt Lake
+  before calculating the shares.
 
 #### Coastal protection
 
-Coastal-protection estimates are supplied for coral locations and mangrove
-study areas. We assign coral point values to the nearest county in the
-national reference layer and retain assignments to CONUS counties. A public,
-conservation, or BBB polygon in the assigned county receives the value if the
-point falls inside or on its boundary. For mangroves, we use study units identified as U.S.
-units (`ISO3 = 'USA'`) and allocate each unit's value by the analysis area's
-share of that unit's total overlap with CONUS counties.
+The coastal-protection sources describe benefits at coral locations and
+mangrove study areas, which we assign to the assessment's counties and land
+categories as follows:
+
+- **Corals.** We assign each point's value to its nearest county in the
+  national reference layer and retain assignments to CONUS counties. A public,
+  conservation, or BBB polygon in the assigned county receives the value if
+  the point falls inside or on its boundary.
+- **Mangroves.** We use study units identified as U.S. units (`ISO3 = 'USA'`).
+  Each county or land category receives a share of the study unit's value
+  proportional to its overlap with that unit. We calculate these shares using
+  the unit's total overlap with CONUS counties, so only the county-intersected
+  portion determines how the value is distributed.
 
 ### Adjust monetary values
 
-The source valuations use different price years. We apply the price-year
-multipliers in the [adjustment table](data/workflow_assets/county_integration/adjustment_factors.csv):
-1.182 for surface-water provisioning and mangroves; 1.135 for air quality and
-urban heat; 1.065 for wages and inland fisheries; 1.027 for marine fisheries
-and physical health; and 1.368 for corals. Each factor is applied once. The
-table records the source units and service-specific multipliers.
+Because the source data express monetary values in different price years, we
+apply the following price-year adjustments. These multipliers and the source
+units are recorded in the
+[adjustment table](data/workflow_assets/county_integration/adjustment_factors.csv).
+
+| Services | Price-year multiplier |
+| --- | --- |
+| Carbon stock, surface-water provisioning, mangroves | 1.182 |
+| Air quality, urban heat | 1.135 |
+| Wages, inland fisheries | 1.065 |
+| Marine fisheries, physical health | 1.027 |
+| Corals | 1.368 |
+
+Carbon also requires a monetary price: we apply $3.66 per tonne of CO₂e to
+the stock calculated from the density raster. Combined with the price-year
+adjustment, this gives $4.32612 per tonne. The output records the adjusted
+service values and the factors applied to them.
 
 ### Calculate totals and county ratios
 
-We sum the adjusted ecosystem-service estimates for each county and land
-category using the [configured components](data/workflow_assets/county_integration/derived_metrics.yaml).
-Every output includes a total excluding recreation; counties also have a total
-including recreation. We include annual flood benefits and total surface-water
-provisioning in these sums. We report flood net present value and provisioning
-subcategories separately, avoiding their addition to totals that already
-include the corresponding service. Missing estimates contribute zero to the
-sum. The total combines annual benefits, wages, and stock values that may
-overlap economically; it is an assessment summary with mixed time bases.
+We add the adjusted service values to summarize ecosystem-service value in
+each analysis area. The following choices determine how to read those totals:
 
-To compare county ecosystem-service value relative to county size, population,
-and economic activity, we divide the total including recreation by county
-area, NLCD natural area, 2024 Census population, and 2024 BEA GDP. The
-per-hectare comparisons use both the county footprints excluding ocean and
-Great Lakes water and the full county footprints.
+- **Which services are included?** To provide the same basis for comparison
+  across the six layers, we sum the same 18 services in each layer. The
+  [service list](data/workflow_assets/county_integration/derived_metrics.yaml)
+  identifies them. County summaries also include a second total that adds
+  recreation.
+- **How are flood NPV and service subcategories handled?** We include annual
+  flood benefits in the total and report flood NPV separately. For water
+  provisioning and wages, we include the combined value once and retain the
+  subcategories as additional detail.
+- **How do missing estimates affect the total?** Missing values contribute
+  zero to the sum. A blank service field denotes missing data; raster sums
+  with no valid pixels can also be zero.
+- **Is the total an annual value?** It combines annual benefits, wages, and
+  stock values. Some estimates may also overlap economically. Interpret the
+  total as a combined value of the selected estimates, rather than an annual
+  contribution to the economy.
 
-BEA reports some Virginia counties and independent cities as combined areas.
-We split these [combined GDP estimates](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
-by each member's share of the group's 2024 Census population and flag the
-population-based estimates in the output. Ratios with
-missing or nonpositive denominators are blank.
+#### County comparisons
+
+For comparisons among counties of different sizes, we use the total that
+includes recreation and calculate:
+
+- **Value per hectare of county area:** divide by the county's area.
+- **Value per hectare of natural area:** divide by its NLCD natural area.
+- **Value per resident:** divide by its 2024 Census population estimate.
+- **Value relative to GDP:** divide by its 2024 gross domestic product from
+  the U.S. Bureau of Economic Analysis (BEA).
+
+Both per-hectare comparisons are calculated twice: once using areas excluding
+ocean and Great Lakes water, and once using the full county footprint.
+Ratios with missing or nonpositive denominators are blank.
+
+**GDP geography caveat.** BEA combines some Virginia counties and independent
+cities into a single reporting area. To obtain a GDP value for each county or
+city in our analysis, we divide the group's GDP among its members in proportion
+to their 2024 Census populations. The
+[Virginia crosswalk](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
+identifies the groups, and the output flags these population-based estimates.
 
 ## Output fields and units
 
-Each row describes a county, a land category within a county, or a land
-category and manager type within a county. The CSV and GeoPackage contain
-the same attributes; the GeoPackage also contains the polygon geometry in
-EPSG:6933.
+The assessment produces six output layers, each with a CSV and GeoPackage:
+
+1. Counties — `counties`
+2. Public lands by county — `public_lands_by_county`
+3. Public lands by county and manager type — `public_lands_by_county_and_manager_type`
+4. Conservation lands by county — `conservation_lands_by_county`
+5. Conservation lands by county and manager type — `conservation_lands_by_county_and_manager_type`
+6. BBB candidate lands by county — `bbb_lands_by_county`
+
+Each row describes the county, land category, or county–manager combination
+named by its layer. The CSV and GeoPackage contain the same attributes; the
+GeoPackage also contains the polygon geometry in EPSG:6933.
+
+In the tables below, **All outputs** means all six layers; **Counties only**
+means the county summary; **Land categories** means the five other layers,
+including their manager-type breakdowns; and **Manager types** means the two
+layers grouped by both county and manager type.
 
 ### Identifiers and land measurements
 
-| Field | Meaning | Units and layers |
-| --- | --- | --- |
-| `GEOID` | County or county-equivalent identifier; preserve leading zeroes | Five-character code; all layers |
-| `Mang_Type` | PAD-US manager type; `UNSPECIFIED` denotes a missing manager label | Code; the two manager-type layers |
-| `area_ha_land` | Land-only area of the public, conservation, or BBB polygon | Hectares; the five land-category layers |
-| `county_land_share` | Polygon's land area divided by Census county land area; used to allocate county service estimates | Fraction from 0 to 1; the five land-category layers |
-| `area_ha_county_land` | Census county land area (`ALAND / 10,000`) | Hectares; counties |
-| `area_ha_public_lands` | Unduplicated public land area within the county | Hectares; counties |
-| `area_ha_conservation_lands` | Unduplicated conservation land area within the county | Hectares; counties |
-| `area_ha_bbb_lands` | Unduplicated BBB candidate land area within the county | Hectares; counties |
-| `area_ha_public_manager_overlap`, `area_ha_conservation_manager_overlap` | Sum of manager polygon areas minus their union; measures area counted more than once across manager groups, including any water | Hectares; counties |
+| Field | Meaning | Units | Present in |
+| --- | --- | --- | --- |
+| `GEOID` | County or county-equivalent identifier; preserve leading zeroes | Five-character code | All outputs |
+| `Mang_Type` | PAD-US manager type; `UNSPECIFIED` denotes a missing manager label | Code | Manager types |
+| `area_ha_land` | Land-only area of the public, conservation, or BBB polygon | Hectares | Land categories |
+| `county_land_share` | Polygon's land area divided by Census county land area; used to allocate county service estimates | Fraction from 0 to 1 | Land categories |
+| `area_ha_county_land` | Census county land area (`ALAND / 10,000`) | Hectares | Counties only |
+| `area_ha_public_lands` | Unduplicated public land area within the county | Hectares | Counties only |
+| `area_ha_conservation_lands` | Unduplicated conservation land area within the county | Hectares | Counties only |
+| `area_ha_bbb_lands` | Unduplicated BBB candidate land area within the county | Hectares | Counties only |
+| `area_ha_public_manager_overlap`, `area_ha_conservation_manager_overlap` | Sum of manager polygon areas minus their union; measures area counted more than once across manager groups, including any water | Hectares | Counties only |
+| `NAME`, `NAMELSAD` | Census county names | Text | Counties only |
+| `STATEFP`, `COUNTYFP` and other Census identifiers | Source geographic codes | Codes | Counties only |
+| `ALAND`, `AWATER` | Census land and water area | Square metres | Counties only |
+| `INTPTLAT`, `INTPTLON` | Latitude and longitude of the Census internal point | Degrees | Counties only |
 
-The county output also retains Census attributes, including `NAME` and
-`NAMELSAD` (names), `STATEFP` and `COUNTYFP` (codes), `ALAND` and `AWATER`
-(square metres), and `INTPTLAT` and `INTPTLON` (internal-point latitude and
-longitude in degrees). These source attributes are separate from the
+The county output retains the source Census attributes alongside the
 calculated reporting areas below.
 
 ### Ecosystem-service values
 
 The fields below contain adjusted monetary totals for each row's analysis
-area, not per-pixel or per-hectare rates. All six layers have these fields
-except recreation, which is county-only. `USD/year` identifies an explicitly
-annual estimate; `USD` alone does not establish a benefit period. All dollar
-values include the configured adjustments.
+area. All values are in U.S. dollars. The units column distinguishes annual
+estimates, carbon-stock value, and flood NPV; the "Present in" column
+identifies the layers containing each value.
 
-| Field | Value represented | Units |
-| --- | --- | --- |
-| `sum_pollination_attributed_annual_crop_yield_value_adj` | Annual crop-yield value attributed to pollination | USD/year |
-| `sum_CO2e_mitigation_dollar_value_per_pixel_adj` | Value of the mapped 2020 carbon stock, summed over the analysis area | USD, stock value |
-| `sum_avoided_dredging_costs_raster_adj` | Avoided dredging costs | USD |
-| `sum_avoided_sdwa_health_costs_raster_adj` | Avoided drinking-water health costs | USD |
-| `sum_avoided_treatment_costs_raster_adj` | Avoided water-treatment costs | USD |
-| `sum_Wval_sw_2020usd_total_adj` | Total surface-water provisioning value | USD |
-| `sum_Wval_sw_2020usd_irr_adj` | Irrigation component of surface-water provisioning | USD |
-| `sum_Wval_sw_2020usd_pow_adj` | Power-generation component of surface-water provisioning | USD |
-| `sum_Wval_sw_2020usd_pub_adj` | Public-water-supply component of surface-water provisioning | USD |
-| `sum_flood_annual_value_masked_to_wetlands_adj` | Annual wetland flood-mitigation value | USD/year |
-| `sum_flood_marginal_npv_masked_to_wetlands_adj` | Net present value of wetland flood mitigation | USD, present value |
-| `sum_mental_health_national_existing_greenness_cost_90m_adj` | Mental-health benefits of existing greenness | USD |
-| `sum_aeb_coral_BC_USD11_adj` | Coastal-protection value from coral points assigned to the area | USD |
-| `sum_mangrove_coastal_flood_protection_value_adj` | Coastal flood-protection value allocated from mangrove study units | USD |
-| `air_quality_avoided_mortality_annual_value_adj` | Annual value of deaths avoided through air-quality benefits | USD/year |
-| `grazing_adj` | Annual forage value | USD/year |
-| `timber_adj` | Annual timber rent | USD/year |
-| `jobs_cultural_adj`, `jobs_raw_materials_adj`, `jobs_processing_adj`, `jobs_harvesting_adj` | Wages in the four nature-related sectors; not numbers of jobs | USD |
-| `jobs_adj` | Total wages across those four sectors | USD |
-| `marine_fisheries_adj`, `inland_fisheries_adj` | Shares of the supplied state fisheries values | USD |
-| `urban_heat_adj` | Urban-heat mitigation value | USD |
-| `physical_health_adj` | Physical-health value from the hypertension estimates | USD |
-| `recreation_adj` | Annual recreation use value for protected areas; counties only | USD/year |
-| `total_ecosystem_services` | Sum of the 18 selected service components, excluding recreation | USD, mixed benefit periods |
-| `total_ecosystem_services_w_rec` | The same total plus recreation; counties only | USD, mixed benefit periods |
+| Field | Value represented | Units | Present in |
+| --- | --- | --- | --- |
+| `sum_pollination_attributed_annual_crop_yield_value_adj` | Annual crop-yield value attributed to pollination | USD/year | All outputs |
+| `sum_CO2e_mitigation_dollar_value_per_pixel_adj` | Value of the mapped 2020 carbon stock, summed over the analysis area | USD, stock value | All outputs |
+| `sum_avoided_dredging_costs_raster_adj` | Avoided dredging costs | USD | All outputs |
+| `sum_avoided_sdwa_health_costs_raster_adj` | Avoided drinking-water health costs | USD | All outputs |
+| `sum_avoided_treatment_costs_raster_adj` | Avoided water-treatment costs | USD | All outputs |
+| `sum_Wval_sw_2020usd_total_adj` | Total surface-water provisioning value | USD | All outputs |
+| `sum_Wval_sw_2020usd_irr_adj` | Irrigation component of surface-water provisioning | USD | All outputs |
+| `sum_Wval_sw_2020usd_pow_adj` | Power-generation component of surface-water provisioning | USD | All outputs |
+| `sum_Wval_sw_2020usd_pub_adj` | Public-water-supply component of surface-water provisioning | USD | All outputs |
+| `sum_flood_annual_value_masked_to_wetlands_adj` | Annual wetland flood-mitigation value | USD/year | All outputs |
+| `sum_flood_marginal_npv_masked_to_wetlands_adj` | Net present value of wetland flood mitigation | USD, present value | All outputs |
+| `sum_mental_health_national_existing_greenness_cost_90m_adj` | Mental-health benefits of existing greenness | USD | All outputs |
+| `sum_aeb_coral_BC_USD11_adj` | Coastal-protection value from coral points assigned to the area | USD | All outputs |
+| `sum_mangrove_coastal_flood_protection_value_adj` | Coastal flood-protection value allocated from mangrove study units | USD | All outputs |
+| `air_quality_avoided_mortality_annual_value_adj` | Annual value of deaths avoided through air-quality benefits | USD/year | All outputs |
+| `grazing_adj` | Annual forage value | USD/year | All outputs |
+| `timber_adj` | Annual timber rent | USD/year | All outputs |
+| `jobs_cultural_adj`, `jobs_raw_materials_adj`, `jobs_processing_adj`, `jobs_harvesting_adj` | Wages in the four nature-related sectors; not numbers of jobs | USD | All outputs |
+| `jobs_adj` | Total wages across those four sectors | USD | All outputs |
+| `marine_fisheries_adj`, `inland_fisheries_adj` | Shares of the supplied state fisheries values | USD | All outputs |
+| `urban_heat_adj` | Urban-heat mitigation value | USD | All outputs |
+| `physical_health_adj` | Physical-health value from the hypertension estimates | USD | All outputs |
+| `recreation_adj` | Annual recreation use value for protected areas | USD/year | Counties only |
+| `total_ecosystem_services` | Sum of the 18 selected service components, excluding recreation | USD, mixed benefit periods | All outputs |
+| `total_ecosystem_services_w_rec` | The same total plus recreation | USD, mixed benefit periods | Counties only |
 
 The totals include the provisioning total and wage total once, not their
 subcategories as additional benefits. Flood NPV is reported separately from
@@ -328,16 +399,17 @@ Most are price-year multipliers, but the area conversions and carbon price
 have different units. These are the default values in the
 [adjustment table](data/workflow_assets/county_integration/adjustment_factors.csv):
 
-| Factor fields | Value | Meaning and units |
-| --- | --- | --- |
-| `pollination_adj_factor`, `flood_annual_adj_factor`, `flood_npv_adj_factor` | 0.09 | Hectares per 30 m pixel; converts the sum of per-hectare raster values to a monetary total |
-| `carbon_pixel_adj_factor` | 4.32612 | Adjusted USD per tonne CO₂e (`3.66 × 1.182`), applied after the separate 0.09-hectare conversion |
-| `provisioning_adj_factor`, `provisioning_irr_adj_factor`, `provisioning_pow_adj_factor`, `provisioning_pub_adj_factor`, `mangroves_adj_factor` | 1.182 | Price-year multiplier, dimensionless |
-| `air_quality_avoided_mortality_annual_value_adj_factor`, `urban_heat_adj_factor` | 1.135 | Price-year multiplier, dimensionless |
-| `jobs_adj_factor`, `jobs_cultural_adj_factor`, `jobs_raw_materials_adj_factor`, `jobs_processing_adj_factor`, `jobs_harvesting_adj_factor`, `inland_fisheries_adj_factor` | 1.065 | Price-year multiplier, dimensionless |
-| `marine_fisheries_adj_factor`, `physical_health_adj_factor` | 1.027 | Price-year multiplier, dimensionless |
-| `corals_adj_factor` | 1.368 | Price-year multiplier, dimensionless |
-| `dredging_adj_factor`, `sdwa_adj_factor`, `water_treatment_adj_factor`, `grazing_adj_factor`, `timber_adj_factor`, `mental_health_adj_factor`, `recreation_adj_factor` | 1 | No additional monetary scaling; dimensionless. Recreation's factor is county-only. |
+| Factor fields | Value | Meaning and units | Present in |
+| --- | --- | --- | --- |
+| `pollination_adj_factor`, `flood_annual_adj_factor`, `flood_npv_adj_factor` | 0.09 | Hectares per 30 m pixel; converts the sum of per-hectare raster values to a monetary total | All outputs |
+| `carbon_pixel_adj_factor` | 4.32612 | Adjusted USD per tonne CO₂e (`3.66 × 1.182`), applied after the separate 0.09-hectare conversion | All outputs |
+| `provisioning_adj_factor`, `provisioning_irr_adj_factor`, `provisioning_pow_adj_factor`, `provisioning_pub_adj_factor`, `mangroves_adj_factor` | 1.182 | Price-year multiplier, dimensionless | All outputs |
+| `air_quality_avoided_mortality_annual_value_adj_factor`, `urban_heat_adj_factor` | 1.135 | Price-year multiplier, dimensionless | All outputs |
+| `jobs_adj_factor`, `jobs_cultural_adj_factor`, `jobs_raw_materials_adj_factor`, `jobs_processing_adj_factor`, `jobs_harvesting_adj_factor`, `inland_fisheries_adj_factor` | 1.065 | Price-year multiplier, dimensionless | All outputs |
+| `marine_fisheries_adj_factor`, `physical_health_adj_factor` | 1.027 | Price-year multiplier, dimensionless | All outputs |
+| `corals_adj_factor` | 1.368 | Price-year multiplier, dimensionless | All outputs |
+| `dredging_adj_factor`, `sdwa_adj_factor`, `water_treatment_adj_factor`, `grazing_adj_factor`, `timber_adj_factor`, `mental_health_adj_factor` | 1 | No additional monetary scaling; dimensionless. | All outputs |
+| `recreation_adj_factor` | 1 | Source value in 2024 dollars; dimensionless multiplier | Counties only |
 
 ### County areas and comparisons
 
@@ -347,24 +419,24 @@ retain other inland water. Their `_incl_ocean_great_lakes` companions use the
 full county polygon. Neither version changes the land-only areas used to
 allocate county service estimates.
 
-| Field | Meaning | Units |
-| --- | --- | --- |
-| `area_ha_county` | County area excluding ocean and Great Lakes water | Hectares |
-| `area_ha_county_incl_ocean_great_lakes` | Full county polygon area | Hectares |
-| `area_ha_valid_nlcd` | Area with valid NLCD data after excluding ocean and Great Lakes water, including natural and other land-cover classes | Hectares |
-| `area_ha_nlcd_forests`, `area_ha_nlcd_grasslands`, `area_ha_nlcd_shrubland`, `area_ha_nlcd_water_snow`, `area_ha_nlcd_wetlands` | Area of each NLCD class after excluding ocean and Great Lakes water | Hectares |
-| `area_ha_all_natural` | Sum of those five class areas | Hectares |
-| `area_ha_all_natural_incl_ocean_great_lakes` | The same five classes measured over the full county; NoData is not counted | Hectares |
-| `proportion_nlcd_<class>_of_valid` | Class area divided by valid NLCD coverage; `<class>` is `forests`, `grasslands`, `shrubland`, `water_snow`, or `wetlands` | Fraction from 0 to 1; blank without valid coverage |
-| `ratio_public_lands_to_county_area`, `ratio_conservation_lands_to_county_area`, `ratio_bbb_lands_to_county_area` | Category's land-only hectares divided by `area_ha_county` | Fraction, not percent |
-| Each of the three ratio names above with `_incl_ocean_great_lakes` appended | Same numerator divided by full county area | Fraction, not percent |
-| `GDP_2024` | 2024 county GDP, including population-based allocations where needed | USD; source thousands converted to dollars |
-| `GDP_2024_is_allocated` | Whether GDP was allocated from a combined Virginia area | 1 = allocated; 0 = otherwise |
-| `Pop_2024` | Estimated county population in 2024 | People |
-| `es_per_ha`, `es_per_ha_incl_ocean_great_lakes` | County total including recreation divided by the corresponding county area | USD/hectare |
-| `es_per_ha_natural`, `es_per_ha_natural_incl_ocean_great_lakes` | County total including recreation divided by the corresponding natural area | USD/hectare |
-| `es_per_capita` | County total including recreation divided by population | USD/person |
-| `es_per_gdp` | County total including recreation divided by GDP | USD/USD ratio, not percent |
+| Field | Meaning | Units | Present in |
+| --- | --- | --- | --- |
+| `area_ha_county` | County area excluding ocean and Great Lakes water | Hectares | Counties only |
+| `area_ha_county_incl_ocean_great_lakes` | Full county polygon area | Hectares | Counties only |
+| `area_ha_valid_nlcd` | Area with valid NLCD data after excluding ocean and Great Lakes water, including natural and other land-cover classes | Hectares | Counties only |
+| `area_ha_nlcd_forests`, `area_ha_nlcd_grasslands`, `area_ha_nlcd_shrubland`, `area_ha_nlcd_water_snow`, `area_ha_nlcd_wetlands` | Area of each NLCD class after excluding ocean and Great Lakes water | Hectares | Counties only |
+| `area_ha_all_natural` | Sum of those five class areas | Hectares | Counties only |
+| `area_ha_all_natural_incl_ocean_great_lakes` | The same five classes measured over the full county; NoData is not counted | Hectares | Counties only |
+| `proportion_nlcd_<class>_of_valid` | Class area divided by valid NLCD coverage; `<class>` is `forests`, `grasslands`, `shrubland`, `water_snow`, or `wetlands` | Fraction from 0 to 1; blank without valid coverage | Counties only |
+| `ratio_public_lands_to_county_area`, `ratio_conservation_lands_to_county_area`, `ratio_bbb_lands_to_county_area` | Category's land-only hectares divided by `area_ha_county` | Fraction, not percent | Counties only |
+| Each of the three ratio names above with `_incl_ocean_great_lakes` appended | Same numerator divided by full county area | Fraction, not percent | Counties only |
+| `GDP_2024` | 2024 county GDP, including population-based allocations where needed | USD; source thousands converted to dollars | Counties only |
+| `GDP_2024_is_allocated` | Whether GDP was allocated from a combined Virginia area | 1 = allocated; 0 = otherwise | Counties only |
+| `Pop_2024` | Estimated county population in 2024 | People | Counties only |
+| `es_per_ha`, `es_per_ha_incl_ocean_great_lakes` | County total including recreation divided by the corresponding county area | USD/hectare | Counties only |
+| `es_per_ha_natural`, `es_per_ha_natural_incl_ocean_great_lakes` | County total including recreation divided by the corresponding natural area | USD/hectare | Counties only |
+| `es_per_capita` | County total including recreation divided by population | USD/person | Counties only |
+| `es_per_gdp` | County total including recreation divided by GDP | USD/USD ratio, not percent | Counties only |
 
 Only the combined natural-area total has an inclusive companion; the five
 class areas and their proportions use the footprint excluding ocean and
