@@ -24,20 +24,21 @@ sources together for each area it reports.
    lands, both in total and by manager type. A separate
    [BBB analysis](#identify-bbb-candidate-lands) estimates the value of services
    on lands that meet the mapped criteria of the sale proposal.
-2. [Measure the areas](#measure-area-and-shoreline) and
-   [summarize mapped values](#summarize-raster-values). Measurements of land
-   area, shoreline length, and inland water area support comparisons and
-   allocations. Sum the raster estimates within each analysis area.
-3. [Combine and allocate service estimates](#allocate-service-values). Match
-   county estimates to each county. Use land shares to allocate values such
-   as grazing and timber to selected lands. State fisheries estimates are
-   allocated by shoreline length or inland water area, and coastal protection
-   estimates are assigned using mapped coral sites and mangrove study areas.
+2. [Measure land and water](#measure-area-and-shoreline) and
+   [summarize mapped ecosystem services](#summarize-raster-values). Measure
+   land, county, and natural areas, shoreline length, and inland water area.
+   For services mapped as rasters, such as carbon stock and flood mitigation,
+   sum the values within each analysis area.
+3. [Allocate ecosystem-service estimates](#allocate-service-values). Join
+   county estimates for grazing, timber, jobs, air quality, urban heat, and
+   physical health to the counties they describe. Use land shares to allocate
+   those values to selected lands. Fisheries estimates use shoreline length or
+   inland water area; coastal protection estimates use coral locations and
+   mangrove study areas.
 4. [Calculate and report the results](#calculate-totals-and-county-ratios).
-   Combine service values into totals and calculate county ratios. For the
-   GDP ratios, divide combined Virginia GDP estimates among counties and
-   independent cities by population. Save each layer as a
-   [CSV and GeoPackage pair](#4-find-the-output-files).
+   Report total ecosystem-service value and county ratios such as value per
+   hectare, value per resident, and value relative to county GDP. Save each
+   layer as a [CSV and GeoPackage pair](#4-find-the-output-files).
 
 ## Methods
 
