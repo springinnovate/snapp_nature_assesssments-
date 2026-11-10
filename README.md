@@ -266,8 +266,8 @@ state's eligible shoreline or water area, measured across the state's counties.
 - **Inland fisheries.** We multiply the state value by each area's share of
   NHD water area.
 
-  *Adjustment to source data:* We exclude the Great Lakes and, in Utah,
-  Great Salt Lake from the water-area weights before calculating the shares.
+  *Adjustment to source data:* We exclude the Great Lakes and the Great Salt
+  Lake from the water-area weights before calculating the shares.
 
 #### Site- and study-area-based services: coastal protection
 
