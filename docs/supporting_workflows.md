@@ -174,3 +174,19 @@ python finalize_county_ecosystem_services.py --county-results '<adjusted county 
 ```
 
 The finalizer copies the values and geometry unchanged and writes a new pair in the same default output directory. Add `--output '<new output.gpkg>'` to set the destination. It reads the corrected NLCD areas from the input or the configured mask-area GeoPackage. See the [county valuation methods](county_valuation_integration_2026.md) for output field definitions.
+
+## Regenerate the README maps
+
+Use the assessment's Python environment with Matplotlib installed. From the
+repository root, select a completed CONUS assessment run:
+
+```cmd
+python docs\render_readme_maps.py --assessment-run "data\analysis_results\assessment_runs\<run-id>"
+```
+
+The script reads the run's county, public-land, conservation-land, and BBB
+GeoPackages, plus the local U.S. boundary, NHD water polygons, and lake-exclusion
+tables. It writes three PNG figures to `docs/images/` and records the source
+paths, SHA-256 hashes, projection, and display settings in
+[`map_sources.json`](images/map_sources.json). Use `--output-dir` to write a
+separate preview. The water figures include all source feature sizes.
