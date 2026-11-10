@@ -1,6 +1,7 @@
 """Exercise the CONUS assessment wrapper without running production analysis."""
 
 import json
+from importlib.util import find_spec
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
@@ -14,6 +15,11 @@ import pyogrio
 from shapely.geometry import MultiPolygon, Point, box
 
 import run_conus_ecosystem_services as wrapper
+
+if find_spec("matplotlib") is not None:
+    from docs.render_readme_maps import read_assessment_products
+else:
+    read_assessment_products = None
 
 
 class ConusEcosystemServicesTests(unittest.TestCase):
@@ -181,12 +187,19 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             ("Publish six CSV and GeoPackage pairs", "complete"),
         ])
         self.assertEqual(set(manifest["outputs"]), set(wrapper.ZONE_PRODUCTS))
+        self.assertEqual(
+            {path.name for path in self.results.iterdir()},
+            {"run_manifest.json"} | {
+                f"{product}_{self.run_id}.{extension}"
+                for product in wrapper.ZONE_PRODUCTS for extension in ("csv", "gpkg")
+            },
+        )
+        self.assertTrue(all(path.is_file() for path in self.results.iterdir()))
         for product, record in manifest["outputs"].items():
             with self.subTest(product=product):
-                gpkg = self.results / product / f"{product}_{self.run_id}.gpkg"
+                gpkg = self.results / f"{product}_{self.run_id}.gpkg"
                 csv_path = gpkg.with_suffix(".csv")
                 self.assertEqual(record, {"csv": str(csv_path), "gpkg": str(gpkg), "rows": 1})
-                self.assertCountEqual(gpkg.parent.iterdir(), [csv_path, gpkg])
                 attributes = pd.read_csv(csv_path, dtype={"GEOID": str})
                 self.assertEqual(attributes.GEOID.tolist(), ["01001"])
                 self.assertEqual("recreation_adj" in attributes, product == "counties")
@@ -195,45 +208,71 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         """Revalue saved sums in a new directory without changing the source run."""
         self.assertEqual(self.run_wrapper(), self.results)
         source_manifest = self.results / "run_manifest.json"
-        source_bytes = source_manifest.read_bytes()
         frozen_bytes = self.frozen.read_bytes()
-        reused = self.results.with_name("revalued")
-        args = wrapper.parse_args(["--reuse-zonals-from", self.run_id, "--run-id", reused.name])
         existing_plan = SimpleNamespace(skipped_products=())
         raw = self.work / "raw_zonals"
         fake_sums = {"saved": object()}
-        with (
-            patch.object(wrapper.subprocess, "run") as subprocess_run,
-            patch.object(wrapper, "validate_zone_raster_inputs") as inspect_tiffs,
-            patch.object(wrapper, "freeze_zone_zonals") as freeze,
-            patch.object(wrapper, "load_valuation_config", return_value=({"air_quality_county_aliases": self.air_aliases}, None, None, {
-                "sources": {"gdp": {"path": "gdp.csv"}}})),
-            patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan) as reconstruct,
-            patch.object(wrapper, "read_zone_raster_sums", return_value=fake_sums) as read_sums,
-            patch.object(wrapper, "value_zones", side_effect=self.fake_valuation) as value,
-        ):
-            self.assertEqual(wrapper.run_assessment(args, root=self.root), reused)
-        subprocess_run.assert_not_called()
-        inspect_tiffs.assert_not_called()
-        freeze.assert_not_called()
-        read_sums.assert_called_once_with(existing_plan)
-        self.assertIs(value.call_args.args[1], fake_sums)
-        zones, frozen, work_dir, raw_dir = reconstruct.call_args.args
-        self.assertEqual((frozen, work_dir, raw_dir), (self.frozen, self.work / "zonal_stats_work", raw))
-        self.assertEqual(zones["counties"], (self.zone_root / "counties" / f"counties_{self.run_id}.gpkg", "counties"))
-        self.assertEqual(source_manifest.read_bytes(), source_bytes)
-        self.assertEqual(self.frozen.read_bytes(), frozen_bytes)
-        self.assertFalse(self.work.with_name(reused.name).exists())
-        manifest = json.loads((reused / "run_manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["status"], "complete")
-        self.assertEqual(manifest["reused_zonals_from"], {"run_id": self.run_id, "manifest": str(source_manifest)})
-        self.assertEqual(manifest["configuration_sha256"][str(self.air_aliases)],
-                         wrapper.sha256(self.air_aliases))
-        self.assertEqual(manifest["stages"]["Verify reused raster zonals"], "complete")
-        self.assertNotIn("Run and verify raster zonals", manifest["stages"])
-        for product, record in manifest["outputs"].items():
-            self.assertTrue(Path(record["csv"]).is_file())
-            self.assertEqual(Path(record["gpkg"]), reused / product / f"{product}_{reused.name}.gpkg")
+        for layout in ("flat", "nested"):
+            with self.subTest(source_layout=layout):
+                if layout == "nested":
+                    original = json.loads(source_manifest.read_text(encoding="utf-8"))
+                    for product, record in original["outputs"].items():
+                        (self.results / product).mkdir()
+                        for extension in ("csv", "gpkg"):
+                            path = Path(record[extension])
+                            nested_path = self.results / product / path.name
+                            path.rename(nested_path)
+                            record[extension] = str(nested_path)
+                    source_manifest.write_text(json.dumps(original), encoding="utf-8")
+                source_files = {
+                    path: path.read_bytes() for path in self.results.rglob("*") if path.is_file()
+                }
+                reused = self.results.with_name(f"revalued-{layout}")
+                args = wrapper.parse_args(["--reuse-zonals-from", self.run_id, "--run-id", reused.name])
+                with (
+                    patch.object(wrapper.subprocess, "run") as subprocess_run,
+                    patch.object(wrapper, "validate_zone_raster_inputs") as inspect_tiffs,
+                    patch.object(wrapper, "freeze_zone_zonals") as freeze,
+                    patch.object(wrapper, "load_valuation_config", return_value=({"air_quality_county_aliases": self.air_aliases}, None, None, {
+                        "sources": {"gdp": {"path": "gdp.csv"}}})),
+                    patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan) as reconstruct,
+                    patch.object(wrapper, "read_zone_raster_sums", return_value=fake_sums) as read_sums,
+                    patch.object(wrapper, "value_zones", side_effect=self.fake_valuation) as value,
+                ):
+                    self.assertEqual(wrapper.run_assessment(args, root=self.root), reused)
+                subprocess_run.assert_not_called()
+                inspect_tiffs.assert_not_called()
+                freeze.assert_not_called()
+                read_sums.assert_called_once_with(existing_plan)
+                self.assertIs(value.call_args.args[1], fake_sums)
+                zones, frozen, work_dir, raw_dir = reconstruct.call_args.args
+                self.assertEqual((frozen, work_dir, raw_dir), (self.frozen, self.work / "zonal_stats_work", raw))
+                self.assertEqual(zones["counties"], (self.zone_root / "counties" / f"counties_{self.run_id}.gpkg", "counties"))
+                self.assertEqual(
+                    {path: path.read_bytes() for path in self.results.rglob("*") if path.is_file()},
+                    source_files,
+                )
+                self.assertEqual(self.frozen.read_bytes(), frozen_bytes)
+                self.assertFalse(self.work.with_name(reused.name).exists())
+                manifest = json.loads((reused / "run_manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["status"], "complete")
+                self.assertEqual(manifest["reused_zonals_from"], {"run_id": self.run_id, "manifest": str(source_manifest)})
+                self.assertEqual(manifest["configuration_sha256"][str(self.air_aliases)],
+                                 wrapper.sha256(self.air_aliases))
+                self.assertEqual(manifest["stages"]["Verify reused raster zonals"], "complete")
+                self.assertNotIn("Run and verify raster zonals", manifest["stages"])
+                self.assertEqual(set(manifest["outputs"]), set(wrapper.ZONE_PRODUCTS))
+                self.assertEqual(
+                    {path.name for path in reused.iterdir()},
+                    {"run_manifest.json"} | {
+                        f"{product}_{reused.name}.{extension}"
+                        for product in wrapper.ZONE_PRODUCTS for extension in ("csv", "gpkg")
+                    },
+                )
+                self.assertTrue(all(path.is_file() for path in reused.iterdir()))
+                for product, record in manifest["outputs"].items():
+                    gpkg = reused / f"{product}_{reused.name}.gpkg"
+                    self.assertEqual(record, {"csv": str(gpkg.with_suffix(".csv")), "gpkg": str(gpkg), "rows": 1})
 
     def test_reuse_refuses_a_run_with_unverified_raster_sums(self) -> None:
         """Stop before creating outputs when the source zonals did not finish."""
@@ -280,6 +319,84 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         for path in (self.results, self.work, self.frozen):
             self.assertFalse(path.exists())
+
+
+@unittest.skipIf(read_assessment_products is None, "README map checks require optional Matplotlib")
+class ReadmeMapRunTests(unittest.TestCase):
+    """Check that maps use only the explicitly selected run's recorded files."""
+
+    def setUp(self) -> None:
+        """Create an explicit run manifest with the five map source products."""
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.run_dir = Path(temporary.name).resolve() / "mapped-run"
+        self.run_dir.mkdir()
+        self.manifest_path = self.run_dir / "run_manifest.json"
+        self.names = (
+            "counties", "public_lands_by_county", "public_lands_by_county_and_manager_type",
+            "conservation_lands_by_county", "bbb_lands_by_county",
+        )
+        self.manifest = {
+            "run_id": self.run_dir.name, "geographic_scope": "CONUS", "status": "complete",
+            "outputs": {},
+        }
+        for name in self.names:
+            path = self.run_dir / f"{name}_{self.run_dir.name}.gpkg"
+            path.touch()
+            self.manifest["outputs"][name] = {"gpkg": str(path)}
+
+    def test_manifest_resolves_flat_and_legacy_nested_outputs(self) -> None:
+        """Read absolute or run-relative paths without guessing from other files."""
+        (self.run_dir / "unrecorded.gpkg").touch()
+        for layout in ("flat", "nested"):
+            for relative in (False, True):
+                with self.subTest(layout=layout, relative=relative):
+                    expected = {}
+                    for name in self.names:
+                        directory = self.run_dir / name if layout == "nested" else self.run_dir
+                        directory.mkdir(exist_ok=True)
+                        path = directory / f"{name}_{self.run_dir.name}.gpkg"
+                        path.touch()
+                        (directory / "unrecorded.gpkg").touch()
+                        self.manifest["outputs"][name]["gpkg"] = str(
+                            path.relative_to(self.run_dir) if relative else path
+                        )
+                        expected[name] = path
+                    self.manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+                    self.assertEqual(read_assessment_products(self.run_dir), expected)
+
+    def test_manifest_rejects_unexpected_or_missing_product_paths(self) -> None:
+        """Reject unrelated products, another run, traversal, and missing files."""
+        filename = f"counties_{self.run_dir.name}.gpkg"
+        outside = self.run_dir.parent / filename
+        outside.touch()
+        wrong_name = self.run_dir / "counties_other-run.gpkg"
+        wrong_name.touch()
+        wrong_product = Path(self.manifest["outputs"]["public_lands_by_county"]["gpkg"])
+        for recorded in (
+            str(outside), f"../{filename}", str(wrong_name), str(wrong_product),
+            str(self.run_dir / "counties" / filename),
+        ):
+            with self.subTest(recorded=recorded):
+                self.manifest["outputs"]["counties"]["gpkg"] = recorded
+                self.manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unexpected GeoPackage path for counties"):
+                    read_assessment_products(self.run_dir)
+        for record in ({}, {"gpkg": ""}, {"gpkg": None}):
+            with self.subTest(record=record):
+                self.manifest["outputs"]["counties"] = record
+                self.manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Missing manifest GeoPackage path for counties"):
+                    read_assessment_products(self.run_dir)
+
+    def test_manifest_requires_selected_completed_conus_run(self) -> None:
+        """Reject an unfinished run, unrelated run ID, or other geography."""
+        for key, value in (("status", "failed"), ("run_id", "other-run"), ("geographic_scope", "US")):
+            with self.subTest(key=key):
+                invalid = self.manifest | {key: value}
+                self.manifest_path.write_text(json.dumps(invalid), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Choose a completed CONUS assessment run"):
+                    read_assessment_products(self.run_dir)
 
 
 if __name__ == "__main__":

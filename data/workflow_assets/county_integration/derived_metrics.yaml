@@ -105,3 +105,11 @@ county_footprint_ratios:
     ratio_public_lands_to_county_area: area_ha_public_lands
     ratio_conservation_lands_to_county_area: area_ha_conservation_lands
     ratio_bbb_lands_to_county_area: area_ha_bbb_lands
+
+# County-only value shares: each product's total_ecosystem_services divided
+# by the matching county's total_ecosystem_services, excluding recreation.
+# Use county unions, not the potentially overlapping manager-type products.
+county_ecosystem_service_ratios:
+  ratio_public_lands_to_county_ecosystem_services: public_lands_by_county
+  ratio_conservation_lands_to_county_ecosystem_services: conservation_lands_by_county
+  ratio_bbb_lands_to_county_ecosystem_services: bbb_lands_by_county

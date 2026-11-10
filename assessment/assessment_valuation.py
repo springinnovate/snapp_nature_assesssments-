@@ -92,6 +92,53 @@ def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.D
     return paths, factors, rules, derived
 
 
+def calculate_county_service_shares(
+    products: Mapping[str, pd.DataFrame], ratios: Mapping[str, str]
+) -> pd.DataFrame:
+    """Compare land-category service totals with their county totals.
+
+    Args:
+        products: Valued products containing GEOID and total_ecosystem_services.
+        ratios: Output field names mapped to by-county land products.
+
+    Returns:
+        Ratio columns in county row order, using totals excluding recreation.
+        An absent land-category row contributes zero. Missing totals and
+        nonpositive or nonfinite county denominators produce NaN.
+
+    Raises:
+        ValueError: Products, county keys, or output names are invalid.
+    """
+    expected = {"public_lands_by_county", "conservation_lands_by_county", "bbb_lands_by_county"}
+    if len(ratios) != len(expected) or set(ratios.values()) != expected:
+        raise ValueError("County service shares require the three by-county land products")
+    counties = products["counties"]
+    if set(ratios).intersection(counties.columns):
+        raise ValueError("County service-share fields collide with existing attributes")
+    totals = {}
+    for product in ("counties", *ratios.values()):
+        frame = products[product]
+        ids = pd.Index(frame["GEOID"].astype("string"), name="GEOID")
+        if not ids.is_unique or not ids.str.fullmatch(r"\d{5}").fillna(False).all():
+            raise ValueError(f"{product}: service shares require unique five-character GEOIDs")
+        values = pd.to_numeric(frame["total_ecosystem_services"], errors="raise")
+        totals[product] = pd.Series(values.to_numpy(dtype=float, na_value=np.nan), index=ids)
+    county_total = totals["counties"]
+    denominator = county_total.to_numpy()
+    usable = np.isfinite(denominator) & (denominator > 0)
+    shares = pd.DataFrame(index=counties.index)
+    for output, product in ratios.items():
+        if not totals[product].index.isin(county_total.index).all():
+            raise ValueError(f"{product}: service shares contain GEOIDs absent from counties")
+        # Only absent category rows become zero; observed missing totals stay missing.
+        numerator = totals[product].reindex(county_total.index, fill_value=0.0).to_numpy()
+        shares[output] = np.divide(
+            numerator, denominator, out=np.full(len(counties), np.nan),
+            where=usable & np.isfinite(numerator),
+        )
+    return shares
+
+
 def value_zones(
     zones: Mapping[str, gpd.GeoDataFrame],
     raster_sums: Mapping[str, pd.DataFrame],
@@ -244,6 +291,8 @@ def value_zones(
             raise ValueError(f"{product}: exported valuation fields collide with zone attributes")
         result_frames[product] = gpd.GeoDataFrame(pd.concat([zone, adjusted], axis=1),
                                                  geometry=zone.geometry.name, crs=zone.crs)
+    county_shares = calculate_county_service_shares(result_frames, derived["county_ecosystem_service_ratios"])
+    result_frames["counties"] = pd.concat([result_frames["counties"], county_shares], axis=1)
     return result_frames, county_audits, {
         "total_components": non_recreation_components,
         "blank_component_rows": coverage,
@@ -258,7 +307,7 @@ def write_zone_pair(
 
     Args:
         frame: Prepared geometry and adjusted attributes for a product.
-        destination: New GeoPackage path under its product directory.
+        destination: New GeoPackage path in the selected output directory.
         product: GeoPackage feature layer name.
         tables: Optional provenance tables to embed alongside the feature layer.
 
