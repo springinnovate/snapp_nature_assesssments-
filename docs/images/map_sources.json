@@ -19,6 +19,11 @@
       "bytes": 325414912
     },
     {
+      "path": "data/analysis_results/assessment_runs/20261107T064228536906Z-paired-county-areas/public_lands_by_county_and_manager_type/public_lands_by_county_and_manager_type_20261107T064228536906Z-paired-county-areas.gpkg",
+      "sha256": "0d3956c56d899d4179fd670fa045718284b6eb05b1b7a4daae78ddb5dbb8a8f2",
+      "bytes": 373760000
+    },
+    {
       "path": "data/analysis_results/assessment_runs/20261107T064228536906Z-paired-county-areas/conservation_lands_by_county/conservation_lands_by_county_20261107T064228536906Z-paired-county-areas.gpkg",
       "sha256": "a3c31b37a7d63b71c7bebe8d3c01d69b8602205ed1b87d90f1128352fef087f0",
       "bytes": 255152128
@@ -47,6 +52,56 @@
       "path": "data/workflow_assets/county_integration/inland_fisheries_exclusions.csv",
       "sha256": "446cbdbe5a942073bdc3ef0f6d5d6ffe596e541f9676f361004cc243ca0806c4",
       "bytes": 909
+    },
+    {
+      "path": "data/workflow_assets/zonal_stats/snapp_assessment_nlcd_masks.yaml",
+      "sha256": "25d0800721406b13492eef178ea85125586a58f8b555aaf8b15a2dbce14704ee",
+      "bytes": 2012
+    },
+    {
+      "path": "data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml",
+      "sha256": "89098d6fad856c0b08b0182b97c042ccdd6e689ee3a1c08e5ea845f0b6b8d160",
+      "bytes": 6280
+    },
+    {
+      "path": "data/analysis_inputs/masks/forests/reclassified_NLCD2023_forests_2026_05_18_12_57_08.tif",
+      "sha256": "f784549391c26d2318df0b85e268bdec7653b79804c5d0f8c94402082e49846d",
+      "bytes": 334136691
+    },
+    {
+      "path": "data/analysis_inputs/masks/grasslands/reclassified_NLCD2023_grasslands_2026_05_18_12_57_08.tif",
+      "sha256": "5c60005be637fd69892b2ff3f3892aa543b37d77bc18e10198d7d4c6ef31c9d9",
+      "bytes": 190212034
+    },
+    {
+      "path": "data/analysis_inputs/masks/shrubland/reclassified_NLCD2023_shrubland_2026_05_18_12_57_08.tif",
+      "sha256": "11a5ea276ae1477d1617d55d3bc156df9f61cae768ad25553ffaf9bddd8e4165",
+      "bytes": 236212304
+    },
+    {
+      "path": "data/analysis_inputs/masks/water_snow/reclassified_NLCD2023_water_snow_2026_05_18_12_57_08.tif",
+      "sha256": "38d0e8d4256f63df88d09337c1c3c439350c7bcaff240af165b04262cc0f527d",
+      "bytes": 39834941
+    },
+    {
+      "path": "data/analysis_inputs/masks/wetlands/reclassified_NLCD2023_wetlands_2026_05_18_12_57_08.tif",
+      "sha256": "a5aabf2c5dcce65ef917cb1d4ab55aa0cce04baa812dc38497b9caea78a7483e",
+      "bytes": 151476053
+    },
+    {
+      "path": "data/analysis_inputs/ecosystem_services/totalC_tCO2e_ha_2020.tif",
+      "sha256": "4c7c672e017d6b1175a03fb4565f22088ec2a4ae60dee4b1cd69e6db39cf61a2",
+      "bytes": 8638828945
+    },
+    {
+      "path": "data/analysis_inputs/ecosystem_services/pollination_attributed_annual_crop_yield_value.tif",
+      "sha256": "1660bb7b1f17aca38c13934a2261257ae1b8b9c334aceef53566b4c66bd713d1",
+      "bytes": 21805258504
+    },
+    {
+      "path": "data/analysis_inputs/ecosystem_services/mental_health_national_existing_greenness_cost_90m.tif",
+      "sha256": "be5b2ab235b3a4e02bb7b90252866a563aabd4befeb8ca61864b03ce8d2d438f",
+      "bytes": 584478447
     }
   ],
   "figures": {
@@ -126,9 +181,279 @@
         6599592
       ],
       "minimum_water_feature_area_filter": null
+    },
+    "public_land_managers.png": {
+      "county_geoid": "08069",
+      "county_name": "Larimer",
+      "bounds_epsg5070": [
+        -854461.6946250737,
+        1948073.3996405078,
+        -739984.4984033584,
+        2048849.9974155216
+      ],
+      "manager_codes": [
+        "FED",
+        "STAT",
+        "LOC",
+        "DIST",
+        "JNT"
+      ],
+      "manager_union_matches_county_display": true,
+      "overlap_display_pixels": 0,
+      "overlap_rendering": "A separate overlap class; no manager-type priority overpainting"
+    },
+    "nlcd_natural_area.png": {
+      "bounds_lonlat": [
+        -113.05,
+        39.8,
+        -111.15,
+        41.75
+      ],
+      "masks": {
+        "forests": {
+          "path": "data/analysis_inputs/masks/forests/reclassified_NLCD2023_forests_2026_05_18_12_57_08.tif",
+          "source_nodata": 255.0,
+          "source_mask_flags": 8,
+          "source_crs_wkt": "PROJCS[\"AEA        WGS84\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"latitude_of_center\",23],PARAMETER[\"longitude_of_center\",-96],PARAMETER[\"standard_parallel_1\",29.5],PARAMETER[\"standard_parallel_2\",45.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+          "source_geotransform": [
+            -2415585.0,
+            30.0,
+            0.0,
+            3314805.0,
+            0.0,
+            -30.0
+          ],
+          "source_dimensions": [
+            160000,
+            105000
+          ],
+          "display_dimensions": [
+            950,
+            1188
+          ],
+          "resampling": "nearest",
+          "source_overviews": "disabled; sample the original base band"
+        },
+        "grasslands": {
+          "path": "data/analysis_inputs/masks/grasslands/reclassified_NLCD2023_grasslands_2026_05_18_12_57_08.tif",
+          "source_nodata": 255.0,
+          "source_mask_flags": 8,
+          "source_crs_wkt": "PROJCS[\"AEA        WGS84\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"latitude_of_center\",23],PARAMETER[\"longitude_of_center\",-96],PARAMETER[\"standard_parallel_1\",29.5],PARAMETER[\"standard_parallel_2\",45.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+          "source_geotransform": [
+            -2415585.0,
+            30.0,
+            0.0,
+            3314805.0,
+            0.0,
+            -30.0
+          ],
+          "source_dimensions": [
+            160000,
+            105000
+          ],
+          "display_dimensions": [
+            950,
+            1188
+          ],
+          "resampling": "nearest",
+          "source_overviews": "disabled; sample the original base band"
+        },
+        "shrubland": {
+          "path": "data/analysis_inputs/masks/shrubland/reclassified_NLCD2023_shrubland_2026_05_18_12_57_08.tif",
+          "source_nodata": 255.0,
+          "source_mask_flags": 8,
+          "source_crs_wkt": "PROJCS[\"AEA        WGS84\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"latitude_of_center\",23],PARAMETER[\"longitude_of_center\",-96],PARAMETER[\"standard_parallel_1\",29.5],PARAMETER[\"standard_parallel_2\",45.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+          "source_geotransform": [
+            -2415585.0,
+            30.0,
+            0.0,
+            3314805.0,
+            0.0,
+            -30.0
+          ],
+          "source_dimensions": [
+            160000,
+            105000
+          ],
+          "display_dimensions": [
+            950,
+            1188
+          ],
+          "resampling": "nearest",
+          "source_overviews": "disabled; sample the original base band"
+        },
+        "water_snow": {
+          "path": "data/analysis_inputs/masks/water_snow/reclassified_NLCD2023_water_snow_2026_05_18_12_57_08.tif",
+          "source_nodata": 255.0,
+          "source_mask_flags": 8,
+          "source_crs_wkt": "PROJCS[\"AEA        WGS84\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"latitude_of_center\",23],PARAMETER[\"longitude_of_center\",-96],PARAMETER[\"standard_parallel_1\",29.5],PARAMETER[\"standard_parallel_2\",45.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+          "source_geotransform": [
+            -2415585.0,
+            30.0,
+            0.0,
+            3314805.0,
+            0.0,
+            -30.0
+          ],
+          "source_dimensions": [
+            160000,
+            105000
+          ],
+          "display_dimensions": [
+            950,
+            1188
+          ],
+          "resampling": "nearest",
+          "source_overviews": "disabled; sample the original base band"
+        },
+        "wetlands": {
+          "path": "data/analysis_inputs/masks/wetlands/reclassified_NLCD2023_wetlands_2026_05_18_12_57_08.tif",
+          "source_nodata": 255.0,
+          "source_mask_flags": 8,
+          "source_crs_wkt": "PROJCS[\"AEA        WGS84\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"latitude_of_center\",23],PARAMETER[\"longitude_of_center\",-96],PARAMETER[\"standard_parallel_1\",29.5],PARAMETER[\"standard_parallel_2\",45.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+          "source_geotransform": [
+            -2415585.0,
+            30.0,
+            0.0,
+            3314805.0,
+            0.0,
+            -30.0
+          ],
+          "source_dimensions": [
+            160000,
+            105000
+          ],
+          "display_dimensions": [
+            950,
+            1188
+          ],
+          "resampling": "nearest",
+          "source_overviews": "disabled; sample the original base band"
+        }
+      },
+      "display_sample_counts_not_analytical_areas": {
+        "valid": 1128600,
+        "natural": 905138,
+        "other_land_cover": 223462,
+        "source_nodata": 0,
+        "forests": 216771,
+        "grasslands": 63713,
+        "shrubland": 507861,
+        "water_snow": 92397,
+        "wetlands": 24396
+      },
+      "selected_classes": [
+        "forests",
+        "grasslands",
+        "shrubland",
+        "water_snow",
+        "wetlands"
+      ],
+      "mask_membership": "Include 1; 0 remains valid other cover; 255 is source NoData"
+    },
+    "service_raster_coverage.png": {
+      "bounds_lonlat": [
+        -113.05,
+        39.8,
+        -111.15,
+        41.75
+      ],
+      "rasters": {
+        "Carbon stock": {
+          "path": "data/analysis_inputs/ecosystem_services/totalC_tCO2e_ha_2020.tif",
+          "source_nodata": 0.0,
+          "source_mask_flags": 8,
+          "source_crs_wkt": "PROJCS[\"NAD83 / Conus Albers\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"latitude_of_center\",23],PARAMETER[\"longitude_of_center\",-96],PARAMETER[\"standard_parallel_1\",29.5],PARAMETER[\"standard_parallel_2\",45.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"5070\"]]",
+          "source_geotransform": [
+            -2364630.0,
+            30.0,
+            0.0,
+            3180570.0,
+            0.0,
+            -30.0
+          ],
+          "source_dimensions": [
+            154383,
+            97647
+          ],
+          "display_dimensions": [
+            950,
+            1188
+          ],
+          "resampling": "nearest",
+          "source_overviews": "disabled; sample the original base band"
+        },
+        "Pollination": {
+          "path": "data/analysis_inputs/ecosystem_services/pollination_attributed_annual_crop_yield_value.tif",
+          "source_nodata": -1.0,
+          "source_mask_flags": 8,
+          "source_crs_wkt": "PROJCS[\"NAD83 / Conus Albers\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"latitude_of_center\",23],PARAMETER[\"longitude_of_center\",-96],PARAMETER[\"standard_parallel_1\",29.5],PARAMETER[\"standard_parallel_2\",45.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"5070\"]]",
+          "source_geotransform": [
+            -2356088.6654259097,
+            30.000531024882516,
+            0.0,
+            3172542.7127183885,
+            0.0,
+            -30.00023327943834
+          ],
+          "source_dimensions": [
+            153806,
+            96764
+          ],
+          "display_dimensions": [
+            950,
+            1188
+          ],
+          "resampling": "nearest",
+          "source_overviews": "disabled; sample the original base band"
+        },
+        "Mental health": {
+          "path": "data/analysis_inputs/ecosystem_services/mental_health_national_existing_greenness_cost_90m.tif",
+          "source_nodata": 3.4028234663852886e+38,
+          "source_mask_flags": 8,
+          "source_crs_wkt": "PROJCS[\"NAD83 / Conus Albers\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"latitude_of_center\",23],PARAMETER[\"longitude_of_center\",-96],PARAMETER[\"standard_parallel_1\",29.5],PARAMETER[\"standard_parallel_2\",45.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"5070\"]]",
+          "source_geotransform": [
+            -2337300.0,
+            90.0,
+            0.0,
+            3172950.0,
+            0.0,
+            -90.0
+          ],
+          "source_dimensions": [
+            50073,
+            31803
+          ],
+          "display_dimensions": [
+            950,
+            1188
+          ],
+          "resampling": "nearest",
+          "source_overviews": "disabled; sample the original base band"
+        }
+      },
+      "display_sample_counts_not_analytical_areas": {
+        "Carbon stock": {
+          "source_nodata": 194984,
+          "valid_zero": 0,
+          "valid_nonzero": 933616
+        },
+        "Pollination": {
+          "source_nodata": 32481,
+          "valid_zero": 871846,
+          "valid_nonzero": 224273
+        },
+        "Mental health": {
+          "source_nodata": 1048909,
+          "valid_zero": 21,
+          "valid_nonzero": 79670
+        }
+      },
+      "classification": "Use source NoData metadata; classify finite values with exact zero/nonzero comparisons, including negative numerical residuals as nonzero. Carbon source declares 0 as NoData, preventing a separate valid-zero category.",
+      "adjustments_applied": "None; figures show source coverage, not monetary magnitudes"
     }
   },
-  "rendering": "Actual source polygon footprints rasterized only for PNG display. County lines simplified 250 m nationally and 60 m regionally for legibility. Original vectors and all assessment calculations are unchanged. Water figures use all source feature sizes, not the culled overview export.",
+  "rendering": "Actual source polygon footprints rasterized only for PNG display. County lines simplified 250 m nationally and 60 m regionally for legibility. NLCD and service grids use nearest-neighbour base-band display sampling with source NoData metadata. Original inputs and assessment calculations are unchanged. Water figures use all source feature sizes, not the culled overview export.",
   "versions": {
     "gdal": "3.12.3",
     "geopandas": "1.1.3",

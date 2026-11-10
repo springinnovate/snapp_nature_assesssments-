@@ -77,6 +77,11 @@ between manager groups can make their summed values exceed the category's
 county total. Public and conservation lands can also overlap, so the two
 classifications represent separate views of the landscape.
 
+![Two maps of Larimer County, Colorado: the public-land footprint and the same footprint separated into federal, state, local, special-district, and joint managers.](docs/images/public_land_managers.png)
+
+*Larimer County illustrates the two public-land outputs: one merged footprint
+per county, or separate footprints for each manager type within the county.*
+
 ### Measure area and shoreline
 
 Area measurements let us compare ecosystem-service value per hectare across
@@ -110,6 +115,13 @@ EPSG:6933. The measurements serve different purposes:
   TIGER/Line shoreline and NHD water polygons,
   applying the lake exclusions described under
   [state-based services](#state-based-services-fisheries).
+
+![Northern Utah's five selected NLCD land-cover groups alongside their combined natural-area mask.](docs/images/nlcd_natural_area.png)
+
+*The five NLCD groups that contribute to natural area, shown separately and
+combined. Gray pixels contain other valid land-cover classes. Water and snow
+are included in this classification; county reporting boundaries determine
+which pixels contribute to each reported area.*
 
 ### Identify BBB candidate lands
 
@@ -183,6 +195,14 @@ Service-specific calculations and coverage caveats are:
 
 We apply the adjustments listed below to these area totals before combining
 them with the other services.
+
+![Carbon, pollination, and mental-health raster coverage over northern Utah, distinguishing nonzero values, valid zeros, and source NoData.](docs/images/service_raster_coverage.png)
+
+*Source-raster coverage over the same extent. Colors distinguish nonzero
+values, valid zeros, and source NoData, rather than monetary amounts. The
+carbon TIFF encodes zero as NoData, so those pixels cannot distinguish zero
+stock from missing data. Missing model coverage does not establish an absence
+of benefits. These display samples use nearest-neighbor resampling.*
 
 ### Allocate service values
 

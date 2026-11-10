@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import configparser
 import csv
 import hashlib
 import json
@@ -51,6 +52,20 @@ COLORS = {
 }
 UTAH = (-113.05, 39.8, -111.15, 41.75)
 MICHIGAN = (-90.5, 41.2, -83.7, 46.5)
+NLCD_CLASSES = {
+    "forests": ("Forest", "#397e5b"),
+    "grasslands": ("Grassland", "#d4b968"),
+    "shrubland": ("Shrubland", "#b18b55"),
+    "water_snow": ("Water / snow", "#438fb0"),
+    "wetlands": ("Wetlands", "#9277a0"),
+}
+MANAGERS = {
+    "FED": ("Federal (FED)", "#397e5b"),
+    "STAT": ("State (STAT)", "#d4a85e"),
+    "LOC": ("Local government (LOC)", "#438fb0"),
+    "DIST": ("Special district (DIST)", "#9277a0"),
+    "JNT": ("Joint (JNT)", "#c77837"),
+}
 plt.rcParams.update({
     "font.family": "DejaVu Sans", "font.size": 11,
     "text.color": COLORS["ink"], "axes.labelcolor": COLORS["ink"],
@@ -183,8 +198,45 @@ def save_figure(fig, path):
     plt.close(fig)
 
 
+def sample_raster(path, bounds, width=950):
+    """Read a nearest-neighbour display grid using the source NoData metadata.
+
+    Args:
+        path: Read-only source raster.
+        bounds: Display extent in EPSG:5070.
+        width: Display width in pixels; height preserves the map aspect ratio.
+
+    Returns:
+        Display values with NaN for NoData, and source/grid metadata. Counts
+        from this grid describe display samples, not analytical areas.
+
+    Raises:
+        ValueError: The raster lacks the expected single-band NoData mask.
+    """
+    source = gdal.Open(str(path), gdal.GA_ReadOnly)
+    band = source.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    if source.RasterCount != 1 or nodata is None or band.GetMaskFlags() != gdal.GMF_NODATA:
+        raise ValueError(f"Verify this source's NoData/mask semantics before mapping it: {path}")
+    height = round(width * (bounds[3] - bounds[1]) / (bounds[2] - bounds[0]))
+    metadata = {
+        "path": path.relative_to(ROOT).as_posix(), "source_nodata": nodata,
+        "source_mask_flags": band.GetMaskFlags(), "source_crs_wkt": source.GetProjection(),
+        "source_geotransform": list(source.GetGeoTransform()),
+        "source_dimensions": [source.RasterXSize, source.RasterYSize],
+        "display_dimensions": [width, height], "resampling": "nearest",
+        "source_overviews": "disabled; sample the original base band",
+    }
+    display = gdal.Warp("", source, format="MEM", dstSRS=CRS, outputBounds=bounds,
+                        width=width, height=height, resampleAlg="near", overviewLevel="NONE",
+                        outputType=gdal.GDT_Float64, srcNodata=nodata, dstNodata=float("nan"))
+    values = display.ReadAsArray()
+    display = source = None
+    return values, metadata
+
+
 def main():
-    """Render three explanatory maps and record exact local source provenance."""
+    """Render six explanatory maps and record exact local source provenance."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assessment-run", type=Path, required=True,
                         help="Directory containing the completed six-product run_manifest.json")
@@ -196,7 +248,8 @@ def main():
     if manifest.get("status") != "complete":
         raise ValueError("Choose a completed assessment run")
     products = {}
-    for name in ("counties", "public_lands_by_county", "conservation_lands_by_county", "bbb_lands_by_county"):
+    for name in ("counties", "public_lands_by_county", "public_lands_by_county_and_manager_type",
+                 "conservation_lands_by_county", "bbb_lands_by_county"):
         matches = list((run_dir / name).glob("*.gpkg"))
         if len(matches) != 1:
             raise ValueError(f"Expected one GeoPackage for {name}: {matches}")
@@ -206,7 +259,25 @@ def main():
     water_layer = "nhd_freshwater_clipped_to_usa"
     rules_dir = ROOT / "data/workflow_assets/county_integration"
     rule_paths = [rules_dir / "great_lakes_nhd_features.csv", rules_dir / "inland_fisheries_exclusions.csv"]
-    sources = [manifest_path, *products.values(), usa_path, water_path, *rule_paths]
+    mask_definition = ROOT / "data/workflow_assets/zonal_stats/snapp_assessment_nlcd_masks.yaml"
+    service_definition = ROOT / "data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml"
+    inventories = {}
+    for definition in (mask_definition, service_definition):
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(definition, encoding="utf-8")
+        raster_dir = (definition.parent / config["project"]["raster_dir"]).resolve()
+        inventories[definition.name] = {
+            record["label"]: raster_dir / record["filename"]
+            for record in json.loads(config["project"]["raster_inventory"]) if record["include"]
+        }
+    masks = {name: inventories[mask_definition.name][name] for name in NLCD_CLASSES}
+    service_rasters = {
+        "Carbon stock": inventories[service_definition.name]["Carbon stock per hectare"],
+        "Pollination": inventories[service_definition.name]["Pollination-attributed crop-yield value"],
+        "Mental health": inventories[service_definition.name]["Mental health"],
+    }
+    sources = [manifest_path, *products.values(), usa_path, water_path, *rule_paths,
+               mask_definition, service_definition, *masks.values(), *service_rasters.values()]
     args.output_dir.mkdir(parents=True, exist_ok=True)
     print("Read current county and reference geometries", flush=True)
     counties = read_window(products["counties"], "counties", None, ["GEOID", "STATEFP", "NAME"])
@@ -302,6 +373,128 @@ def main():
                loc="lower center", bbox_to_anchor=(.5, .025), ncol=2, frameon=False, fontsize=11)
     save_figure(fig, args.output_dir / "inland_fisheries_water.png")
 
+    print("Render county and manager-type public-land views", flush=True)
+    manager_geoid = "08069"
+    county = counties.loc[counties.GEOID.eq(manager_geoid)].iloc[0]
+    county_bounds = np.asarray(county.geometry.bounds)
+    pad = (county_bounds[2:] - county_bounds[:2]) * 0.05
+    manager_bounds = (*tuple(county_bounds[:2] - pad), *tuple(county_bounds[2:] + pad))
+    manager_layer = "public_lands_by_county_and_manager_type"
+    manager_rows = pyogrio.read_dataframe(products[manager_layer], layer=manager_layer,
+                                         where=f"GEOID='{manager_geoid}'", columns=["Mang_Type"], read_geometry=False)
+    types = set(manager_rows.Mang_Type)
+    if not types or not types <= set(MANAGERS):
+        raise ValueError(f"Define explicit legend labels for these manager types: {types}")
+    union_mask = raster_mask(products["public_lands_by_county"], "public_lands_by_county",
+                             manager_bounds, width=1200, where=f"GEOID='{manager_geoid}'")
+    manager_masks = {
+        code: raster_mask(products[manager_layer], manager_layer, manager_bounds, width=1200,
+                          where=f"GEOID='{manager_geoid}' AND Mang_Type='{code}'")
+        for code in MANAGERS if code in types
+    }
+    membership = np.stack(list(manager_masks.values())).sum(axis=0)
+    if not np.array_equal(union_mask, membership > 0):
+        raise ValueError("Manager display footprints do not match the county union")
+    overlap = membership > 1
+    fig = plt.figure(figsize=(13.4, 7.3))
+    fig.text(.04, .95, f"Public-land managers in {county.NAME} County", fontsize=21, weight="semibold")
+    fig.text(.04, .902, "Colorado: one footprint, summarized by county or by county and manager type", fontsize=11.5, color=COLORS["muted"])
+    for i, title in enumerate(("Public lands by county", "Public lands by manager type")):
+        ax = fig.add_axes((.04 + .49 * i, .20, .43, .61))
+        base_map(ax, counties, land, lakes, manager_bounds, regional=True)
+        if i == 0:
+            add_mask(ax, union_mask, manager_bounds, COLORS["public"])
+        else:
+            for code, mask in manager_masks.items():
+                add_mask(ax, mask & ~overlap, manager_bounds, MANAGERS[code][1])
+            if overlap.any():
+                add_mask(ax, overlap, manager_bounds, COLORS["ink"])
+        gpd.GeoSeries([county.geometry], crs=CRS).boundary.plot(ax=ax, color=COLORS["ink"], linewidth=.8, zorder=6)
+        ax.set_title(title, fontsize=14, fontweight="semibold", pad=10)
+        ax.set_xlim(manager_bounds[0], manager_bounds[2])
+        ax.set_ylim(manager_bounds[1], manager_bounds[3])
+        scale_bar(ax, manager_bounds, 20)
+    handles = [Patch(facecolor=MANAGERS[code][1], label=MANAGERS[code][0]) for code in manager_masks]
+    if overlap.any():
+        handles.append(Patch(facecolor=COLORS["ink"], label="Overlapping manager footprints"))
+    fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(.5, .025), ncol=3, frameon=False,
+               fontsize=11, title="Manager types (right panel)", title_fontsize=11)
+    save_figure(fig, args.output_dir / "public_land_managers.png")
+
+    print("Render NLCD classes and combined natural-area mask", flush=True)
+    mask_metadata = {}
+    grids = []
+    for name, path in tqdm(masks.items(), desc="Sample NLCD masks", unit="mask"):
+        values, metadata = sample_raster(path, utah_bounds)
+        mask_metadata[name] = metadata
+        if not np.isin(values[np.isfinite(values)], [0, 1]).all():
+            raise ValueError(f"Expected a binary NLCD mask: {path}")
+        grids.append(values)
+    grids = np.stack(grids)
+    valid = np.isfinite(grids[0])
+    if not (np.isfinite(grids) == valid).all() or ((grids == 1).sum(axis=0) > 1).any():
+        raise ValueError("NLCD display masks must share coverage and be mutually exclusive")
+    classes = np.zeros(valid.shape, dtype=np.uint8)
+    for i, values in enumerate(grids, start=1):
+        classes[values == 1] = i
+    classes[~valid] = 6
+    natural = (classes >= 1) & (classes <= 5)
+    other_color, nodata_color = "#d8dcd7", "#efe0ce"
+    fig = plt.figure(figsize=(13.4, 8.0))
+    fig.text(.04, .95, "Natural area from land-cover pixels", fontsize=21, weight="semibold")
+    fig.text(.04, .906, "Northern Utah: five NLCD 2023 groups combined into the natural-area mask", fontsize=11.5, color=COLORS["muted"])
+    extent = (utah_bounds[0], utah_bounds[2], utah_bounds[1], utah_bounds[3])
+    for i, title in enumerate(("Selected land-cover classes", "Combined natural-area mask")):
+        ax = fig.add_axes((.04 + .49 * i, .22, .43, .60))
+        base_map(ax, counties, land, lakes, utah_bounds, regional=True)
+        if i == 0:
+            ax.imshow(classes, cmap=ListedColormap([other_color, *[value[1] for value in NLCD_CLASSES.values()], nodata_color]),
+                      vmin=0, vmax=6, extent=extent, interpolation="nearest", zorder=2)
+        else:
+            combined = np.where(~valid, 2, natural.astype(np.uint8))
+            ax.imshow(combined, cmap=ListedColormap([other_color, COLORS["public"], nodata_color]),
+                      vmin=0, vmax=2, extent=extent, interpolation="nearest", zorder=2)
+        ax.set_title(title, fontsize=14, fontweight="semibold", pad=10)
+        scale_bar(ax, utah_bounds, 40)
+    left_handles = [Patch(facecolor=color, label=label) for label, color in NLCD_CLASSES.values()]
+    left_handles.append(Patch(facecolor=other_color, label="Other land cover"))
+    right_handles = [Patch(facecolor=COLORS["public"], label="Selected natural classes"), Patch(facecolor=other_color, label="Other land cover")]
+    if (~valid).any():
+        left_handles.append(Patch(facecolor=nodata_color, label="Source NoData"))
+        right_handles.append(Patch(facecolor=nodata_color, label="Source NoData"))
+    fig.legend(handles=left_handles, loc="lower center", bbox_to_anchor=(.255, .025), ncol=3, frameon=False, fontsize=10.5)
+    fig.legend(handles=right_handles, loc="lower center", bbox_to_anchor=(.745, .055), ncol=1, frameon=False, fontsize=11)
+    save_figure(fig, args.output_dir / "nlcd_natural_area.png")
+
+    print("Render service raster coverage with source NoData conventions", flush=True)
+    service_metadata = {}
+    service_counts = {}
+    coverage_colors = [nodata_color, other_color, COLORS["public"]]
+    fig = plt.figure(figsize=(13.4, 7.1))
+    fig.text(.04, .95, "Source-raster coverage", fontsize=21, weight="semibold")
+    fig.text(.04, .902, "Carbon, pollination, and mental health over the same northern Utah extent", fontsize=11.5, color=COLORS["muted"])
+    for i, (label, path) in enumerate(service_rasters.items()):
+        values, metadata = sample_raster(path, utah_bounds)
+        source_valid = np.isfinite(values)
+        coverage = np.zeros(values.shape, dtype=np.uint8)
+        coverage[source_valid & (values == 0)] = 1
+        coverage[source_valid & (values != 0)] = 2
+        service_metadata[label] = metadata
+        service_counts[label] = {"source_nodata": int((coverage == 0).sum()), "valid_zero": int((coverage == 1).sum()), "valid_nonzero": int((coverage == 2).sum())}
+        ax = fig.add_axes((.035 + i * .325, .15, .30, .67))
+        base_map(ax, counties, land, lakes, utah_bounds, regional=True)
+        ax.imshow(coverage, cmap=ListedColormap(coverage_colors), vmin=0, vmax=2, extent=extent,
+                  interpolation="nearest", zorder=2)
+        ax.set_title(label, fontsize=14, fontweight="semibold", pad=10)
+        scale_bar(ax, utah_bounds, 40)
+    fig.legend(handles=[Patch(facecolor=COLORS["public"], label="Valid nonzero source value"),
+                        Patch(facecolor=other_color, label="Valid zero"),
+                        Patch(facecolor=nodata_color, label="Source NoData")],
+               loc="lower center", bbox_to_anchor=(.5, .055), ncol=3, frameon=False, fontsize=11.5)
+    fig.text(.5, .025, "Carbon source: 0 is NoData, so zero stock and missing data cannot be distinguished.",
+             ha="center", fontsize=10.5, color=COLORS["muted"])
+    save_figure(fig, args.output_dir / "service_raster_coverage.png")
+
     source_records = []
     for path in tqdm(sources, desc="Hash figure sources", unit="file"):
         hasher = hashlib.sha256()
@@ -316,12 +509,24 @@ def main():
             "assessment_geography.png": {"bounds_epsg5070": list(national_bounds), "public_source": products["public_lands_by_county"].relative_to(ROOT).as_posix()},
             "land_footprints_utah.png": {"bounds_lonlat": list(UTAH), "bounds_epsg5070": list(utah_bounds)},
             "inland_fisheries_water.png": {"bounds_lonlat": [list(UTAH), list(MICHIGAN)], "excluded_source_fids": sorted(lake_names), "minimum_water_feature_area_filter": None},
+            "public_land_managers.png": {"county_geoid": manager_geoid, "county_name": county.NAME, "bounds_epsg5070": list(manager_bounds),
+                "manager_codes": list(manager_masks), "manager_union_matches_county_display": True, "overlap_display_pixels": int(overlap.sum()),
+                "overlap_rendering": "A separate overlap class; no manager-type priority overpainting"},
+            "nlcd_natural_area.png": {"bounds_lonlat": list(UTAH), "masks": mask_metadata,
+                "display_sample_counts_not_analytical_areas": {"valid": int(valid.sum()), "natural": int(natural.sum()),
+                    "other_land_cover": int((valid & ~natural).sum()), "source_nodata": int((~valid).sum()),
+                    **{name: int((classes == i).sum()) for i, name in enumerate(NLCD_CLASSES, start=1)}},
+                "selected_classes": list(NLCD_CLASSES), "mask_membership": "Include 1; 0 remains valid other cover; 255 is source NoData"},
+            "service_raster_coverage.png": {"bounds_lonlat": list(UTAH), "rasters": service_metadata,
+                "display_sample_counts_not_analytical_areas": service_counts,
+                "classification": "Use source NoData metadata; classify finite values with exact zero/nonzero comparisons, including negative numerical residuals as nonzero. Carbon source declares 0 as NoData, preventing a separate valid-zero category.",
+                "adjustments_applied": "None; figures show source coverage, not monetary magnitudes"},
         },
-        "rendering": "Actual source polygon footprints rasterized only for PNG display. County lines simplified 250 m nationally and 60 m regionally for legibility. Original vectors and all assessment calculations are unchanged. Water figures use all source feature sizes, not the culled overview export.",
+        "rendering": "Actual source polygon footprints rasterized only for PNG display. County lines simplified 250 m nationally and 60 m regionally for legibility. NLCD and service grids use nearest-neighbour base-band display sampling with source NoData metadata. Original inputs and assessment calculations are unchanged. Water figures use all source feature sizes, not the culled overview export.",
         "versions": {"gdal": gdal.VersionInfo("RELEASE_NAME"), "geopandas": gpd.__version__, "shapely": shapely.__version__, "matplotlib": matplotlib.__version__},
     }
     (args.output_dir / "map_sources.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote three maps and provenance to {args.output_dir}", flush=True)
+    print(f"Wrote six maps and provenance to {args.output_dir}", flush=True)
 
 
 if __name__ == "__main__":
