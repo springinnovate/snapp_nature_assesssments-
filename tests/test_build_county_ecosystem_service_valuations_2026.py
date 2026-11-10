@@ -22,7 +22,7 @@ from build_county_ecosystem_service_valuations_2026 import (
     load_checkpoint, run, save_checkpoint,
 )
 
-RULES_PATH = Path(__file__).parent / "data/workflow_assets/county_integration/export_rules.yaml"
+RULES_PATH = Path(__file__).resolve().parents[1] / "data/workflow_assets/county_integration/export_rules.yaml"
 AIR_QUALITY_OUTPUT = "air_quality_avoided_mortality_annual_value"
 LEGACY_CROP_FIELD = "sum_national_attributed_annual_crop_yield_value_zstd"
 

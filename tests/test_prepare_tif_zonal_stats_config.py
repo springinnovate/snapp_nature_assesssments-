@@ -227,7 +227,7 @@ raster_inventory = [{"label": "Pollination", "filename": "pollination.tif", "uni
 
     def test_run_definitions_and_history_are_not_git_ignored(self) -> None:
         """Both the reviewed policy and timestamped run history can be committed."""
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         paths = ["data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml",
                  "data/workflow_assets/zonal_stats/runs/example_20261015_120000.yaml"]
         result = subprocess.run(["git", "check-ignore", "--no-index", *paths], cwd=root,
