@@ -533,9 +533,9 @@ allocate county service estimates.
 | `proportion_nlcd_<class>_of_valid` | Class area divided by valid NLCD coverage; `<class>` is `forests`, `grasslands`, `shrubland`, `water_snow`, or `wetlands` | Fraction from 0 to 1; blank without valid coverage | Counties only |
 | `ratio_public_lands_to_county_area`, `ratio_conservation_lands_to_county_area`, `ratio_bbb_lands_to_county_area` | Category's land-only hectares divided by `area_ha_county` | Fraction, not percent | Counties only |
 | Each of the three ratio names above with `_incl_ocean_great_lakes` appended | Same numerator divided by full county area | Fraction, not percent | Counties only |
-| `ratio_public_lands_to_county_ecosystem_services` | Public-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
-| `ratio_conservation_lands_to_county_ecosystem_services` | Conservation-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
-| `ratio_bbb_lands_to_county_ecosystem_services` | BBB-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
+| `ratio_public_lands_es_value_to_county_es_value` | Public-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
+| `ratio_conservation_lands_es_value_to_county_es_value` | Conservation-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
+| `ratio_bbb_lands_es_value_to_county_es_value` | BBB-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
 | `GDP_2024` | 2024 county GDP, including population-based allocations where needed | USD; source thousands converted to dollars | Counties only |
 | `GDP_2024_is_allocated` | Whether GDP was allocated from a combined Virginia area | 1 = allocated; 0 = otherwise | Counties only |
 | `Pop_2024` | Estimated county population in 2024 | People | Counties only |

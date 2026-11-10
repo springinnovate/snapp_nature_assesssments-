@@ -118,6 +118,13 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     assert set(outputs) == set(ZONE_PRODUCTS)
     county = outputs["counties"].iloc[0]
     service_ratios = derived["county_ecosystem_service_ratios"]
+    assert service_ratios == {
+        "ratio_public_lands_es_value_to_county_es_value": "public_lands_by_county",
+        "ratio_conservation_lands_es_value_to_county_es_value": "conservation_lands_by_county",
+        "ratio_bbb_lands_es_value_to_county_es_value": "bbb_lands_by_county",
+    }
+    retired_service_fields = {f"ratio_{name}_lands_to_county_ecosystem_services"
+                              for name in ("public", "conservation", "bbb")}
     expected_service_ratios = [
         outputs[product]["total_ecosystem_services"].sum() / county["total_ecosystem_services"]
         for product in service_ratios.values()
@@ -133,6 +140,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
             workers=2, geometry_workers=1,
         )
     for product, frame in outputs.items():
+        assert retired_service_fields.isdisjoint(frame.columns)
         if product == "counties":
             pd.testing.assert_frame_equal(frame.drop(columns=list(service_ratios)), previous[product])
         else:
@@ -195,6 +203,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         assert len(published) == len(outputs[product])
         if product == "counties":
             for exported in (pd.read_csv(csv_path), published):
+                assert retired_service_fields.isdisjoint(exported.columns)
                 np.testing.assert_allclose(exported[list(service_ratios)].iloc[0], expected_service_ratios)
                 np.testing.assert_allclose(exported[ratio_fields].iloc[0], expected_ratios)
                 assert legacy_pct_fields.isdisjoint(exported.columns)
