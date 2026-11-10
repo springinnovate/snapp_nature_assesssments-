@@ -75,7 +75,7 @@ def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.D
     denominator_paths = [(data_root / source["path"]).resolve() for source in derived["sources"].values()]
     reporting_area_paths = {
         (data_root / derived["sources"][name]["path"]).resolve()
-        for name in ("county_area", "natural_areas")
+        for name in ("county_area", "county_area_inclusive", "natural_areas")
     }
     if allocation:
         denominator_paths.append((data_root / allocation).resolve())
@@ -223,14 +223,17 @@ def value_zones(
                                rtol=1e-12, atol=0.001):
                 raise ValueError("County total with recreation differs from the configured legacy component sum")
             denominators = denominators.drop(columns="es_total").set_axis(zone.index)
-            # Reporting area includes inland water other than the Great Lakes;
-            # allocation shares continue to use land-only areas and ALAND.
+            # Report each footprint against both county area definitions.
+            # Allocation shares still use land-only areas and ALAND.
             footprint_rules = derived["county_footprint_ratios"]
-            county_area = denominators[footprint_rules["denominator"]]
-            divisor = county_area.where(np.isfinite(county_area) & county_area.gt(0))
+            divisors = {}
+            for suffix, field in footprint_rules["denominators"].items():
+                county_area = denominators[field]
+                divisors[suffix] = county_area.where(np.isfinite(county_area) & county_area.gt(0))
             footprint_ratios = pd.DataFrame({
-                output: zone[numerator] / divisor
+                f"{output}{suffix}": zone[numerator] / divisor
                 for output, numerator in footprint_rules["numerators"].items()
+                for suffix, divisor in divisors.items()
             }, index=zone.index)
             adjusted = pd.concat([adjusted, denominators, footprint_ratios], axis=1)
             county_audits.update({

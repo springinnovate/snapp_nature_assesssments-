@@ -48,6 +48,7 @@ data/
 │   ├── recreation/                             County recreation table
 │   ├── CAGDP1_LineCode3_All_States.csv            County GDP
 │   └── co-est2025-alldata.csv                    County population estimates
+├── analysis_results/nlcd_mask_areas/           Prepared full-county NLCD GeoPackage
 └── workflow_assets/                            Tracked input selections and valuation rules
 ```
 
@@ -59,13 +60,13 @@ Use these files to locate the exact inputs or select replacements:
 | County boundaries, land mask, or BBB footprint | `--counties`, `--land-mask`, and `--bbb-by-county`. Match the county release and five-digit `GEOID` keys across inputs. Counties require `ALAND` in square metres; mask and BBB GeoPackages have one footprint per `GEOID` they cover. Select layers with `--counties-layer`, `--land-mask-layer`, or `--bbb-layer` as needed. Keep the default national county file at `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` for coral assignments. |
 | Service TIFFs | The [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml) names the required source TIFFs and their units. Place compatible replacements in `data/analysis_inputs/ecosystem_services/` with the expected names. |
 | Valuation tables and spatial sources | [`sources.csv`](data/workflow_assets/county_integration/sources.csv) gives paths relative to `data/`. Keep the expected fields, identifiers, and units. When replacing NHD, verify the lake exclusion IDs against that release. |
-| County ratio inputs | [`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml) selects the county reporting area, matching NLCD natural area, GDP, and population files. Prepare missing reporting-area files with the command below. |
+| County ratio inputs | [`derived_metrics.yaml`](data/workflow_assets/county_integration/derived_metrics.yaml) selects both county and NLCD area denominators, GDP, and population. Keep the prepared reporting-area CSV and GeoPackage, their QA CSV, and the full-county NLCD GeoPackage. |
 | Factors, fields, or public-land rules | [`adjustment_factors.csv`](data/workflow_assets/county_integration/adjustment_factors.csv), [`export_rules.yaml`](data/workflow_assets/county_integration/export_rules.yaml), and [`padus_land_rules.rules`](config/padus_land_rules.rules). |
 
 See [supporting workflows](docs/supporting_workflows.md) to prepare or replace
 the county land mask, BBB footprint, or other prepared data sources.
 
-If the reporting-area CSV and GeoPackage are not in the supplied data stack,
+If the reporting-area files are not in the supplied data stack,
 prepare them once. This downloads and caches official 2024 Census water polygons
 and runs only the five NLCD masks, not ecosystem-service raster zonals:
 
@@ -74,8 +75,11 @@ python prepare_county_reporting_areas.py --runner "..\zonal_stats_toolkit\runner
 ```
 
 Keep the resulting CSV, GeoPackage, QA, and manifest together under
-`data/analysis_inputs/boundaries/county_reporting_areas/`. The GeoPackage supplies
-natural-area metrics and the CSV supplies its matching county-area denominator.
+`data/analysis_inputs/boundaries/county_reporting_areas/`. The CSV and GeoPackage
+supply the county and natural areas excluding ocean and the Great Lakes. The QA
+CSV supplies the full county area (`area_ha_full_county`); the configured
+full-county NLCD GeoPackage supplies the inclusive natural area. Reuse those
+prepared inputs without running masks again.
 
 ### 3. Validate and launch
 
@@ -132,6 +136,8 @@ Use a fresh assessment when changing the zones or source rasters.
 
 This also updates GDP allocations and ratios without rerunning zonals. Use the
 original run that calculated the raster sums, not a valuation-only derivative.
+With the prepared reporting-area files and full-county NLCD GeoPackage in place,
+the paired area and ratio columns require no mask recalculation.
 
 ## Methods for reporting
 
@@ -153,13 +159,16 @@ export reports hectares (`area_ha_*_lands`)
 for public, conservation, and BBB lands. Raster and spatial valuations use
 the full zone geometries, including water.
 
-The county CSV and GeoPackage report `ratio_public_lands_to_county_area_excl_ocean_great_lakes`,
-`ratio_conservation_lands_to_county_area_excl_ocean_great_lakes`, and
-`ratio_bbb_lands_to_county_area_excl_ocean_great_lakes`. These divide land-only
-footprint hectares by `area_ha_county_excl_ocean_great_lakes`. They are fractions
-(0.25 means 25%). The reporting denominator retains other inland water,
-including Great Salt Lake and Tahoe; it removes ocean, the five Great Lakes,
-and bays connected to those waters. It does not change the land-share allocation.
+The county CSV and GeoPackage report `ratio_public_lands_to_county_area`,
+`ratio_conservation_lands_to_county_area`, and `ratio_bbb_lands_to_county_area`.
+Each is followed by its `_incl_ocean_great_lakes` counterpart. Both divide the
+same land-only footprint hectares by a county area; the short name uses
+`area_ha_county` (excluding ocean and the Great Lakes), while the suffixed
+name uses `area_ha_county_incl_ocean_great_lakes` (the full county area).
+They are fractions (0.25 means 25%). Neither adds water to the footprint or
+changes the land-share allocation. The shorter field's denominator retains
+other inland water, including Great Salt Lake and Tahoe, but removes ocean,
+the five Great Lakes, and bays connected to those waters.
 The [reviewed water rules](data/workflow_assets/county_integration/county_area_exclusions.yaml)
 select Census water polygons; overlapping excluded polygons are dissolved so
 their area is removed once. The same footprint is used to measure all five
@@ -212,11 +221,14 @@ are reported as `_adj_factor`. `total_ecosystem_services` sums the
 without recreation. The total uses annual flood benefits, total surface-water
 provisioning, and per-pixel carbon value; flood net present value is reported
 separately. County `total_ecosystem_services_w_rec` adds recreation and is the
-numerator for `es_per_ha`, `es_per_ha_natural`, `es_per_gdp`, and `es_per_capita`.
-The denominators are county area excluding ocean and Great Lakes, the sum of
-five NLCD class areas (forest, grassland, shrubland, water/snow, and wetland)
-measured within that same footprint, 2024 BEA GDP in dollars, and 2024 Census
-population estimates. Missing service estimates
+numerator for all county ecosystem-service ratios. `es_per_ha` divides by
+`area_ha_county`; `es_per_ha_natural` divides by `area_ha_all_natural`, the sum of
+five NLCD classes (forest, grassland, shrubland, water/snow, and wetland) within
+the same ocean/Great-Lakes-excluded footprint. Each area and per-hectare field
+is followed by its `_incl_ocean_great_lakes` counterpart. The inclusive natural
+area counts those five classes across the full county, not unobserved water.
+`es_per_gdp` and `es_per_capita` use 2024 BEA GDP in dollars and 2024 Census
+population, respectively. Missing service estimates
 remain blank in service columns and contribute zero to totals. Ratios with
 missing or nonpositive denominators are blank. The total is an assessment
 summary of components with different time bases and possible economic overlap.
