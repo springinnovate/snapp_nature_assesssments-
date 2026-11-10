@@ -332,7 +332,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         stage = "Publish six CSV and GeoPackage pairs"
         record(stage, "running")
         for product in tqdm(ZONE_PRODUCTS, desc="Publish assessment pairs", unit="product"):
-            output = results / product / f"{product}_{args.run_id}.gpkg"
+            output = results / f"{product}_{args.run_id}.gpkg"
             csv_path, gpkg_path = write_zone_pair(
                 valued[product], output, product, county_audits if product == "counties" else {},
             )

@@ -117,6 +117,27 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     )
     assert set(outputs) == set(ZONE_PRODUCTS)
     county = outputs["counties"].iloc[0]
+    service_ratios = derived["county_ecosystem_service_ratios"]
+    expected_service_ratios = [
+        outputs[product]["total_ecosystem_services"].sum() / county["total_ecosystem_services"]
+        for product in service_ratios.values()
+    ]
+    np.testing.assert_allclose(county[list(service_ratios)].to_numpy(dtype=float), expected_service_ratios)
+    assert outputs["counties"].columns[-3:].tolist() == list(service_ratios)
+    # Removing only the new final calculation reproduces all previous output values.
+    with monkeypatch.context() as original:
+        original.setattr(valuation, "calculate_county_service_shares",
+                         lambda products, rules: pd.DataFrame(index=products["counties"].index))
+        previous, _, _ = valuation.value_zones(
+            zones, raster_sums, tmp_path, config, coral_reference_counties=zones["counties"],
+            workers=2, geometry_workers=1,
+        )
+    for product, frame in outputs.items():
+        if product == "counties":
+            pd.testing.assert_frame_equal(frame.drop(columns=list(service_ratios)), previous[product])
+        else:
+            pd.testing.assert_frame_equal(frame, previous[product])
+            assert set(service_ratios).isdisjoint(frame.columns)
     ratio_fields = [f"ratio_{name}_lands_to_county_area{suffix}"
                     for name in ("public", "conservation", "bbb")
                     for suffix in ("", "_incl_ocean_great_lakes")]
@@ -174,9 +195,73 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         assert len(published) == len(outputs[product])
         if product == "counties":
             for exported in (pd.read_csv(csv_path), published):
+                np.testing.assert_allclose(exported[list(service_ratios)].iloc[0], expected_service_ratios)
                 np.testing.assert_allclose(exported[ratio_fields].iloc[0], expected_ratios)
                 assert legacy_pct_fields.isdisjoint(exported.columns)
                 start = exported.columns.get_loc(ratio_fields[0])
                 assert exported.columns[start:start + len(ratio_fields)].tolist() == ratio_fields
         with pytest.raises(FileExistsError):
             valuation.write_zone_pair(outputs[product], path, product, {})
+
+
+def test_service_shares_match_geoids_and_preserve_missing_totals(tmp_path):
+    """Align land totals without recreation, clipping, or manager double counting."""
+    config = REPO_ROOT / "data/workflow_assets/county_integration/derived_metrics.yaml"
+    ratios = yaml.safe_load(config.read_text())["county_ecosystem_service_ratios"]
+    counties = gpd.GeoDataFrame({
+        "GEOID": ["01003", "01001", "01005", "01007", "01009", "01011", "01013"],
+        "total_ecosystem_services": [100.0, 200.0, 0.0, np.nan, -10.0, np.inf, 50.0],
+        "total_ecosystem_services_w_rec": [10000.0] * 7,
+    }, geometry=[MultiPolygon([box(0, 0, 1, 1)])] * 7, crs="EPSG:6933", index=[7, 3, 9, 1, 6, 8, 4])
+    products = {
+        "counties": counties,
+        "public_lands_by_county": pd.DataFrame({
+            "GEOID": ["01001", "01003", "01013"], "total_ecosystem_services": [50.0, 125.0, np.nan],
+        }, index=[20, 10, 30]),
+        "conservation_lands_by_county": pd.DataFrame({"GEOID": ["01001"], "total_ecosystem_services": [60.0]}),
+        "bbb_lands_by_county": pd.DataFrame({
+            "GEOID": pd.Series(dtype="string"), "total_ecosystem_services": pd.Series(dtype=float),
+        }),
+        "public_lands_by_county_and_manager_type": pd.DataFrame({
+            "GEOID": ["01001", "01001"], "total_ecosystem_services": [1000000.0, 1000000.0],
+        }),
+    }
+    originals = {product: frame.copy(deep=True) for product, frame in products.items()}
+    shares = valuation.calculate_county_service_shares(products, ratios)
+    expected = pd.DataFrame({
+        list(ratios)[0]: [1.25, 0.25, np.nan, np.nan, np.nan, np.nan, np.nan],
+        list(ratios)[1]: [0.0, 0.3, np.nan, np.nan, np.nan, np.nan, 0.0],
+        list(ratios)[2]: [0.0, 0.0, np.nan, np.nan, np.nan, np.nan, 0.0],
+    }, index=counties.index)
+    pd.testing.assert_frame_equal(shares, expected)
+    for product, original in originals.items():
+        pd.testing.assert_frame_equal(products[product], original)
+    # Blank and zero shares survive both publication formats, with leading-zero GEOIDs.
+    published = counties.replace([np.inf], np.nan).join(shares).reset_index(drop=True)
+    csv_path, gpkg_path = valuation.write_zone_pair(published, tmp_path / "counties_shares.gpkg", "counties", {})
+    for readback in (pd.read_csv(csv_path, dtype={"GEOID": str}), pyogrio.read_dataframe(gpkg_path)):
+        assert readback.GEOID.tolist() == counties.GEOID.tolist()
+        np.testing.assert_allclose(readback[list(ratios)], expected, equal_nan=True)
+
+
+@pytest.mark.parametrize("problem", ["duplicate_county", "duplicate_category", "unknown_county", "missing_geoid", "malformed_geoid", "manager_product", "field_collision"])
+def test_service_shares_reject_ambiguous_inputs(problem):
+    """Reject malformed joins and manager products instead of guessing or overwriting."""
+    config = REPO_ROOT / "data/workflow_assets/county_integration/derived_metrics.yaml"
+    ratios = yaml.safe_load(config.read_text())["county_ecosystem_service_ratios"]
+    products = {name: pd.DataFrame({"GEOID": ["01001"], "total_ecosystem_services": [10.0]})
+                for name in ("counties", *ratios.values())}
+    category = "public_lands_by_county"
+    if problem.startswith("duplicate"):
+        name = "counties" if problem == "duplicate_county" else category
+        products[name] = pd.concat([products[name], products[name]], ignore_index=True)
+    elif problem == "unknown_county":
+        products[category]["GEOID"] = ["01003"]
+    elif problem in {"missing_geoid", "malformed_geoid"}:
+        products[category]["GEOID"] = [None if problem == "missing_geoid" else "1001"]
+    elif problem == "manager_product":
+        ratios[next(iter(ratios))] = "public_lands_by_county_and_manager_type"
+    else:
+        products["counties"][next(iter(ratios))] = 0.0
+    with pytest.raises(ValueError):
+        valuation.calculate_county_service_shares(products, ratios)

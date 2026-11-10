@@ -235,6 +235,40 @@ def sample_raster(path, bounds, width=950):
     return values, metadata
 
 
+def read_assessment_products(run_dir: Path) -> dict[str, Path]:
+    """Resolve map sources recorded in an explicit completed run manifest.
+
+    Args:
+        run_dir: Directory containing the selected run's manifest. Recorded
+            paths may be absolute or relative to this directory.
+
+    Returns:
+        GeoPackage paths keyed by the five products used in the maps. Both
+        flat publication and the original product-subdirectory layout work.
+
+    Raises:
+        ValueError: The manifest does not identify a completed CONUS run, or
+            a recorded GeoPackage is missing or outside its expected location.
+    """
+    run_dir = run_dir.resolve()
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    if (manifest.get("status") != "complete" or manifest.get("geographic_scope") != "CONUS"
+            or manifest.get("run_id") != run_dir.name):
+        raise ValueError("Choose a completed CONUS assessment run with a matching run ID")
+    products = {}
+    for name in ("counties", "public_lands_by_county", "public_lands_by_county_and_manager_type",
+                 "conservation_lands_by_county", "bbb_lands_by_county"):
+        recorded = manifest.get("outputs", {}).get(name, {}).get("gpkg")
+        if not isinstance(recorded, str) or not recorded:
+            raise ValueError(f"Missing manifest GeoPackage path for {name}")
+        path = (run_dir / recorded).resolve()
+        filename = f"{name}_{run_dir.name}.gpkg"
+        if (path not in {run_dir / filename, run_dir / name / filename} or not path.is_file()):
+            raise ValueError(f"Unexpected GeoPackage path for {name}: {path}")
+        products[name] = path
+    return products
+
+
 def main():
     """Render six explanatory maps and record exact local source provenance."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -244,16 +278,7 @@ def main():
     args = parser.parse_args()
     run_dir = args.assessment_run.resolve()
     manifest_path = run_dir / "run_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("status") != "complete":
-        raise ValueError("Choose a completed assessment run")
-    products = {}
-    for name in ("counties", "public_lands_by_county", "public_lands_by_county_and_manager_type",
-                 "conservation_lands_by_county", "bbb_lands_by_county"):
-        matches = list((run_dir / name).glob("*.gpkg"))
-        if len(matches) != 1:
-            raise ValueError(f"Expected one GeoPackage for {name}: {matches}")
-        products[name] = matches[0]
+    products = read_assessment_products(run_dir)
     usa_path = ROOT / "data/analysis_inputs/boundaries/usa_boundary/usa_vector.gpkg"
     water_path = ROOT / "data/analysis_inputs/hydrography/nhdfreshwater/nhd_freshwater_clipped_to_usa_2026_05_18_01_44_14.gpkg"
     water_layer = "nhd_freshwater_clipped_to_usa"

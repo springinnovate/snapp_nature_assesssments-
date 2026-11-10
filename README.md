@@ -408,6 +408,17 @@ The [Virginia GDP allocation table](data/workflow_assets/county_integration/virg
 identifies the groups. `GDP_2024_is_allocated` flags the population-based
 estimates in the county output.
 
+To report the share of each county's ecosystem-service value associated with
+public, conservation, or BBB lands, we divide that category's
+`total_ecosystem_services` by the county's `total_ecosystem_services`, matching
+on `GEOID`. Both totals exclude recreation. We use the category's by-county
+output, rather than adding the potentially overlapping manager-type values.
+These three ratios are fractions, not percentages: 0.25 means 25% of the
+county total. A county without that land category has a share of zero when
+its county total is positive; missing or nonpositive county totals give blank
+ratios. Public, conservation, and BBB lands can overlap, so their shares
+should not be added together.
+
 ## Output fields and units
 
 The assessment produces six output layers, each with a CSV and GeoPackage:
@@ -522,6 +533,9 @@ allocate county service estimates.
 | `proportion_nlcd_<class>_of_valid` | Class area divided by valid NLCD coverage; `<class>` is `forests`, `grasslands`, `shrubland`, `water_snow`, or `wetlands` | Fraction from 0 to 1; blank without valid coverage | Counties only |
 | `ratio_public_lands_to_county_area`, `ratio_conservation_lands_to_county_area`, `ratio_bbb_lands_to_county_area` | Category's land-only hectares divided by `area_ha_county` | Fraction, not percent | Counties only |
 | Each of the three ratio names above with `_incl_ocean_great_lakes` appended | Same numerator divided by full county area | Fraction, not percent | Counties only |
+| `ratio_public_lands_to_county_ecosystem_services` | Public-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
+| `ratio_conservation_lands_to_county_ecosystem_services` | Conservation-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
+| `ratio_bbb_lands_to_county_ecosystem_services` | BBB-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
 | `GDP_2024` | 2024 county GDP, including population-based allocations where needed | USD; source thousands converted to dollars | Counties only |
 | `GDP_2024_is_allocated` | Whether GDP was allocated from a combined Virginia area | 1 = allocated; 0 = otherwise | Counties only |
 | `Pop_2024` | Estimated county population in 2024 | People | Counties only |
@@ -637,25 +651,31 @@ settings and additional input options.
 ```text
 data/analysis_results/assessment_runs/<run-id>/
 ├── run_manifest.json
-├── counties/
-├── public_lands_by_county/
-├── public_lands_by_county_and_manager_type/
-├── conservation_lands_by_county/
-├── conservation_lands_by_county_and_manager_type/
-└── bbb_lands_by_county/
+├── counties_<run-id>.csv
+├── counties_<run-id>.gpkg
+├── public_lands_by_county_<run-id>.csv
+├── public_lands_by_county_<run-id>.gpkg
+├── public_lands_by_county_and_manager_type_<run-id>.csv
+├── public_lands_by_county_and_manager_type_<run-id>.gpkg
+├── conservation_lands_by_county_<run-id>.csv
+├── conservation_lands_by_county_<run-id>.gpkg
+├── conservation_lands_by_county_and_manager_type_<run-id>.csv
+├── conservation_lands_by_county_and_manager_type_<run-id>.gpkg
+├── bbb_lands_by_county_<run-id>.csv
+└── bbb_lands_by_county_<run-id>.gpkg
 ```
 
-Each product folder contains `<product>_<run-id>.csv` and
-`<product>_<run-id>.gpkg`. The GeoPackage stores the analysis geometry and
-attributes; the CSV contains the same attributes. Check `run_manifest.json`
-for `"status": "complete"` and the output paths. Keep the manifest with the
+The run folder contains all twelve data files directly. Each product has
+`<product>_<run-id>.csv` and `<product>_<run-id>.gpkg`. The GeoPackage stores
+the analysis geometry and attributes; the CSV contains the same attributes.
+Check `run_manifest.json` for `"status": "complete"` and the output paths. Keep the manifest with the
 outputs as a record of the inputs and settings.
 
 ### Revalue a completed run
 
-To update valuation factors, tables, or county ratios, reuse a completed
-run's saved analysis boundaries and raster sums. Pass its run ID and a new
-output ID:
+To update valuation factors, tables, or county ratios (including land-category
+ecosystem-service shares), reuse a completed run's saved analysis boundaries
+and raster sums. Pass its run ID and a new output ID:
 
 ```cmd
 python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued"
