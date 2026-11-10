@@ -92,17 +92,18 @@ EPSG:6933. The measurements serve different purposes:
   The Census land mask protects land from removal; the generalized coastal
   boundary can retain some tidal water. Other inland water, including Great
   Salt Lake and Lake Tahoe, remains. The second measures the full county
-  polygon, including ocean and Great Lakes water. To report the fraction of
-  each county in public, conservation, or BBB lands, we divide the category's
-  land-only hectares by each of these county areas.
+  polygon, including ocean and Great Lakes water. When we report public,
+  conservation, and BBB land fractions in the pipeline's county output, we
+  divide each category's land-only hectares by each of these county areas.
 - **Natural area.** We sum forest, grassland, shrubland, water/snow, and wetland
   pixels in five masks derived from the 2023 National Land Cover Database
   (NLCD), then multiply by 0.09 hectares per 30 m pixel. We calculate natural
   area on both county footprints described above. Classified water and snow
-  contribute to natural area; NoData pixels do not.
+  contribute to natural area.
 - **Shoreline and inland water.** We intersect each analysis area with 2019
   TIGER/Line shoreline and NHD water polygons,
-  applying the lake exclusions described under [fisheries](#fisheries).
+  applying the lake exclusions described under
+  [state-based services](#state-based-services-fisheries).
 
 ### Identify BBB candidate lands
 
@@ -141,23 +142,23 @@ Service-specific calculations and coverage caveats are:
 
 - **Carbon stock.** The source gives tonnes of CO₂e per hectare on a 30 m grid.
 
-  **Adjustment to source data:** We multiply the sum of these densities by
+  *Adjustment to source data:* We multiply the sum of these densities by
   the pixel area, 0.09 hectares, to calculate total tonnes of CO₂e. We value
   that stock using the carbon price and
   [monetary adjustments](#adjust-monetary-values) below.
 - **Pollination.** The source gives annual crop-yield value per hectare.
 
-  **Adjustment to source data:** We multiply its sum by 0.09 hectares per pixel
+  *Adjustment to source data:* We multiply its sum by 0.09 hectares per pixel
   to calculate the area's annual pollination value.
 - **Flood mitigation.** The annual-value and net-present-value rasters both
   contain dollars per hectare.
 
-  **Adjustment to source data:** We multiply each sum by 0.09 hectares per pixel
+  *Adjustment to source data:* We multiply each sum by 0.09 hectares per pixel
   and report the annual value and NPV separately.
 - **Mental health.** We sum the supplied values for benefits from existing
   greenness.
 
-  **Coverage caveat:** The model has gaps and sparse coverage in
+  *Coverage caveat:* The model has gaps and sparse coverage in
   Connecticut, Washington, DC, and other locations. Where it supplies no valid
   pixels, a zero sum indicates missing coverage rather than no benefits.
 - **Surface-water provisioning.** We sum per-pixel values for irrigation,
@@ -193,7 +194,7 @@ their paths.
   animal-unit months (one animal unit fed for one month) the usable forage can
   support, then applies the fee per animal-unit month.
 
-  **Adjustment to source data:** The workbook labels this subtotal as a monthly
+  *Adjustment to source data:* The workbook labels this subtotal as a monthly
   value and multiplies it by eight to calculate its annual total. Under our
   annual-biomass assumption, the subtotal already values a full year's forage,
   so the extra multiplier overstates the value eightfold. We correct this
@@ -204,7 +205,7 @@ their paths.
   The supplied annual county timber rents equal timberland acreage multiplied
   by estimated net return per acre.
 
-  **Adjustment to source data:** Negative rents reflect negative estimated
+  *Adjustment to source data:* Negative rents reflect negative estimated
   net returns, not missing observations. We set these rents to zero for this
   assessment before geographic allocation. Separately, we assign zero to
   missing timber estimates. The source distinguishes missing estimates due to
@@ -217,7 +218,7 @@ their paths.
   We sum avoided-mortality values across the source's pollutant and land-cover
   categories within each county.
 
-  **Adjustment to source data:** The table uses Shannon County's former code,
+  *Adjustment to source data:* The table uses Shannon County's former code,
   `46113`, for Oglala Lakota County, South Dakota.
   We [map it to the current code, `46102`](data/workflow_assets/county_integration/air_quality_county_aliases.csv),
   so these values join to the correct county.
@@ -226,18 +227,22 @@ their paths.
 - **[Physical-health benefits](data/analysis_inputs/ecosystem_services/physical_health/hypertension_linear_us_counties_all.gpkg).**
   We match the supplied hypertension-related values to counties by their
   county identifiers.
-- **Recreation.** Spencer Wood's [Outdoor Recreation & Data Lab](https://outdoorrd.org/)
-  at the University of Washington supplied county-level aggregates of annual
-  recreation use value for protected areas, in 2024 dollars. Those aggregates
-  cannot identify the value within public, conservation, or BBB subareas, so
-  we report recreation only in the final county summary.
+- **Recreation.** We report recreation only by county because Spencer Wood's
+  [Outdoor Recreation & Data Lab](https://outdoorrd.org/) supplied county
+  totals of annual recreation use value for protected areas, in 2024 dollars.
+  These totals provide no basis for distinguishing recreation value within
+  public, conservation, or BBB subareas.
+- **Connecticut county geography.** In 2022, at Connecticut's request, the
+  U.S. Census Bureau adopted the state's nine existing planning regions as
+  county equivalents in place of its eight historical counties. The planning
+  regions support regional government services, whereas county governments
+  were abolished in 1960; the change aligns Census data with those regional
+  responsibilities. The
+  [Census decision](https://www.federalregister.gov/documents/2022/06/06/2022-12063/change-to-county-equivalents-in-the-state-of-connecticut)
+  explains the change. Several service tables use the historical counties,
+  whose boundaries and identifiers differ from those of the planning regions.
 
-- **Connecticut county geography.** The Census Bureau replaced Connecticut's
-  eight historical counties with nine planning regions for statistical
-  reporting. Several service tables use the historical counties, whose
-  boundaries and identifiers differ from those of the planning regions.
-
-  **Adjustment to source data:** We distribute each historical county's value
+  *Adjustment to source data:* We distribute each historical county's value
   among the planning regions in proportion to their shared land area. Our
   [county-to-planning-region allocation table](data/workflow_assets/county_integration/ct_county_crosswalk.csv)
   links the two geographies and records these shares. We derived it from the
@@ -246,28 +251,29 @@ their paths.
   using the overlapping land areas defined in the
   [record-layout documentation](https://www.census.gov/programs-surveys/geography/technical-documentation/records-layout/2022-connecticut-record-layout.html).
 
-#### Fisheries
+#### State-based services: fisheries
 
-The fisheries datasets provide statewide values. To distribute them among
-counties and land categories, we calculate each area's share of the state's
-eligible shoreline length or inland water area, measured across its counties.
+Fisheries are the services supplied as statewide estimates. We distribute
+marine fisheries values by shoreline length and inland fisheries values by
+water area. For each county or land category, we calculate its share of the
+state's eligible shoreline or water area, measured across the state's counties.
 
 - **Marine fisheries.** We multiply the state value by each area's share of
   marine shoreline length.
 
-  **Adjustment to source data:** The shoreline dataset includes the Great
+  *Adjustment to source data:* The shoreline dataset includes the Great
   Lakes. We exclude that shoreline when allocating marine fisheries values.
 - **Inland fisheries.** We multiply the state value by each area's share of
   NHD water area.
 
-  **Adjustment to source data:** We exclude the Great Lakes and, in Utah,
+  *Adjustment to source data:* We exclude the Great Lakes and, in Utah,
   Great Salt Lake from the water-area weights before calculating the shares.
 
-#### Coastal protection
+#### Site- and study-area-based services: coastal protection
 
-The coastal-protection sources describe benefits at coral locations and
-mangrove study areas, which we assign to the assessment's counties and land
-categories as follows:
+Coral and mangrove valuations come from mapped points and study-area polygons.
+We use their locations and areas of overlap to assign coastal-protection
+benefits to counties and land categories:
 
 - **Corals.** We assign each point's value to its nearest county in the
   national reference layer and retain assignments to CONUS counties. A public,
@@ -281,11 +287,11 @@ categories as follows:
 
 ### Adjust monetary values
 
-The source data express monetary values in different price years.
-
-**Adjustment to source data:** We apply the price-year multipliers below. The
+After aggregating each service to its analysis area, we apply the supplied
+price-adjustment multipliers from the
 [adjustment table](data/workflow_assets/county_integration/adjustment_factors.csv)
-records the source units and the multiplier used for each service.
+to account for differences in source price years. The table below summarizes
+these multipliers.
 
 | Services | Price-year multiplier |
 | --- | --- |
@@ -295,57 +301,66 @@ records the source units and the multiplier used for each service.
 | Marine fisheries, physical health | 1.027 |
 | Corals | 1.368 |
 
-For carbon, this adjustment also includes a monetary price of $3.66 per tonne
-of CO₂e applied to the stock calculated from the density raster. Combined
-with the price-year adjustment, this gives $4.32612 per tonne. The output
-records the adjusted service values and the factors applied to them.
+*Adjustment to source data:* For carbon, the same adjustment table combines
+the supplied price of $3.66 per tonne of CO₂e and the 1.182 price-year
+multiplier into one factor: $4.32612 per tonne. We apply this factor to the
+tonnes of CO₂e calculated from the density raster after the 0.09-hectare pixel
+conversion. The output records the monetary factor in `carbon_pixel_adj_factor`
+and the resulting value in `sum_CO2e_mitigation_dollar_value_per_pixel_adj`.
 
 ### Combine service estimates and compare counties
 
-We add the adjusted service values to summarize ecosystem-service value in
-each analysis area. County summaries also express these values per hectare,
-per resident, and relative to GDP.
+Once we have calculated the adjusted dollar value of each service, we sum
+the estimates for each county, public-land area, conservation-land area, and
+BBB area, including the public and conservation manager-type breakdowns.
 
-#### Totals and their interpretation
+#### Ecosystem-service totals
 
-- **Services included.** To provide the same basis for comparison
-  across the six layers, we sum the same 18 services in each layer. The
+- **`total_ecosystem_services`** contains the sum of 18 adjusted service
+  components for each row in all six output layers. It uses the
   [service list](data/workflow_assets/county_integration/derived_metrics.yaml)
-  identifies them. County summaries also include a second total that adds
-  recreation.
-- **Separate values.** We include annual flood benefits in the total and
-  report flood NPV separately. For water provisioning and wages, we include
-  the combined value once and retain the subcategories as additional detail.
-- **Missing estimates.** Missing values contribute zero to the sum.
-  A blank service field denotes missing data; raster sums with no valid
-  pixels can also be zero.
-- **Time basis.** The total combines annual benefits, wages, and stock values.
-  Some estimates may also overlap economically. Interpret the total as a
-  combined value of the selected estimates, rather than an annual contribution
-  to the economy.
+  with recreation handled separately.
+- **`total_ecosystem_services_w_rec`** appears in the county output and equals
+  `total_ecosystem_services + recreation_adj`.
+
+The following rules determine which service fields enter these totals:
+
+- **Flood mitigation.** We add `sum_flood_annual_value_masked_to_wetlands_adj`
+  to the totals. We report `sum_flood_marginal_npv_masked_to_wetlands_adj` as
+  its own output column, outside both totals.
+- **Surface-water provisioning.** We add `sum_Wval_sw_2020usd_total_adj`
+  to the totals. The irrigation, power-generation, and public-water-supply
+  columns show the components of that service rather than additional values
+  to add to the totals.
+- **Wages.** We add `jobs_adj` to the totals. The `jobs_cultural_adj`,
+  `jobs_raw_materials_adj`, `jobs_processing_adj`, and `jobs_harvesting_adj`
+  columns show the four components already included in `jobs_adj`.
+
+*Interpretation:* Both total fields combine the value of stored carbon with
+annual benefits such as grazing and flood mitigation. They therefore combine
+stock and annual values rather than measure a single year's benefits.
 
 #### County comparisons
 
-Each comparison below uses the county's ecosystem-service total including
-recreation. We leave a result blank when its denominator is missing, zero,
-or negative.
+To compare counties of different sizes, populations, and economies, we divide
+`total_ecosystem_services_w_rec` by the areas, population, and GDP listed below.
+Each row names the output field and its denominator:
 
-- **Value per hectare of county area.** We divide by county area, calculating
-  one value with ocean and Great Lakes water excluded and another using the
-  full county footprint.
-- **Value per hectare of natural area.** We divide by NLCD natural area,
-  measured on each of those same two county footprints.
-- **Value per resident.** We divide by the county's 2024 Census population
-  estimate.
-- **Value relative to GDP.** We divide by the county's 2024 gross domestic
-  product from the U.S. Bureau of Economic Analysis (BEA).
+| Comparison field | Denominator | Meaning |
+| --- | --- | --- |
+| `es_per_ha` | `area_ha_county` | County hectares excluding ocean and Great Lakes water |
+| `es_per_ha_incl_ocean_great_lakes` | `area_ha_county_incl_ocean_great_lakes` | Full county hectares |
+| `es_per_ha_natural` | `area_ha_all_natural` | NLCD natural hectares excluding ocean and Great Lakes water |
+| `es_per_ha_natural_incl_ocean_great_lakes` | `area_ha_all_natural_incl_ocean_great_lakes` | NLCD natural hectares in the full county footprint |
+| `es_per_capita` | `Pop_2024` | 2024 Census population estimate |
+| `es_per_gdp` | `GDP_2024` | 2024 gross domestic product from the U.S. Bureau of Economic Analysis (BEA), in dollars |
 
-  **Adjustment to source data:** BEA reports some Virginia counties and
-  independent cities together rather than separately. We divide each combined
-  area's GDP among its counties and cities in proportion to their 2024 Census
-  populations. The
-  [Virginia GDP allocation table](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
-  identifies the groups, and the output flags these population-based estimates.
+*Adjustment to source data:* BEA reports some Virginia counties and independent
+cities together rather than separately. We divide each combined area's GDP
+among its counties and cities in proportion to their 2024 Census populations.
+The [Virginia GDP allocation table](data/workflow_assets/county_integration/virginia_gdp_crosswalk.csv)
+identifies the groups. `GDP_2024_is_allocated` flags the population-based
+estimates in the county output.
 
 ## Output fields and units
 
@@ -362,12 +377,12 @@ Each row describes the county, land category, or county–manager combination
 named by its layer. The CSV and GeoPackage contain the same attributes; the
 GeoPackage also contains the polygon geometry in EPSG:6933.
 
+### Geographic and land-area fields
+
 In the tables below, **All outputs** means all six layers; **Counties only**
 means the county summary; **Land categories** means the five other layers,
 including their manager-type breakdowns; and **Manager types** means the two
 layers grouped by both county and manager type.
-
-### Identifiers and land measurements
 
 | Field | Meaning | Units | Present in |
 | --- | --- | --- | --- |
@@ -423,12 +438,6 @@ identifies the layers containing each value.
 | `total_ecosystem_services` | Sum of the 18 selected service components, excluding recreation | USD, mixed benefit periods | All outputs |
 | `total_ecosystem_services_w_rec` | The same total plus recreation | USD, mixed benefit periods | Counties only |
 
-The totals include the provisioning total and wage total once, not their
-subcategories as additional benefits. Flood NPV is reported separately from
-the totals. Missing service estimates contribute zero to totals; a blank
-individual estimate still denotes missing data. Raster sums with no valid
-pixels can also be zero, as described for mental health above.
-
 ### Adjustment factors
 
 Each service has a `*_adj_factor` field recording the applied multiplier.
@@ -463,7 +472,7 @@ allocate county service estimates.
 | `area_ha_valid_nlcd` | Area with valid NLCD data after excluding ocean and Great Lakes water, including natural and other land-cover classes | Hectares | Counties only |
 | `area_ha_nlcd_forests`, `area_ha_nlcd_grasslands`, `area_ha_nlcd_shrubland`, `area_ha_nlcd_water_snow`, `area_ha_nlcd_wetlands` | Area of each NLCD class after excluding ocean and Great Lakes water | Hectares | Counties only |
 | `area_ha_all_natural` | Sum of those five class areas | Hectares | Counties only |
-| `area_ha_all_natural_incl_ocean_great_lakes` | The same five classes measured over the full county; NoData is not counted | Hectares | Counties only |
+| `area_ha_all_natural_incl_ocean_great_lakes` | The same five classes measured over the full county | Hectares | Counties only |
 | `proportion_nlcd_<class>_of_valid` | Class area divided by valid NLCD coverage; `<class>` is `forests`, `grasslands`, `shrubland`, `water_snow`, or `wetlands` | Fraction from 0 to 1; blank without valid coverage | Counties only |
 | `ratio_public_lands_to_county_area`, `ratio_conservation_lands_to_county_area`, `ratio_bbb_lands_to_county_area` | Category's land-only hectares divided by `area_ha_county` | Fraction, not percent | Counties only |
 | Each of the three ratio names above with `_incl_ocean_great_lakes` appended | Same numerator divided by full county area | Fraction, not percent | Counties only |
@@ -477,10 +486,14 @@ allocate county service estimates.
 
 Only the combined natural-area total has an inclusive companion; the five
 class areas and their proportions use the footprint excluding ocean and
-Great Lakes water. Ratios are blank when their denominators are missing or
-nonpositive. Because the ecosystem-service total mixes benefit periods, its
-per-hectare and per-person values are not annual rates, and its GDP ratio is
-not a measure of annual contribution to GDP.
+Great Lakes water.
+
+*Note on missing values:* A blank service-value field indicates that the source
+estimate was unavailable for that area. These blanks contribute zero when we
+calculate `total_ecosystem_services` and `total_ecosystem_services_w_rec`.
+Comparison fields are blank when their denominator is missing, zero, or
+negative. Source-specific coverage issues, including zero values produced by
+the mental-health raster, are described in the methods above.
 
 ## Run the assessment
 
