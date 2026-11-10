@@ -253,21 +253,23 @@ their paths.
 
 #### State-based services: fisheries
 
-Fisheries are the services supplied as statewide estimates. We distribute
-marine fisheries values by shoreline length and inland fisheries values by
-water area. For each county or land category, we calculate its share of the
-state's eligible shoreline or water area, measured across the state's counties.
+Fisheries are the services supplied as statewide estimates.
 
-- **Marine fisheries.** We multiply the state value by each area's share of
-  marine shoreline length.
+- **Marine fisheries.** We distribute each state's marine fisheries value
+  among its counties in proportion to their marine shoreline lengths.
 
   *Adjustment to source data:* The shoreline dataset includes the Great
   Lakes. We exclude that shoreline when allocating marine fisheries values.
-- **Inland fisheries.** We multiply the state value by each area's share of
-  NHD water area.
+- **Inland fisheries.** We distribute inland fisheries value in proportion
+  to each county's eligible inland water area.
 
   *Adjustment to source data:* We exclude the Great Lakes and the Great Salt
   Lake from the water-area weights before calculating the shares.
+
+For public, conservation, and BBB lands, including manager-type groups, we
+use the shoreline length or inland water area within those polygons. The
+denominator remains the total eligible shoreline length or water area across
+the state's counties.
 
 #### Site- and study-area-based services: coastal protection
 
