@@ -13,14 +13,12 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from build_county_ecosystem_service_valuations_2026 import (
+from assessment import REPO_ROOT as ROOT, build_county_ecosystem_service_valuations_2026
+from assessment.build_county_ecosystem_service_valuations_2026 import (
     load_export_rules, read_attributes, sha256, write_output,
 )
-from county_derived_metrics import DEFAULT_CONFIG, DERIVED_FIELDS, calculate_county_metrics
-from nlcd_mask_areas import FIELD_DEFINITIONS
-
-ROOT = Path(__file__).resolve().parent
-
+from assessment.county_derived_metrics import DEFAULT_CONFIG, DERIVED_FIELDS, calculate_county_metrics
+from assessment.nlcd_mask_areas import FIELD_DEFINITIONS
 
 def finalize_counties(county_results: Path, data_root: Path = ROOT / 'data',
                       config_path: Path = DEFAULT_CONFIG, output: Path | None = None) -> Path:
@@ -57,7 +55,7 @@ def finalize_counties(county_results: Path, data_root: Path = ROOT / 'data',
             raise FileExistsError(path)
     inputs = {'county_results': county_results, 'finalizer': Path(__file__),
               'export_rules': export_path,
-              'output_writer': ROOT / 'build_county_ecosystem_service_valuations_2026.py'}
+              'output_writer': Path(build_county_ecosystem_service_valuations_2026.__file__)}
     hashes = {name: sha256(path) for name, path in tqdm(inputs.items(), desc='Hash finalization inputs', unit='file')}
     with tqdm(total=1, desc='Read existing county values', unit='table') as progress:
         frame, layer, geom = read_attributes(county_results)

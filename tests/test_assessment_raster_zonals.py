@@ -11,13 +11,13 @@ import pyogrio
 import pytest
 from shapely.geometry import box
 
-from assessment_raster_zonals import (
+from assessment.assessment_raster_zonals import (
     freeze_zone_zonals,
     read_frozen_zone_raster_plan,
     read_zone_raster_sums,
     validate_zone_raster_inputs,
 )
-from assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 
 
 PUBLIC_MANAGERS = "public_lands_by_county_and_manager_type"

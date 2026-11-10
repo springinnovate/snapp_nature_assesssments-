@@ -605,7 +605,7 @@ and the five NLCD masks:
 
 ```cmd
 set "PROJ_NETWORK=OFF"
-python prepare_county_reporting_areas.py --runner "..\zonal_stats_toolkit\runner.py"
+python -m assessment.workflows.prepare_county_reporting_areas --runner "..\zonal_stats_toolkit\runner.py"
 ```
 
 Keep the CSV, GeoPackage, QA CSV, and manifest together under

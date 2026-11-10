@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import run_snapp_assessment as wrapper
+import assessment.workflows.run_snapp_assessment as wrapper
 
 
 class AssessmentWrapperTests(unittest.TestCase):
@@ -37,10 +37,6 @@ class AssessmentWrapperTests(unittest.TestCase):
         self.mismatch_runner_csv = False
         for path in (
             self.runner,
-            self.root / "prepare_padus_all_and_public_lands.py",
-            self.root / "cut_and_flatten_by_county.py",
-            self.root / "prepare_tif_zonal_stats_config.py",
-            self.root / "build_county_ecosystem_service_valuations_2026.py",
             self.data / "analysis_inputs" / "boundaries" / "usa_boundary" / "usa_vector.gpkg",
             self.data / "analysis_inputs" / "zonal_units" / "counties" / "tl_2024_us_county_50_states.gpkg",
             self.data / "analysis_inputs" / "ecosystem_services" / "enabled.tif",
@@ -93,7 +89,11 @@ class AssessmentWrapperTests(unittest.TestCase):
     def fake_subprocess(self, command, *, cwd, check, **_):
         """Check CLI handoffs and simulate only the selected stage outputs."""
         command = [str(arg) for arg in command]
-        script = Path(command[1]).name
+        if command[1] == "-m":
+            script = command[2]
+        else:
+            self.assertEqual(Path(command[1]), self.runner)
+            script = self.runner.name
         self.assertEqual(Path(cwd), self.root)
         self.assertTrue(check)
         self.stage_calls.append((script, command))
@@ -104,7 +104,7 @@ class AssessmentWrapperTests(unittest.TestCase):
 
         if script == self.fail_at:
             raise subprocess.CalledProcessError(17, command)
-        if script == "prepare_padus_all_and_public_lands.py":
+        if script == "assessment.workflows.prepare_padus_all_and_public_lands":
             self.assertEqual(Path(option("--padus-path")), self.padus)
             self.assertEqual(option("--padus-layer"), "test_vector_analysis")
             product_idx = command.index("--products")
@@ -116,15 +116,15 @@ class AssessmentWrapperTests(unittest.TestCase):
                     self.write_file(
                         dest / f"{product}_lands" / f"padus_{product}_lands_clipped_to_usa_2026_11_06_00_00_00.gpkg"
                     )
-        elif script == "cut_and_flatten_by_county.py":
-            source = next(Path(arg) for arg in command[2:] if arg.endswith(".gpkg"))
+        elif script == "assessment.workflows.cut_and_flatten_by_county":
+            source = Path(command[3])
             self.assertTrue(source.is_file())
             self.assertTrue(source.is_relative_to(self.work / "padus_clipped_to_usa"))
             dest = Path(option("--output-dir"))
             self.assertEqual(dest.parent, self.work / "zonal_units")
             self.cuts[dest.name] = dest / source.name.replace("_clipped_to_usa_", "_clipped_by_county_")
             self.write_file(self.cuts[dest.name])
-        elif script == "prepare_tif_zonal_stats_config.py":
+        elif script == "assessment.prepare_tif_zonal_stats_config":
             self.assertEqual(
                 [command[i + 1] for i, arg in enumerate(command) if arg == "--zone"],
                 ["all", "public"],
@@ -158,7 +158,7 @@ class AssessmentWrapperTests(unittest.TestCase):
                     path = Path(config[section][key])
                     stamp = "20261105_000000" if self.mismatch_runner_csv and key == "output_csv" else "20261106_000000"
                     self.write_file(path.with_name(f"{path.stem}_{stamp}{path.suffix}"))
-        elif script == "build_county_ecosystem_service_valuations_2026.py":
+        elif script == "assessment.build_county_ecosystem_service_valuations_2026":
             output = Path(option("--output"))
             self.assertEqual(output.parent, self.results / "counties")
             self.assertEqual(option("--workers"), "5")
@@ -181,13 +181,13 @@ class AssessmentWrapperTests(unittest.TestCase):
         self.assertEqual(
             [script for script, _ in self.stage_calls],
             [
-                "prepare_padus_all_and_public_lands.py",
-                "prepare_padus_all_and_public_lands.py",
-                "cut_and_flatten_by_county.py",
-                "cut_and_flatten_by_county.py",
-                "prepare_tif_zonal_stats_config.py",
+                "assessment.workflows.prepare_padus_all_and_public_lands",
+                "assessment.workflows.prepare_padus_all_and_public_lands",
+                "assessment.workflows.cut_and_flatten_by_county",
+                "assessment.workflows.cut_and_flatten_by_county",
+                "assessment.prepare_tif_zonal_stats_config",
                 "runner.py",
-                "build_county_ecosystem_service_valuations_2026.py",
+                "assessment.build_county_ecosystem_service_valuations_2026",
             ],
         )
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
@@ -268,7 +268,7 @@ class AssessmentWrapperTests(unittest.TestCase):
         self.wrong_config_cut = True
         with self.assertRaisesRegex(ValueError, "Frozen config paths for public"):
             self.run_wrapper()
-        self.assertEqual(self.stage_calls[-1][0], "prepare_tif_zonal_stats_config.py")
+        self.assertEqual(self.stage_calls[-1][0], "assessment.prepare_tif_zonal_stats_config")
         self.assertEqual(json.loads(self.manifest.read_text(encoding="utf-8"))["status"], "failed")
 
 

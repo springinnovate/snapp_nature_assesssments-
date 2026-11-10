@@ -3,14 +3,17 @@
 import csv
 import hashlib
 import json
+from pathlib import Path
+import subprocess
+import sys
 
 import geopandas as gpd
 import pytest
 from shapely.geometry import MultiPolygon, box
 from shapely.ops import unary_union
 
-import prepare_assessment_zones as zone_preparation
-from prepare_assessment_zones import main
+import assessment.prepare_assessment_zones as zone_preparation
+from assessment.prepare_assessment_zones import main
 
 
 CRS = "EPSG:6933"
@@ -103,7 +106,11 @@ def zone_inputs(tmp_path):
 def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
     """Verify land numerators, Census denominators, and independent land rules."""
     args, zones, county_path, _, county_boxes = zone_inputs
-    main(args)
+    subprocess.run(
+        [sys.executable, "-B", "-m", "assessment.prepare_assessment_zones", *args],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+    )
 
     expected = {
         "public_lands_by_county": {

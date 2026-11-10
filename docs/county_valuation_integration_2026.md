@@ -19,7 +19,7 @@ annual flows, others are net present values or wages, and several component
 fields are also represented in a total.
 
 The implementation is
-[`build_county_ecosystem_service_valuations_2026.py`](../build_county_ecosystem_service_valuations_2026.py).
+[`build_county_ecosystem_service_valuations_2026.py`](../assessment/build_county_ecosystem_service_valuations_2026.py).
 This guide describes its inputs, allocation assumptions, adjustments, and
 interpretation limits. See the [supporting workflows](supporting_workflows.md)
 for standalone raster zonal-statistics and PAD-US commands.
@@ -417,7 +417,7 @@ produce dollar totals. `flood_annual_adj_factor` and `flood_npv_adj_factor`
 record this area conversion; it is not an inflation adjustment. Source TIFFs
 and raw zonal outputs remain unscaled, and the zonal inventory must not apply
 the same conversion upstream. To update existing combined county results,
-rerun only `build_county_ecosystem_service_valuations_2026.py`; no raster
+rerun only `python -m assessment.build_county_ecosystem_service_valuations_2026`. No raster
 regeneration or zonal-statistics rerun is needed.
 
 ## Output fields and interpretation
@@ -549,7 +549,7 @@ Full source paths are in
 [`derived_metrics.yaml`](../data/workflow_assets/county_integration/derived_metrics.yaml).
 The GDP and population files are under `data/analysis_inputs/`. Use the CSV,
 GeoPackage, and QA CSV from the same
-[`prepare_county_reporting_areas.py`](../prepare_county_reporting_areas.py)
+[`prepare_county_reporting_areas.py`](../assessment/workflows/prepare_county_reporting_areas.py)
 run. The restricted CSV denominator and GeoPackage natural areas must carry
 matching county areas. Use the separate full-county NLCD GeoPackage only for
 the inclusive natural-area denominator. The paired columns can reuse these
@@ -683,7 +683,7 @@ described in the [README](../README.md#1-set-up-python), then run from the repos
 directory:
 
 ```powershell
-python build_county_ecosystem_service_valuations_2026.py --workers 16 --geometry-workers 16
+python -m assessment.build_county_ecosystem_service_valuations_2026 --workers 16 --geometry-workers 16
 ```
 
 The integration uses the configured county aggregates and NLCD mask areas.

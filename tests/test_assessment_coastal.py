@@ -10,8 +10,8 @@ import pandas as pd
 import pyogrio
 from shapely.geometry import Point, box
 
-from assessment_coastal import value_coastal
-from assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.assessment_coastal import value_coastal
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 
 
 class AssessmentCoastalTests(unittest.TestCase):

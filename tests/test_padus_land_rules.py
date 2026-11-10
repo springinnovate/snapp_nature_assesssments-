@@ -3,7 +3,7 @@
 from pathlib import Path
 import unittest
 
-from padus_land_rules import (
+from assessment.padus_land_rules import (
     NASA_LOCAL_MANAGER,
     RuleConfigError,
     build_rule_context,

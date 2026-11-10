@@ -14,8 +14,8 @@ import pandas as pd
 import pyogrio
 from tqdm import tqdm
 
-from assessment_zone_geometry import ZONE_PRODUCTS
-from prepare_tif_zonal_stats_config import (
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.prepare_tif_zonal_stats_config import (
     RasterInput,
     ZoneJob,
     load_and_prepare_rasters,

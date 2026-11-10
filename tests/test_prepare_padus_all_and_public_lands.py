@@ -10,8 +10,8 @@ from unittest.mock import patch
 import geopandas as gpd
 from shapely.geometry import box
 
-from padus_land_rules import RuleConfigError
-import prepare_padus_all_and_public_lands as prepare
+from assessment.padus_land_rules import RuleConfigError
+import assessment.workflows.prepare_padus_all_and_public_lands as prepare
 
 
 class PreparePadusProductsTests(unittest.TestCase):

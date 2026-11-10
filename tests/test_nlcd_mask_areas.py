@@ -17,10 +17,10 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from build_county_ecosystem_service_valuations_2026 import read_attributes, read_db, sha256
-from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS, derive_nlcd_mask_areas
-from prepare_tif_zonal_stats_config import prepare_config
-from update_nlcd_mask_areas import (
+from assessment.build_county_ecosystem_service_valuations_2026 import read_attributes, read_db, sha256
+from assessment.nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS, derive_nlcd_mask_areas
+from assessment.prepare_tif_zonal_stats_config import prepare_config
+from assessment.workflows.update_nlcd_mask_areas import (
     DEFAULT_CONFIG, export_mask_areas, run_mask_update, run_mask_zonals, validate_mask_definition,
 )
 
@@ -216,8 +216,8 @@ class MaskAreaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             profile, base = write_fixture(root)
-            with patch("update_nlcd_mask_areas.ROOT", root), patch(
-                "update_nlcd_mask_areas.subprocess.run", side_effect=subprocess.CalledProcessError(1, "runner")
+            with patch("assessment.workflows.update_nlcd_mask_areas.ROOT", root), patch(
+                "assessment.workflows.update_nlcd_mask_areas.subprocess.run", side_effect=subprocess.CalledProcessError(1, "runner")
             ) as launch, self.assertRaises(subprocess.CalledProcessError):
                 run_mask_update(Path(__file__), profile, base, derived_config=None)
             self.assertIn("--job-workers", launch.call_args.args[0])
@@ -248,7 +248,7 @@ class MaskAreaTests(unittest.TestCase):
                         with next((root / "masks").rglob("*.tif")).open("ab") as stream:
                             stream.write(b"changed")
 
-                with patch("update_nlcd_mask_areas.subprocess.run", side_effect=fake_runner), self.assertRaises(error):
+                with patch("assessment.workflows.update_nlcd_mask_areas.subprocess.run", side_effect=fake_runner), self.assertRaises(error):
                     run_mask_zonals(Path(__file__), profile, root / "run.yaml", results,
                                     root / "work", 1, reporting_zone=(base, "tl_2024_us_county_50_states"))
 
@@ -259,7 +259,7 @@ class MaskAreaTests(unittest.TestCase):
             root = Path(temporary)
             profile, base = write_fixture(root)
             before = sha256(base)
-            with patch("update_nlcd_mask_areas.ROOT", root):
+            with patch("assessment.workflows.update_nlcd_mask_areas.ROOT", root):
                 outputs = run_mask_update(Path(os.environ["SNAPP_TEST_ZONAL_RUNNER"]), profile, base,
                                           raster_workers=1, derived_config=None)
             self.assertEqual(len(outputs), 2)

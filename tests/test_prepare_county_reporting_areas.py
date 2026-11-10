@@ -15,10 +15,10 @@ import pytest
 import shapely
 from shapely.geometry import LineString, MultiPolygon, box
 
-import prepare_county_reporting_areas as builder
-import update_nlcd_mask_areas as masks
-from nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS
-from prepare_tif_zonal_stats_config import RasterInput
+import assessment.workflows.prepare_county_reporting_areas as builder
+import assessment.workflows.update_nlcd_mask_areas as masks
+from assessment.nlcd_mask_areas import CLASSES, FIELD_DEFINITIONS, OPERATIONS
+from assessment.prepare_tif_zonal_stats_config import RasterInput
 
 
 def test_ocean_follows_shoreline_connected_water_across_counties():

@@ -14,17 +14,18 @@ import sys
 import pyogrio
 from tqdm import tqdm
 
-from assessment_raster_zonals import (
+from assessment import REPO_ROOT as ROOT
+from assessment.assessment_geography import PADUS_ANALYSIS_LAYER, PADUS_ANALYSIS_PATH
+from assessment.assessment_raster_zonals import (
     freeze_zone_zonals,
     read_frozen_zone_raster_plan,
     read_zone_raster_sums,
     validate_zone_raster_inputs,
 )
-from assessment_valuation import CONFIG_FILES, load_valuation_config, value_zones, write_zone_pair
-from assessment_zone_geometry import ZONE_PRODUCTS
-from build_county_ecosystem_service_valuations_2026 import BASE_FIELDS, sha256
-from prepare_tif_zonal_stats_config import DEFAULT_CONFIG
-from run_snapp_assessment import PADUS_ANALYSIS_LAYER, PADUS_ANALYSIS_PATH, ROOT
+from assessment.assessment_valuation import CONFIG_FILES, load_valuation_config, value_zones, write_zone_pair
+from assessment.assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.build_county_ecosystem_service_valuations_2026 import BASE_FIELDS, sha256
+from assessment.prepare_tif_zonal_stats_config import DEFAULT_CONFIG
 
 
 COUNTY_PATH = Path("data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg")
@@ -275,7 +276,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         if source_id is None:
             record(stage, "running")
             subprocess.run([
-                sys.executable, "-B", str(root / "prepare_assessment_zones.py"),
+                sys.executable, "-B", "-m", "assessment.prepare_assessment_zones",
                 "--padus-path", input_paths["padus"][0], "--padus-layer", input_paths["padus"][1],
                 "--counties", input_paths["counties"][0], "--counties-layer", input_paths["counties"][1],
                 "--land-mask", input_paths["land_mask"][0], "--land-mask-layer", input_paths["land_mask"][1],

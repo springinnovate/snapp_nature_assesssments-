@@ -11,7 +11,7 @@ import pyogrio
 import pytest
 from shapely.geometry import box
 
-import prepare_census_county_land_mask as builder
+import assessment.workflows.prepare_census_county_land_mask as builder
 
 
 def write_faces(directory, geoid, shapes, *, flags=None, areas=None, ids=None, state=None):

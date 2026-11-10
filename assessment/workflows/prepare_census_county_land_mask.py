@@ -27,12 +27,12 @@ import shapely
 from shapely.errors import GEOSException
 from tqdm import tqdm
 
-from assessment_geography import CONUS_STATE_FIPS
-from assessment_zone_geometry import MAX_LAND_MASK_ERROR_PCT
-from geometry_utils import repair_polygonal_geometry
+from assessment import REPO_ROOT as ROOT
+from assessment.assessment_geography import CONUS_STATE_FIPS
+from assessment.assessment_zone_geometry import MAX_LAND_MASK_ERROR_PCT
+from assessment.geometry_utils import repair_polygonal_geometry
 
 
-ROOT = Path(__file__).resolve().parent
 COUNTIES = ROOT / "data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg"
 OUTPUT = ROOT / "data/analysis_inputs/boundaries/county_land/tl_2024_us_county_land_conus.gpkg"
 FACES_URL = "https://www2.census.gov/geo/tiger/TIGER2024/FACES/"

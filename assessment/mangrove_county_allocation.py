@@ -10,7 +10,7 @@ import pandas as pd
 import shapely
 from tqdm import tqdm
 
-from geometry_utils import polygonal_multipolygon
+from assessment.geometry_utils import polygonal_multipolygon
 
 
 AUDIT_COLUMNS = [

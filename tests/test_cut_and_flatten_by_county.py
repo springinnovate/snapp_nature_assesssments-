@@ -3,7 +3,7 @@
 from pathlib import Path
 import unittest
 
-from cut_and_flatten_by_county import (
+from assessment.workflows.cut_and_flatten_by_county import (
     BBB_CANDIDATE_BLM_LANDS_OUT_DIR,
     BLM_UNPROTECTED_LANDS_OUT_DIR,
     PADUS_PUBLIC_ACCESS_LANDS_OUT_DIR,

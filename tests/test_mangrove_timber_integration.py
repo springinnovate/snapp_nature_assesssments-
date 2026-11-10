@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import box
 
-from build_county_ecosystem_service_valuations_2026 import (
+from assessment.build_county_ecosystem_service_valuations_2026 import (
     BASE_FIELDS,
     CONFIG,
     adjusted_county_fields,

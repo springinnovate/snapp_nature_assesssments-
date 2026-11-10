@@ -19,11 +19,12 @@ import pandas as pd
 from tqdm import tqdm
 import yaml
 
-from nlcd_mask_areas import FIELD_DEFINITIONS
-from county_gdp import allocate_combined_gdp, read_county_source
+from assessment import REPO_ROOT
+from assessment.county_gdp import allocate_combined_gdp, read_county_source
+from assessment.nlcd_mask_areas import FIELD_DEFINITIONS
 
 
-DEFAULT_CONFIG = Path(__file__).resolve().parent / 'data/workflow_assets/county_integration/derived_metrics.yaml'
+DEFAULT_CONFIG = REPO_ROOT / 'data/workflow_assets/county_integration/derived_metrics.yaml'
 DERIVED_FIELDS = ('area_ha_county', 'area_ha_county_incl_ocean_great_lakes',
                   'area_ha_all_natural_incl_ocean_great_lakes', 'GDP_2024', 'GDP_2024_is_allocated', 'Pop_2024', 'es_total',
                   'es_per_ha', 'es_per_ha_incl_ocean_great_lakes', 'es_per_ha_natural',

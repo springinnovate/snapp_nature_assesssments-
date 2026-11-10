@@ -15,13 +15,10 @@ import sys
 
 import yaml
 
+from assessment import REPO_ROOT as ROOT
+from assessment.assessment_geography import PADUS_ANALYSIS_LAYER, PADUS_ANALYSIS_PATH
 
-ROOT = Path(__file__).resolve().parent
-PADUS_ANALYSIS_PATH = Path(
-    "data/analysis_inputs/padus/PADUS4_1VectorAnalysis_PADUS_Only (1)"
-    "/PADUS4_1VectorAnalysis_PADUS_Only.gdb"
-)
-PADUS_ANALYSIS_LAYER = "PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP"
+
 PADUS_PRODUCTS = {
     "all": "padus_all_lands",
     "public": "padus_public_lands",
@@ -157,12 +154,12 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             if path.exists():
                 raise FileExistsError(f"Run path already exists; choose a different --run-id: {path}")
 
-    prep_script = root / "prepare_padus_all_and_public_lands.py"
+    prep_command = ["-m", "assessment.workflows.prepare_padus_all_and_public_lands"]
     prep_args = [
         "--padus-path", str(padus), "--padus-layer", args.padus_layer, "--products", *PADUS_PRODUCTS,
     ]
     print("Checking the PAD-US layer and selected rules.", flush=True)
-    subprocess.run([sys.executable, str(prep_script), *prep_args, "--validate-only"], cwd=root, check=True)
+    subprocess.run([sys.executable, *prep_command, *prep_args, "--validate-only"], cwd=root, check=True)
     if args.validate_only:
         print("Assessment inputs validated; no run files written.", flush=True)
         return None
@@ -184,9 +181,9 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         "outputs": {},
     }
 
-    def run_stage(name: str, entrypoint: Path, *arguments: str) -> None:
+    def run_stage(name: str, command: list[str], *arguments: str) -> None:
         """Run one Python entry point and record its arguments and result."""
-        argv = [sys.executable, str(entrypoint), *arguments]
+        argv = [sys.executable, *command, *arguments]
         stage = {"name": name, "argv": argv, "status": "running"}
         manifest["stages"].append(stage)
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -201,17 +198,17 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     clipped = work / "padus_clipped_to_usa"
     zones = work / "zonal_units"
     try:
-        run_stage("Prepare all/public PAD-US", prep_script, *prep_args, "--output-dir", str(clipped))
+        run_stage("Prepare all/public PAD-US", prep_command, *prep_args, "--output-dir", str(clipped))
         cuts = {}
         for product, folder in PADUS_PRODUCTS.items():
             source = only_output(clipped / f"{product}_lands", f"{folder}_clipped_to_usa_*.gpkg")
             destination = zones / f"{folder}_by_county"
-            run_stage(f"Cut {product} lands by county", root / "cut_and_flatten_by_county.py",
+            run_stage(f"Cut {product} lands by county", ["-m", "assessment.workflows.cut_and_flatten_by_county"],
                       str(source), "--output-dir", str(destination))
             cuts[product] = only_output(destination, f"{folder}_clipped_by_county_*.gpkg")
 
         run_stage(
-            "Freeze all/public zonal config", root / "prepare_tif_zonal_stats_config.py",
+            "Freeze all/public zonal config", ["-m", "assessment.prepare_tif_zonal_stats_config"],
             "--config", str(zonal_config),
             "--zonal-units-dir", str(zones), "--output", str(frozen_config),
             "--results-dir", str(results), "--work-dir", str(work / "zonal_stats_work"),
@@ -234,7 +231,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
                 raise ValueError(f"Frozen config paths for {product} do not match this run")
 
         run_stage(
-            "Run all/public zonals", runner, str(frozen_config),
+            "Run all/public zonals", [str(runner)], str(frozen_config),
             "--job-workers", str(args.job_workers), "--raster-workers", str(args.raster_workers),
         )
         for folder in PADUS_PRODUCTS.values():
@@ -243,7 +240,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
 
         counties = results / "counties" / f"counties_{args.run_id}.gpkg"
         run_stage(
-            "Build whole-county valuations", root / "build_county_ecosystem_service_valuations_2026.py",
+            "Build whole-county valuations", ["-m", "assessment.build_county_ecosystem_service_valuations_2026"],
             "--data-root", str(data),
             "--config-dir", str(county_config), "--output", str(counties),
             "--workers", str(args.workers), "--geometry-workers", str(args.geometry_workers),
