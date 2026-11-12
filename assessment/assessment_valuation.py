@@ -188,33 +188,38 @@ def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.D
     return paths, factors, rules, derived
 
 
-def calculate_county_land_service_metrics(
-    products: Mapping[str, pd.DataFrame], ratios: Mapping[str, str], per_hectare: Mapping[str, str]
-) -> pd.DataFrame:
-    """Calculate land-category value shares and value per land hectare.
+def calculate_land_service_metrics(
+    products: Mapping[str, pd.DataFrame],
+    ratios: Mapping[str, str],
+    county_per_hectare: Mapping[str, str],
+    footprint_per_hectare: Mapping[str, str],
+) -> tuple[pd.DataFrame, dict[str, pd.Series]]:
+    """Calculate county value shares and publish each footprint density in both outputs.
 
     Args:
         products: Valued products containing GEOID and total_ecosystem_services.
             Land-category products also contain area_ha_land.
         ratios: Output field names mapped to by-county land products.
-        per_hectare: Per-hectare output names mapped to by-county land products.
+        county_per_hectare: County density field names mapped to by-county land products.
+        footprint_per_hectare: Footprint density field names mapped to by-county land products.
 
     Returns:
-        Columns in county row order, using totals excluding recreation. An
-        absent category contributes zero to its county value share, but has
-        no per-hectare value. Missing totals and missing, nonpositive, or
-        nonfinite denominators produce NaN.
+        County metrics in county row order and a named density series for each
+        footprint product, indexed by GEOID in that product's row order. Totals
+        exclude recreation. An absent footprint contributes zero to its county
+        value share and has no density. Missing or nonfinite totals and missing,
+        nonpositive, or nonfinite denominators produce NaN.
 
     Raises:
         ValueError: Products, county keys, or output names are invalid.
     """
     expected = {"public_lands_by_county", "conservation_lands_by_county", "bbb_lands_by_county"}
     if any(len(mapping) != len(expected) or set(mapping.values()) != expected
-           for mapping in (ratios, per_hectare)):
-        raise ValueError("County land-service metrics require the three by-county land products")
+           for mapping in (ratios, county_per_hectare, footprint_per_hectare)):
+        raise ValueError("Land-service metrics require the three by-county land products")
     counties = products["counties"]
-    if (set(ratios).intersection(per_hectare)
-            or (set(ratios) | set(per_hectare)).intersection(counties.columns)):
+    if (set(ratios).intersection(county_per_hectare)
+            or (set(ratios) | set(county_per_hectare)).intersection(counties.columns)):
         raise ValueError("County land-service fields collide with existing attributes")
     totals, areas = {}, {}
     for product in ("counties", *ratios.values()):
@@ -240,14 +245,20 @@ def calculate_county_land_service_metrics(
             numerator, denominator, out=np.full(len(counties), np.nan),
             where=usable & np.isfinite(numerator),
         )
-    for output, product in per_hectare.items():
-        numerator = totals[product].reindex(county_total.index).to_numpy()
-        denominator = areas[product].reindex(county_total.index).to_numpy()
-        metrics[output] = np.divide(
-            numerator, denominator, out=np.full(len(counties), np.nan),
+    densities = {}
+    for output, product in footprint_per_hectare.items():
+        if output in products[product].columns:
+            raise ValueError(f"{product}: land-service field {output} collides with an existing attribute")
+        numerator = totals[product].to_numpy()
+        denominator = areas[product].to_numpy()
+        values = np.divide(
+            numerator, denominator, out=np.full(len(numerator), np.nan),
             where=np.isfinite(numerator) & np.isfinite(denominator) & (denominator > 0),
         )
-    return metrics
+        densities[product] = pd.Series(values, index=totals[product].index, name=output)
+    for output, product in county_per_hectare.items():
+        metrics[output] = densities[product].reindex(county_total.index).to_numpy()
+    return metrics, densities
 
 
 def value_zones(
@@ -399,10 +410,15 @@ def value_zones(
             raise ValueError(f"{product}: exported valuation fields collide with zone attributes")
         result_frames[product] = gpd.GeoDataFrame(pd.concat([zone, adjusted], axis=1),
                                                  geometry=zone.geometry.name, crs=zone.crs)
-    county_land_metrics = calculate_county_land_service_metrics(
-        result_frames, derived["county_ecosystem_service_ratios"], derived["county_land_service_value_per_ha"],
+    county_land_metrics, footprint_densities = calculate_land_service_metrics(
+        result_frames,
+        derived["county_ecosystem_service_ratios"],
+        derived["county_land_service_value_per_ha"],
+        derived["footprint_land_service_value_per_ha"],
     )
     result_frames["counties"] = pd.concat([result_frames["counties"], county_land_metrics], axis=1)
+    for product, density in footprint_densities.items():
+        result_frames[product][density.name] = density.to_numpy()
     return result_frames, county_audits, {
         "fisheries_weights_cache": fisheries_cache,
         "total_components": non_recreation_components,
