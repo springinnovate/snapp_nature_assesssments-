@@ -1,5 +1,7 @@
 """Test state-rate reuse and lake exclusions for footprint fisheries."""
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -9,7 +11,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import LineString, MultiLineString, Polygon, box
 
-from assessment.assessment_fisheries import read_marine_shoreline, value_fisheries
+from assessment.assessment_fisheries import FisheriesPlan, read_marine_shoreline, value_fisheries
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 
 
@@ -208,3 +210,42 @@ class FootprintFisheriesTests(TestCase):
         result = value_fisheries(self.zones, self.paths, geometry_workers=1)
         np.testing.assert_array_equal(result[product].iloc[0], [0.0, 0.0])
         self.assertFalse(self.zones[product].geometry.iloc[0].is_valid)
+
+    def test_spawn_pool_matches_standalone_with_nondefault_indices_and_empty_product(self):
+        """Spawn-safe county jobs preserve manager order, empty outputs and NaNs."""
+        self.zones["bbb_lands_by_county"] = self.zones["bbb_lands_by_county"].iloc[:0]
+        for product, frame in self.zones.items():
+            frame.index = pd.Index([f"{product}-{number}" for number in range(len(frame))], name="zone")
+        expected = value_fisheries(self.zones, self.paths, geometry_workers=1)
+        original_wkb = {product: frame.geometry.to_wkb().copy() for product, frame in self.zones.items()}
+        for workers in (1, 2):
+            with self.subTest(workers=workers):
+                plan = FisheriesPlan(self.zones, self.paths)
+                jobs = list(plan.tasks())
+                self.assertEqual(plan.task_count, len(self.zones["counties"]))
+                for geoid, function, args in jobs:
+                    # Every payload contains only this county's rows; the
+                    # shared source context has paths/bounds, not national zones.
+                    self.assertNotIn("<locals>", function.__qualname__)
+                    for product, (positions, shapes) in args[3].items():
+                        self.assertTrue(self.zones[product].iloc[positions].GEOID.eq(geoid).all())
+                        self.assertEqual(len(positions), len(shapes))
+                with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+                    futures = {pool.submit(function, *args): key for key, function, args in reversed(jobs)}
+                    for future in as_completed(futures):
+                        plan.accept(futures[future], future.result())
+                actual = plan.finish()
+                for product in self.zones:
+                    pd.testing.assert_frame_equal(actual[product], expected[product], check_exact=True)
+                    pd.testing.assert_series_equal(self.zones[product].geometry.to_wkb(), original_wkb[product])
+
+    def test_plan_rejects_incomplete_or_duplicate_results(self):
+        """Do not silently publish zero weights when a scheduled county is lost."""
+        plan = FisheriesPlan(self.zones, self.paths)
+        with self.assertRaisesRegex(ValueError, "Missing fisheries county results"):
+            plan.finish()
+        key, function, args = next(plan.tasks())
+        result = function(*args)
+        plan.accept(key, result)
+        with self.assertRaisesRegex(ValueError, "Duplicate or unknown fisheries county result"):
+            plan.accept(key, result)

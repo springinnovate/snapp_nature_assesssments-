@@ -58,8 +58,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
     parser.add_argument("--job-workers", type=int, default=2)
     parser.add_argument("--raster-workers", type=int, default=2)
-    parser.add_argument("--workers", type=int, default=4, help="Concurrent county geometry and tabular workers")
-    parser.add_argument("--geometry-workers", type=int, default=4, help="Concurrent fisheries and coastal measurement workers")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Zone-preparation workers and shared non-zonal valuation processes (default: 4)")
+    parser.add_argument("--geometry-workers", type=int, default=None,
+                        help="Compatibility override for the entire shared valuation pool, not a nested pool")
     parser.add_argument(
         "--reuse-zonals-from", metavar="RUN_ID",
         help="Reuse a prior run's prepared zones and verified raster sums; run valuation and publication only",
@@ -165,7 +167,8 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     source_id = args.reuse_zonals_from
     if source_id is not None and (not _RUN_ID.fullmatch(source_id) or source_id.casefold() == args.run_id.casefold()):
         raise ValueError("Reuse requires a valid source run ID distinct from the new run ID")
-    if min(args.job_workers, args.raster_workers, args.workers, args.geometry_workers) < 1:
+    valuation_workers = args.workers if args.geometry_workers is None else args.geometry_workers
+    if min(args.job_workers, args.raster_workers, args.workers, valuation_workers) < 1:
         raise ValueError("Worker limits must be positive")
     root = root.resolve()
     data = root / "data"
@@ -257,6 +260,8 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         "county_area_qa": str(zone_root / "county_area_qa.csv"),
         "raw_zonal_directory": str(raw_root),
         "blocked_rasters": blocked,
+        "valuation_execution": {"executor": "shared_process_pool", "workers": valuation_workers,
+                                "native_threads_per_worker": 1},
         "stages": {}, "outputs": {},
     }
     if source_id is not None:
@@ -322,7 +327,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         valued, county_audits, coverage = value_zones(
             zone_frames, raster_sums, data, config_dir,
             coral_reference_counties=coral_reference,
-            workers=args.workers, geometry_workers=args.geometry_workers,
+            workers=valuation_workers,
         )
         if any(sha256(path) != digest for path, digest in hashes.items()):
             raise ValueError("Assessment configuration changed during valuation")

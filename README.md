@@ -658,6 +658,18 @@ python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county
 Run the second command after validation passes. Use `--help` for worker
 settings and additional input options.
 
+`--workers` sets the size of one shared process pool for the non-zonal valuation
+stage (default: 4). County-table joins, fisheries measurements by county, and
+coastal allocation batches share those workers. Progress bars count completed
+tasks. Each process uses one native computation thread. Increase `--workers`
+if memory and disk throughput permit; for example, use `--workers 8`.
+Geometry preparation also uses this setting on fresh runs. Raster zonals use
+their separate `--job-workers` and `--raster-workers` settings.
+
+`--geometry-workers`, when supplied, overrides the size of the entire valuation
+pool; it does not create an additional pool. Final table assembly and verified
+file publication run in the parent process.
+
 ### 4. Find the output files
 
 ```text
@@ -690,8 +702,31 @@ ecosystem-service shares and value per land hectare), reuse a completed run's
 saved analysis boundaries and raster sums. Pass its run ID and a new output ID:
 
 ```cmd
-python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued"
+python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued" --workers 8
 ```
 
 Add `--validate-only` to check reuse before launching. Changes to analysis
 boundaries or service rasters require a fresh assessment run.
+Revaluation reuses the ecosystem-service raster sums. Fisheries measurements
+are cached under `data/processing_outputs/fisheries_weights/` as raw freshwater
+hectares and marine shoreline kilometres for all six layers. The first run
+measures and saves these weights; later runs reuse them when the spatial inputs
+match. A `Reuse fisheries weights` message confirms reuse. Current state values
+and monetary adjustments are applied on every run. Coastal allocations are
+recomputed.
+
+Cache checks use the contents of the geometry and source files, county/manager
+keys, coordinate systems, lake-exclusion rules, and measurement code/settings.
+Changes to those inputs trigger new measurements; changes only to monetary
+amounts or output fields reuse the saved weights. Adding or removing a state
+from a fisheries table also triggers new measurements. The run manifest records
+the cache key, path, and whether it was reused. Invalid or incomplete cache files
+are ignored and rebuilt. Cache validation reads the spatial source files to
+verify their content hashes, even when no intersections are needed.
+
+For freshwater-area measurements, fully contained water polygons contribute
+their full areas directly. Only polygons crossing the analysis boundary need
+clipping. Both paths retain the configured lake exclusions.
+Use `PROJ_NETWORK=OFF`, as in the launch commands, to enable persistent weight
+reuse with local projection resources. With online projection-grid downloads
+enabled, the pipeline measures fisheries weights without saving or reusing them.

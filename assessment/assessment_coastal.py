@@ -13,10 +13,14 @@ from tqdm import tqdm
 from assessment.assessment_geography import CONUS_STATE_FIPS
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 from assessment.coral_county_allocation import allocate_coral_values
-from assessment.mangrove_county_allocation import _project_polygons, allocate_mangrove_values
+from assessment.mangrove_county_allocation import (
+    _allocate_chunk, _finish_allocation, _prepare_allocation,
+)
 
 
 AREA_CRS = "EPSG:6933"
+MANGROVE_CHUNK_SIZE = 32
+FOOTPRINT_CHUNK_SIZE = 128
 
 
 def _footprint_corals(
@@ -79,101 +83,172 @@ def _footprint_mangroves(
     return totals.astype(float, copy=False)
 
 
-def value_coastal(
-    zones: Mapping[str, gpd.GeoDataFrame],
-    paths: Mapping[str, Path],
-    geometry_workers: int,
-    *,
-    coral_reference_counties: gpd.GeoDataFrame,
-) -> dict[str, pd.DataFrame]:
-    """Calculate unadjusted coastal values for the six CONUS zone products.
+def _coral_source_values(reference, points):
+    """Keep worker output quiet while the parent reports completed jobs."""
+    return allocate_coral_values(reference, points, show_progress=False)
 
-    Assign coral points to the original, unfiltered counties, then retain
-    assignments to assessment counties. This keeps offshore CONUS points
-    without redistributing points assigned to out-of-scope counties. A
-    footprint receives only assigned points it intersects. For mangroves,
-    use USA study units and a denominator fixed to their CONUS county
-    intersections. Products and manager rows can overlap and their values
-    are not additive.
 
-    Args:
-        zones: The six prepared products. County GEOIDs are unique in the
-            counties product; all other rows have valid county-clipped polygons
-            and may repeat GEOID for different managers.
-        paths: Configured source files keyed by corals and mangroves.
-        geometry_workers: Worker count for the whole-county mangrove allocation.
-        coral_reference_counties: Original, unfiltered county polygons with
-            unique GEOIDs, including counties outside the assessment scope.
+def _mangrove_source_chunk(source_shapes, source_values, source_keys,
+                           county_shapes, county_positions, metadata):
+    """Allocate a bounded source batch using only its candidate counties."""
+    rows, contributions, unknown = _allocate_chunk(
+        0, len(source_shapes), source_shapes, source_values, source_keys,
+        county_shapes, shapely.STRtree(county_shapes), metadata,
+    )
+    return (rows, [(int(county_positions[position]), value) for position, value in contributions],
+            {int(county_positions[position]) for position in unknown})
 
-    Returns:
-        One DataFrame per product, in that product's input index order, with
-        pre-factor corals and mangroves columns. Zero indicates no contributing
-        source; a contributing source with a missing value propagates null.
 
-    Raises:
-        ValueError: A zone product or county identifier is inconsistent.
+def _coastal_footprint_chunk(shapes, geoids, points, coral_audit, sources, areas, values):
+    """Measure a bounded footprint batch without creating another executor."""
+    return np.column_stack((
+        _footprint_corals(shapes, geoids, points, coral_audit),
+        _footprint_mangroves(shapes, shapely.STRtree(sources), areas, values),
+    ))
+
+
+class CoastalPlan:
+    """Schedule source allocations and dependent footprints on the caller's pool.
+
+    The parent prepares spatial indexes and sends only candidate geometries in
+    each bounded task. Source results are assembled in input order even when
+    workers complete out of order. All task functions are module-level and no
+    task creates an executor.
     """
-    if set(zones) != set(ZONE_PRODUCTS):
-        raise ValueError("Coastal valuation requires all six prepared zone products")
-    counties = zones["counties"]
-    county_ids = counties.GEOID.astype("string")
-    if (not county_ids.str.fullmatch("[0-9]{5}").fillna(False).all()
-            or county_ids.duplicated().any()
-            or not county_ids.str[:2].isin(CONUS_STATE_FIPS).all()):
-        raise ValueError("Coastal valuation requires unique CONUS county GEOIDs")
-    if ("GEOID" not in coral_reference_counties
-            or not county_ids.isin(coral_reference_counties.GEOID.astype("string")).all()):
-        raise ValueError("The coral reference must contain every assessment county GEOID")
-    with tqdm(total=2, desc="Read coastal valuation inputs", unit="layer") as progress:
-        points = pyogrio.read_dataframe(
-            paths["corals"], layer="aeb_coral", columns=["OBJECTID", "BC_USD11"]
-        )
-        progress.update(1)
-        mangrove_layer = "UCSC_CWON_studyunits"
-        mangrove_crs = pyogrio.read_info(paths["mangroves"], layer=mangrove_layer)["crs"]
-        if mangrove_crs is None:
-            raise ValueError("Mangrove study units must declare a CRS")
-        bounds = tuple(counties.geometry.to_crs(mangrove_crs).total_bounds)
-        # The bounding box retains offshore parts of candidate study units.
-        # The county allocator checks their actual intersection support.
-        study_units = pyogrio.read_dataframe(
-            paths["mangroves"], layer=mangrove_layer, bbox=bounds, where="ISO3 = 'USA'",
-            columns=["ISO3", "Ben_Stock_2020"], fid_as_index=True,
-        ).rename_axis("source_id").reset_index()
-        progress.update(1)
 
-    coral_counties, _, coral_audit = allocate_coral_values(coral_reference_counties, points)
-    coral_audit = coral_audit.loc[coral_audit.GEOID.isin(county_ids)]
-    mangrove_counties, _, mangrove_audit = allocate_mangrove_values(
-        counties, study_units, workers=geometry_workers
-    )
-    values = {
-        "counties": pd.DataFrame({
-            "corals": coral_counties.reindex(county_ids).to_numpy(),
-            "mangroves": mangrove_counties.reindex(counties.GEOID).to_numpy(),
-        }, index=counties.index),
-    }
+    def __init__(self, zones, paths, *, coral_reference_counties):
+        if set(zones) != set(ZONE_PRODUCTS):
+            raise ValueError("Coastal valuation requires all six prepared zone products")
+        self.zones = zones
+        counties = zones["counties"]
+        county_ids = counties.GEOID.astype("string")
+        if (not county_ids.str.fullmatch("[0-9]{5}").fillna(False).all()
+                or county_ids.duplicated().any()
+                or not county_ids.str[:2].isin(CONUS_STATE_FIPS).all()):
+            raise ValueError("Coastal valuation requires unique CONUS county GEOIDs")
+        if ("GEOID" not in coral_reference_counties
+                or not county_ids.isin(coral_reference_counties.GEOID.astype("string")).all()):
+            raise ValueError("The coral reference must contain every assessment county GEOID")
+        for product, zone in zones.items():
+            if not zone.GEOID.astype("string").isin(county_ids).all():
+                raise ValueError(f"{product} contains an unknown county GEOID")
+        self.reference = coral_reference_counties[["GEOID", coral_reference_counties.geometry.name]]
+        with tqdm(total=2, desc="Read coastal valuation inputs", unit="layer") as progress:
+            self.points = pyogrio.read_dataframe(
+                paths["corals"], layer="aeb_coral", columns=["OBJECTID", "BC_USD11"])
+            progress.update(1)
+            layer = "UCSC_CWON_studyunits"
+            source_crs = pyogrio.read_info(paths["mangroves"], layer=layer)["crs"]
+            if source_crs is None:
+                raise ValueError("Mangrove study units must declare a CRS")
+            bounds = tuple(counties.geometry.to_crs(source_crs).total_bounds)
+            # Preserve offshore source parts; county intersections set support.
+            study_units = pyogrio.read_dataframe(
+                paths["mangroves"], layer=layer, bbox=bounds, where="ISO3 = 'USA'",
+                columns=["ISO3", "Ben_Stock_2020"], fid_as_index=True,
+            ).rename_axis("source_id").reset_index()
+            progress.update(1)
+        self.prepared = _prepare_allocation(counties, study_units)
+        self.source_starts = list(range(0, len(study_units), MANGROVE_CHUNK_SIZE))
+        self.source_results = {}
+        self.coral_result = None
+        self.values = {product: pd.DataFrame(0.0, index=zone.index, columns=["corals", "mangroves"])
+                       for product, zone in zones.items()}
+        self.footprints_started = False
+        self.footprints_generated = False
+        self.remaining_footprints = set()
 
-    point_positions = pd.Index(points.OBJECTID.astype("string").str.strip()).get_indexer(
-        coral_audit.source_key
-    )
-    point_shapes = points.geometry.iloc[point_positions].to_crs(AREA_CRS).to_numpy()
-    support = mangrove_audit.set_index("source_key").reindex(study_units.source_id.astype(str))
-    supported = support.intersected_area_m2.gt(0).to_numpy()
-    # Use the county allocator's projection/repair for the numerators too.
-    study_shapes = _project_polygons(study_units.loc[supported], "supported mangroves", 2000)
-    study_tree = shapely.STRtree(study_shapes)
-    areas = support.intersected_area_m2.to_numpy(dtype=float)[supported]
-    totals = support.input_value.to_numpy(dtype=float)[supported]
+    def tasks(self):
+        """Yield independent coral and mangrove source-allocation jobs."""
+        yield ("corals", 0), _coral_source_values, (self.reference, self.points)
+        _, shapes, values, keys, county_shapes, metadata = self.prepared
+        tree = shapely.STRtree(county_shapes)
+        for start in self.source_starts:
+            stop = start + MANGROVE_CHUNK_SIZE
+            subset = shapes[start:stop]
+            candidates = np.unique(tree.query(subset, predicate="intersects")[1])
+            yield ("mangroves", start), _mangrove_source_chunk, (
+                subset, values[start:stop], keys[start:stop], county_shapes[candidates],
+                candidates, {field: items[start:stop] for field, items in metadata.items()},
+            )
 
-    for product in tqdm(ZONE_PRODUCTS[1:], desc="Value coastal footprints", unit="product"):
-        zone = zones[product]
-        geoids = zone.GEOID.astype("string")
-        if not geoids.isin(county_ids).all():
-            raise ValueError(f"{product} contains an unknown county GEOID")
-        shapes = zone.geometry.to_crs(AREA_CRS).to_numpy()
-        values[product] = pd.DataFrame({
-            "corals": _footprint_corals(shapes, geoids.to_numpy(), point_shapes, coral_audit),
-            "mangroves": _footprint_mangroves(shapes, study_tree, areas, totals),
-        }, index=zone.index)
-    return values
+    def accept(self, key, result):
+        """Store a completed job and release footprints when sources are ready."""
+        kind, position = key
+        if kind == "corals":
+            if self.coral_result is not None:
+                raise ValueError(f"Duplicate coastal task result: {key}")
+            self.coral_result = result
+        elif kind == "mangroves":
+            if position not in self.source_starts or position in self.source_results:
+                raise ValueError(f"Unexpected or duplicate coastal task result: {key}")
+            self.source_results[position] = result
+        else:
+            if key not in self.remaining_footprints:
+                raise ValueError(f"Unexpected or duplicate coastal task result: {key}")
+            self.values[kind].iloc[position:position + len(result)] = result
+            self.remaining_footprints.remove(key)
+        if (not self.footprints_started and self.coral_result is not None
+                and len(self.source_results) == len(self.source_starts)):
+            self.footprints_started = True
+            return self._footprint_tasks()
+        return ()
+
+    def _footprint_tasks(self):
+        """Use fixed county support to schedule bounded land-footprint batches."""
+        county_index, source_shapes, _, source_keys, _, metadata = self.prepared
+        mangrove_counties, _, audit = _finish_allocation(
+            county_index, metadata, [self.source_results[start] for start in self.source_starts])
+        coral_counties, _, coral_audit = self.coral_result
+        counties = self.zones["counties"]
+        self.values["counties"]["corals"] = coral_counties.reindex(counties.GEOID).to_numpy()
+        self.values["counties"]["mangroves"] = mangrove_counties.reindex(counties.GEOID).to_numpy()
+        coral_audit = coral_audit.loc[coral_audit.GEOID.isin(counties.GEOID)]
+        point_positions = pd.Index(self.points.OBJECTID.astype("string").str.strip()).get_indexer(
+            coral_audit.source_key)
+        points = self.points.geometry.iloc[point_positions].to_crs(AREA_CRS).to_numpy()
+        support = audit.set_index("source_key").reindex(source_keys)
+        supported = support.intersected_area_m2.gt(0).to_numpy()
+        source_shapes = source_shapes[supported]
+        areas = support.intersected_area_m2.to_numpy(dtype=float)[supported]
+        values = support.input_value.to_numpy(dtype=float)[supported]
+        tree = shapely.STRtree(source_shapes)
+        for product in ZONE_PRODUCTS[1:]:
+            zone = self.zones[product]
+            for start in range(0, len(zone), FOOTPRINT_CHUNK_SIZE):
+                chunk = zone.iloc[start:start + FOOTPRINT_CHUNK_SIZE]
+                shapes = chunk.geometry.to_crs(AREA_CRS).to_numpy()
+                candidates = np.unique(tree.query(shapes, predicate="intersects")[1])
+                key = (product, start)
+                self.remaining_footprints.add(key)
+                yield key, _coastal_footprint_chunk, (
+                    shapes, chunk.GEOID.astype("string").to_numpy(), points, coral_audit,
+                    source_shapes[candidates], areas[candidates], values[candidates],
+                )
+        self.footprints_generated = True
+
+    def finish(self):
+        """Return values only after all source and footprint jobs complete."""
+        if not self.footprints_generated or self.remaining_footprints:
+            raise ValueError("Coastal valuation has unfinished tasks")
+        return self.values
+
+
+def value_coastal(
+    zones: Mapping[str, gpd.GeoDataFrame], paths: Mapping[str, Path], geometry_workers: int,
+    *, coral_reference_counties: gpd.GeoDataFrame,
+) -> dict[str, pd.DataFrame]:
+    """Calculate coastal values serially; the assessment schedules CoastalPlan.
+
+    Keep the direct-call API for standalone use. Assessment workers execute the
+    same tasks through its shared process pool. Values use whole-county source
+    support and preserve input row indexes, overlapping products and nulls.
+    """
+    if geometry_workers < 1:
+        raise ValueError("Coastal geometry_workers must be positive")
+    plan = CoastalPlan(zones, paths, coral_reference_counties=coral_reference_counties)
+    pending = list(plan.tasks())
+    while pending:
+        key, function, arguments = pending.pop(0)
+        pending.extend(plan.accept(key, function(*arguments)))
+    return plan.finish()

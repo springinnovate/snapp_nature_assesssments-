@@ -1,8 +1,11 @@
 """Test coastal values on county zones and independently overlapping masks."""
 
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import geopandas as gpd
 import numpy as np
@@ -10,7 +13,7 @@ import pandas as pd
 import pyogrio
 from shapely.geometry import Point, box
 
-from assessment.assessment_coastal import value_coastal
+from assessment.assessment_coastal import CoastalPlan, value_coastal
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 
 
@@ -139,6 +142,58 @@ class AssessmentCoastalTests(unittest.TestCase):
         self.assertEqual(set(values), set(ZONE_PRODUCTS))
         self.assertEqual(list(values[product].columns), ["corals", "mangroves"])
         self.assertTrue(values[product].index.equals(self.zones[product].index))
+
+    def test_spawned_flat_tasks_match_serial_values(self) -> None:
+        """Process jobs preserve support, nulls, exclusions and manager indexes."""
+        # An excluded county must retain its coral assignment rather than having
+        # that point redistributed to CONUS. The source fixture also has MEX,
+        # PRI and VIR mangroves that must not contribute.
+        excluded = gpd.GeoDataFrame({"GEOID": ["02020"]},
+                                    geometry=[box(5000, 0, 6000, 1000)], crs="EPSG:6933")
+        reference = pd.concat([self.zones["counties"], excluded], ignore_index=True)
+        points = pyogrio.read_dataframe(self.paths["corals"], layer="aeb_coral")
+        extra = gpd.GeoDataFrame({"OBJECTID": [5], "BC_USD11": [999.0]},
+                                 geometry=[Point(5500, 200)], crs=points.crs)
+        pyogrio.write_dataframe(pd.concat([points, extra], ignore_index=True),
+                                self.paths["corals"], layer="aeb_coral")
+        expected = value_coastal(self.zones, self.paths, geometry_workers=1,
+                                 coral_reference_counties=reference)
+        with patch("assessment.assessment_coastal.MANGROVE_CHUNK_SIZE", 1), \
+                patch("assessment.assessment_coastal.FOOTPRINT_CHUNK_SIZE", 1):
+            plan = CoastalPlan(self.zones, self.paths, coral_reference_counties=reference)
+            with ProcessPoolExecutor(max_workers=2, mp_context=multiprocessing.get_context("spawn")) as pool:
+                pending = {pool.submit(function, *args): key
+                           for key, function, args in plan.tasks()}
+                source_jobs = len(pending)
+                while pending:
+                    future = next(as_completed(pending))
+                    key = pending.pop(future)
+                    for next_key, function, args in plan.accept(key, future.result()):
+                        pending[pool.submit(function, *args)] = next_key
+        self.assertEqual(source_jobs, 3)  # One coral task, two USA study units.
+        actual = plan.finish()
+        for product in ZONE_PRODUCTS:
+            pd.testing.assert_frame_equal(actual[product], expected[product])
+        np.testing.assert_allclose(actual["counties"].corals, [12.0, 11.0, np.nan])
+        np.testing.assert_allclose(actual["counties"].mangroves, [np.nan, 50.0, 0.0])
+
+    def test_incomplete_plan_cannot_publish(self) -> None:
+        """A source failure cannot yield a zero-filled coastal result."""
+        plan = CoastalPlan(self.zones, self.paths, coral_reference_counties=self.zones["counties"])
+        with self.assertRaisesRegex(ValueError, "unfinished"):
+            plan.finish()
+
+    def test_no_eligible_mangroves_produces_zeros(self) -> None:
+        """Empty source selections and empty products retain their schema."""
+        units = pyogrio.read_dataframe(self.paths["mangroves"], layer="UCSC_CWON_studyunits")
+        units.ISO3 = "MEX"
+        pyogrio.write_dataframe(units, self.paths["mangroves"], layer="UCSC_CWON_studyunits")
+        self.zones["bbb_lands_by_county"] = self.zones["bbb_lands_by_county"].iloc[:0]
+        values = value_coastal(self.zones, self.paths, geometry_workers=1,
+                               coral_reference_counties=self.zones["counties"])
+        for product in ZONE_PRODUCTS:
+            self.assertTrue(values[product].mangroves.eq(0).all())
+            self.assertTrue(values[product].index.equals(self.zones[product].index))
 
 
 if __name__ == "__main__":
