@@ -65,8 +65,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--land-mask", type=Path, help="Census county land polygons keyed by GEOID for a fresh run")
     parser.add_argument("--land-mask-layer", help="Layer in the land-mask file")
     parser.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
-    parser.add_argument("--job-workers", type=int, default=2)
-    parser.add_argument("--raster-workers", type=int, default=2)
+    parser.add_argument("--job-workers", type=int, default=None,
+                        help="Legacy toolkit TaskGraph workers (default: 2)")
+    parser.add_argument("--raster-workers", type=int, default=None,
+                        help="Legacy raster workers per group (default: 2)")
+    parser.add_argument("--zonal-workers", type=int,
+                        help="Total compute processes shared by all feature groups and rasters")
     parser.add_argument("--workers", type=int, default=4,
                         help="Zone-preparation workers and shared non-zonal valuation processes (default: 4)")
     parser.add_argument("--geometry-workers", type=int, default=None,
@@ -83,6 +87,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Original combined PAD-US source layer, preserving all its attributes")
     parser.add_argument("--validate-only", action="store_true", help="Check inputs without creating run files")
     args = parser.parse_args(argv)
+    if args.zonal_workers is not None:
+        if args.zonal_workers < 1:
+            parser.error("--zonal-workers must be positive")
+        if args.job_workers is not None or args.raster_workers is not None:
+            parser.error("--zonal-workers replaces --job-workers and --raster-workers; omit those flags")
+        if args.reuse_zonals_from and not args.include_all_pad:
+            parser.error("--zonal-workers requires new raster jobs; omit it for valuation-only reuse")
+    args.job_workers = 2 if args.job_workers is None else args.job_workers
+    args.raster_workers = 2 if args.raster_workers is None else args.raster_workers
     if args.reuse_zonals_from is None:
         if any(value is None for value in (args.runner, args.bbb_by_county, args.land_mask)):
             parser.error("a fresh run requires --runner, --bbb-by-county, and --land-mask")
@@ -97,6 +110,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if not args.include_all_pad and (args.all_pad_path, args.all_pad_layer) != (PADUS_FULL_PATH, PADUS_FULL_LAYER):
         parser.error("--all-pad-path and --all-pad-layer require --include-all-pad")
     return args
+
+
+def zonal_worker_options(args: argparse.Namespace) -> list[str]:
+    """Select one toolkit execution mode without combining worker budgets."""
+    if args.zonal_workers is not None:
+        return ["--total-workers", str(args.zonal_workers)]
+    return ["--job-workers", str(args.job_workers), "--raster-workers", str(args.raster_workers)]
+
+
+def validate_shared_zonal_runner(runner: Path, root: Path) -> None:
+    """Require advertised shared-pool support before preparing new geometries."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-B", str(runner), "--help"], cwd=root,
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError(f"Cannot check shared-pool support in {runner}; update your zonal_stats_toolkit checkout") from error
+    if not re.search(r"(?<![\w-])--total-workers(?![\w-])", result.stdout):
+        raise ValueError(
+            f"Toolkit runner {runner} does not support --total-workers; "
+            "update your zonal_stats_toolkit checkout before using --zonal-workers"
+        )
 
 
 def read_prepared_zones(zone_root: Path, run_id: str) -> tuple[dict[str, tuple[Path, str]], set[str]]:
@@ -285,6 +321,8 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     valuation_workers = args.workers if args.geometry_workers is None else args.geometry_workers
     if min(args.job_workers, args.raster_workers, args.workers, valuation_workers) < 1:
         raise ValueError("Worker limits must be positive")
+    if args.zonal_workers is not None and args.zonal_workers < 1:
+        raise ValueError("--zonal-workers must be positive")
     root = root.resolve()
     data = root / "data"
     config_dir = data / "workflow_assets/county_integration"
@@ -313,6 +351,8 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         runner = (root / args.runner).resolve()
         if not runner.is_file():
             raise FileNotFoundError(f"Toolkit runner not found: {runner}")
+        if args.zonal_workers is not None:
+            validate_shared_zonal_runner(runner, root)
         rasters, blocked = validate_zone_raster_inputs(zonal_config)
         raster_fields = {f"sum_{raster.path.stem}" for raster in rasters}
         expected_fields = set(BASE_FIELDS.values())
@@ -384,6 +424,15 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         "blocked_rasters": blocked,
         "valuation_execution": {"executor": "shared_process_pool", "workers": valuation_workers,
                                 "native_threads_per_worker": 1},
+        "zonal_execution": (
+            {"executor": "reuse", "new_raster_jobs": False}
+            if source_id is not None and not args.include_all_pad else
+            {"executor": "shared_process_pool", "total_workers": args.zonal_workers,
+             "task_unit": "feature_group_and_raster", "native_threads_per_worker": 1}
+            if args.zonal_workers is not None else
+            {"executor": "sequential_groups", "job_workers": args.job_workers,
+             "raster_workers": args.raster_workers}
+        ),
         "stages": {}, "outputs": {},
     }
     if source_id is not None:
@@ -429,7 +478,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             if plan.jobs:
                 subprocess.run([
                     sys.executable, "-B", str(runner), str(plan.frozen_config),
-                    "--job-workers", str(args.job_workers), "--raster-workers", str(args.raster_workers),
+                    *zonal_worker_options(args),
                 ], cwd=root, env=env, check=True)
             raster_sums = read_zone_raster_sums(plan)
             record(stage, "complete")
@@ -467,7 +516,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             if pad_plan.jobs:
                 subprocess.run([
                     sys.executable, "-B", str(runner), str(pad_plan.frozen_config),
-                    "--job-workers", str(args.job_workers), "--raster-workers", str(args.raster_workers),
+                    *zonal_worker_options(args),
                 ], cwd=root, env=env, check=True)
             raster_sums = raster_sums | read_zone_raster_sums(pad_plan)
             zones = zones | extra_zones

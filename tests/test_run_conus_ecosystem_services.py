@@ -77,6 +77,9 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             "--counties", str(counties), "--run-id", self.run_id,
         ]
         self.calls = []
+        self.help_calls = []
+        self.toolkit_commands = []
+        self.runner_help = "usage: runner.py [--total-workers N] config"
         self.fail_runner = False
         self.read_rasters = Mock(return_value={})
         self.valuation = Mock(side_effect=self.fake_valuation)
@@ -115,7 +118,11 @@ class ConusEcosystemServicesTests(unittest.TestCase):
                 encoding="utf-8",
             )
         elif Path(command[2]) == self.runner:
+            if command[3:] == ["--help"]:
+                self.help_calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout=self.runner_help)
             self.calls.append(self.runner.name)
+            self.toolkit_commands.append(command)
             self.assertEqual(Path(command[3]), self.frozen)
             self.assertTrue(self.frozen.is_file())
             if self.fail_runner:
@@ -177,6 +184,11 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             "executor": "shared_process_pool", "workers": 4, "native_threads_per_worker": 1,
         })
         self.assertEqual(self.valuation.call_args.kwargs["workers"], 4)
+        self.assertEqual(manifest["zonal_execution"], {
+            "executor": "sequential_groups", "job_workers": 2, "raster_workers": 2,
+        })
+        self.assertEqual(self.toolkit_commands[0][4:], ["--job-workers", "2", "--raster-workers", "2"])
+        self.assertEqual(self.help_calls, [])
         self.assertNotIn("geometry_workers", self.valuation.call_args.kwargs)
         self.assertEqual(manifest["configuration_sha256"][str(self.air_aliases)],
                          wrapper.sha256(self.air_aliases))
@@ -308,6 +320,55 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         reconstruct.assert_not_called()
         self.assertFalse(self.results.with_name("revalued").exists())
 
+    def test_shared_zonal_budget_is_separate_from_valuation_workers(self) -> None:
+        """Send one raster budget while retaining independent preparation/valuation settings."""
+        self.assertEqual(self.run_wrapper("--zonal-workers", "16", "--workers", "3"), self.results)
+        self.assertEqual(self.help_calls, [[wrapper.sys.executable, "-B", str(self.runner), "--help"]])
+        self.assertEqual(self.toolkit_commands, [[
+            wrapper.sys.executable, "-B", str(self.runner), str(self.frozen), "--total-workers", "16",
+        ]])
+        self.assertEqual(self.valuation.call_args.kwargs["workers"], 3)
+        manifest = json.loads((self.results / "run_manifest.json").read_text())
+        self.assertEqual(manifest["zonal_execution"], {
+            "executor": "shared_process_pool", "total_workers": 16,
+            "task_unit": "feature_group_and_raster", "native_threads_per_worker": 1,
+        })
+
+    def test_shared_zonal_budget_rejects_invalid_cli_combinations(self) -> None:
+        """Reject ambiguous budgets, nonpositive caps, and a cap with no new raster jobs."""
+        invalid = [
+            [*self.args, "--zonal-workers", "0"],
+            [*self.args, "--zonal-workers", "-1"],
+            [*self.args, "--zonal-workers", "16", "--job-workers", "2"],
+            [*self.args, "--zonal-workers", "16", "--raster-workers=2"],
+            ["--reuse-zonals-from", "saved", "--zonal-workers", "16"],
+        ]
+        for command in invalid:
+            with self.subTest(command=command), self.assertRaises(SystemExit):
+                wrapper.parse_args(command)
+
+    def test_shared_zonal_runner_support_is_required_before_preparation(self) -> None:
+        """An older toolkit fails preflight without preparing geometry or writing a run."""
+        for help_text in ("usage: runner.py [--raster-workers N]", "--total-workers-extra N"):
+            for mode in ([], ["--validate-only"]):
+                with self.subTest(help_text=help_text, mode=mode):
+                    self.runner_help = help_text
+                    with self.assertRaisesRegex(ValueError, "update your zonal_stats_toolkit checkout"):
+                        self.run_wrapper("--zonal-workers", "16", *mode)
+                    self.assertFalse(self.results.exists())
+                    self.assertFalse(self.work.exists())
+                    self.assertFalse(self.frozen.exists())
+                    self.assertEqual(self.calls, [])
+                    self.valuation.assert_not_called()
+
+    def test_shared_zonal_runner_help_failure_explains_toolkit_prerequisite(self) -> None:
+        """Failed or stalled capability checks produce an actionable preflight error."""
+        for failure in (OSError("unavailable"), subprocess.CalledProcessError(2, []),
+                        subprocess.TimeoutExpired([], 30)):
+            with self.subTest(failure=failure), patch.object(wrapper.subprocess, "run", side_effect=failure):
+                with self.assertRaisesRegex(ValueError, "update your zonal_stats_toolkit checkout"):
+                    wrapper.validate_shared_zonal_runner(self.runner, self.root)
+
     def test_add_pad_reuses_six_products_and_later_reuses_all_seven(self) -> None:
         """Run only the additional batch, then follow both saved batches on revaluation."""
         self.run_wrapper()
@@ -353,6 +414,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         args = wrapper.parse_args([
             "--reuse-zonals-from", self.run_id, "--run-id", pad_run, "--include-all-pad",
             "--runner", str(self.runner), "--all-pad-path", str(pad), "--all-pad-layer", "full_pad",
+            "--zonal-workers", "16",
         ])
         with (
             patch.object(wrapper, "load_valuation_config", return_value=config),
@@ -362,17 +424,25 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             patch.object(wrapper, "read_zone_raster_sums", side_effect=[six_sums, pad_sums]),
             patch.object(wrapper, "prepare_all_pad_zones", side_effect=prepare) as prep,
             patch.object(wrapper, "freeze_zone_zonals", side_effect=freeze) as freezing,
-            patch.object(wrapper.subprocess, "run") as runner,
+            patch.object(wrapper.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, stdout="usage: runner.py [--total-workers N] config",
+            )) as runner,
             patch.object(wrapper, "value_zones", side_effect=value),
         ):
             result = wrapper.run_assessment(args, self.root)
         prep.assert_called_once()
         freezing.assert_called_once()
         compatible.assert_called_once_with(self.zonal_config, self.frozen)
-        runner.assert_called_once()
-        self.assertEqual(runner.call_args.args[0][2:4], [str(self.runner), str(frozen)])
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(runner.call_args_list[0].args[0], [
+            wrapper.sys.executable, "-B", str(self.runner), "--help",
+        ])
+        self.assertEqual(runner.call_args.args[0], [
+            wrapper.sys.executable, "-B", str(self.runner), str(frozen), "--total-workers", "16",
+        ])
         manifest = json.loads((result / "run_manifest.json").read_text())
         self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(manifest["zonal_execution"]["total_workers"], 16)
         self.assertEqual(set(manifest["outputs"]), {*wrapper.ZONE_PRODUCTS, wrapper.ALL_PAD_PRODUCT})
         self.assertNotIn(wrapper._RUN_RASTERS, manifest["stages"])
         self.assertEqual(manifest["stages"][wrapper._RUN_PAD], "complete")
@@ -398,7 +468,9 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             runner.assert_not_called()
             self.assertFalse((self.work.parent / new_id).exists())
             self.assertEqual(frozen.read_bytes(), frozen_bytes)
-            self.assertEqual(len(json.loads((result / "run_manifest.json").read_text())["outputs"]), 7)
+            reused_manifest = json.loads((result / "run_manifest.json").read_text())
+            self.assertEqual(len(reused_manifest["outputs"]), 7)
+            self.assertEqual(reused_manifest["zonal_execution"], {"executor": "reuse", "new_raster_jobs": False})
             source = new_id
 
         # A partial additional batch must never masquerade as a seven-product source.

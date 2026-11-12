@@ -219,12 +219,16 @@ def test_feature_product_needs_separate_plan(raster_inputs):
 
 
 @pytest.mark.skipif(not os.environ.get("SNAPP_TEST_ZONAL_RUNNER"), reason="Set SNAPP_TEST_ZONAL_RUNNER for toolkit integration")
-def test_feature_shards_match_independent_toolkit_pixel_sums(feature_raster_inputs):
+@pytest.mark.parametrize("worker_args", [
+    pytest.param(["--job-workers", "2", "--raster-workers", "2"], id="legacy"),
+    pytest.param(["--total-workers", "16"], id="shared-pool"),
+])
+def test_feature_shards_match_independent_toolkit_pixel_sums(feature_raster_inputs, worker_args):
     """Run real overlapping feature jobs and compare independent pixel masks."""
     zones, reviewed, frozen, _, _ = feature_raster_inputs
     plan = freeze_zone_zonals(*feature_raster_inputs, products=(ALL_PAD_PRODUCT,))
     subprocess.run([sys.executable, "-B", os.environ["SNAPP_TEST_ZONAL_RUNNER"], str(frozen),
-                    "--job-workers", "2", "--raster-workers", "2"], check=True, capture_output=True, text=True)
+                    *worker_args], check=True, capture_output=True, text=True)
     actual = read_zone_raster_sums(plan)[ALL_PAD_PRODUCT].set_index("feature_id")
     features = pyogrio.read_dataframe(zones[ALL_PAD_PRODUCT][0], layer=ALL_PAD_PRODUCT)
     for name in ("pollination", "flood"):
