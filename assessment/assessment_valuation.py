@@ -194,21 +194,23 @@ def calculate_land_service_metrics(
     county_per_hectare: Mapping[str, str],
     footprint_per_hectare: Mapping[str, str],
 ) -> tuple[pd.DataFrame, dict[str, pd.Series]]:
-    """Calculate county value shares and publish each footprint density in both outputs.
+    """Calculate county value shares and densities for county and footprint outputs.
 
     Args:
         products: Valued products containing GEOID and total_ecosystem_services.
             Land-category products also contain area_ha_land.
         ratios: Output field names mapped to by-county land products.
         county_per_hectare: County density field names mapped to by-county land products.
-        footprint_per_hectare: Footprint density field names mapped to by-county land products.
+        footprint_per_hectare: Density field names mapped to by-county land products.
+            The corresponding manager products use the same names.
 
     Returns:
         County metrics in county row order and a named density series for each
-        footprint product, indexed by GEOID in that product's row order. Totals
-        exclude recreation. An absent footprint contributes zero to its county
-        value share and has no density. Missing or nonfinite totals and missing,
-        nonpositive, or nonfinite denominators produce NaN.
+        footprint product, indexed by GEOID in that product's row order.
+        Manager products can repeat GEOIDs. Totals exclude recreation. An
+        absent footprint contributes zero to its county value share and has
+        no density. Missing or nonfinite totals and missing, nonpositive, or
+        nonfinite denominators produce NaN.
 
     Raises:
         ValueError: Products, county keys, or output names are invalid.
@@ -221,7 +223,7 @@ def calculate_land_service_metrics(
     if (set(ratios).intersection(county_per_hectare)
             or (set(ratios) | set(county_per_hectare)).intersection(counties.columns)):
         raise ValueError("County land-service fields collide with existing attributes")
-    totals, areas = {}, {}
+    totals = {}
     for product in ("counties", *ratios.values()):
         frame = products[product]
         ids = pd.Index(frame["GEOID"].astype("string"), name="GEOID")
@@ -229,9 +231,6 @@ def calculate_land_service_metrics(
             raise ValueError(f"{product}: land-service metrics require unique five-character GEOIDs")
         values = pd.to_numeric(frame["total_ecosystem_services"], errors="raise")
         totals[product] = pd.Series(values.to_numpy(dtype=float, na_value=np.nan), index=ids)
-        if product != "counties":
-            land = pd.to_numeric(frame["area_ha_land"], errors="raise")
-            areas[product] = pd.Series(land.to_numpy(dtype=float, na_value=np.nan), index=ids)
     county_total = totals["counties"]
     denominator = county_total.to_numpy()
     usable = np.isfinite(denominator) & (denominator > 0)
@@ -245,17 +244,24 @@ def calculate_land_service_metrics(
             numerator, denominator, out=np.full(len(counties), np.nan),
             where=usable & np.isfinite(numerator),
         )
+    footprint_fields = {product: output for output, product in footprint_per_hectare.items()}
     densities = {}
-    for output, product in footprint_per_hectare.items():
-        if output in products[product].columns:
+    for product, frame in products.items():
+        output = footprint_fields.get(product.removesuffix("_and_manager_type"))
+        if output is None:
+            continue
+        if output in frame.columns:
             raise ValueError(f"{product}: land-service field {output} collides with an existing attribute")
-        numerator = totals[product].to_numpy()
-        denominator = areas[product].to_numpy()
+        numerator = pd.to_numeric(frame["total_ecosystem_services"], errors="raise").to_numpy(
+            dtype=float, na_value=np.nan)
+        denominator = pd.to_numeric(frame["area_ha_land"], errors="raise").to_numpy(
+            dtype=float, na_value=np.nan)
         values = np.divide(
             numerator, denominator, out=np.full(len(numerator), np.nan),
             where=np.isfinite(numerator) & np.isfinite(denominator) & (denominator > 0),
         )
-        densities[product] = pd.Series(values, index=totals[product].index, name=output)
+        ids = pd.Index(frame["GEOID"].astype("string"), name="GEOID")
+        densities[product] = pd.Series(values, index=ids, name=output)
     for output, product in county_per_hectare.items():
         metrics[output] = densities[product].reindex(county_total.index).to_numpy()
     return metrics, densities
