@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from assessment.assessment_geography import CONUS_STATE_FIPS
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.prepare_all_pad_zones import ALL_PAD_PRODUCT
 from assessment.coral_county_allocation import allocate_coral_values
 from assessment.mangrove_county_allocation import (
     _allocate_chunk, _finish_allocation, _prepare_allocation,
@@ -117,8 +118,8 @@ class CoastalPlan:
     """
 
     def __init__(self, zones, paths, *, coral_reference_counties):
-        if set(zones) != set(ZONE_PRODUCTS):
-            raise ValueError("Coastal valuation requires all six prepared zone products")
+        if set(zones) not in (set(ZONE_PRODUCTS), {*ZONE_PRODUCTS, ALL_PAD_PRODUCT}):
+            raise ValueError("Coastal valuation requires all six products, optionally with all PAD features")
         self.zones = zones
         counties = zones["counties"]
         county_ids = counties.GEOID.astype("string")
@@ -213,7 +214,9 @@ class CoastalPlan:
         areas = support.intersected_area_m2.to_numpy(dtype=float)[supported]
         values = support.input_value.to_numpy(dtype=float)[supported]
         tree = shapely.STRtree(source_shapes)
-        for product in ZONE_PRODUCTS[1:]:
+        for product in self.zones:
+            if product == "counties":
+                continue
             zone = self.zones[product]
             for start in range(0, len(zone), FOOTPRINT_CHUNK_SIZE):
                 chunk = zone.iloc[start:start + FOOTPRINT_CHUNK_SIZE]

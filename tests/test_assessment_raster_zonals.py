@@ -3,19 +3,26 @@
 import configparser
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import geopandas as gpd
 import pandas as pd
 import pyogrio
 import pytest
+import shapely
+from osgeo import gdal, ogr, osr
 from shapely.geometry import box
 
 from assessment.assessment_raster_zonals import (
+    ALL_PAD_PRODUCT,
     freeze_zone_zonals,
     read_frozen_zone_raster_plan,
     read_zone_raster_sums,
     validate_zone_raster_inputs,
+    validate_additional_raster_inputs,
 )
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 
@@ -92,6 +99,150 @@ def write_pairs(plan):
         base.with_suffix(".gpkg").write_bytes(b"toolkit vector output placeholder")
         outputs[job.output_base] = csv_path
     return outputs
+
+
+@pytest.fixture
+def feature_raster_inputs(raster_inputs):
+    """Make real small raster grids and individual overlapping PAD features."""
+    _, reviewed, frozen, work, raw = raster_inputs
+    for name, epsg, pixels in (("pollination", 6933, 10), ("flood", 3857, 20)):
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(reviewed.parent / "source rasters" / f"{name}.tif"), 128, 64, 1, gdal.GDT_Float32)
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(epsg)
+        dataset.SetProjection(srs.ExportToWkt())
+        dataset.SetGeoTransform((-100, pixels, 0, 500, 0, -pixels))
+        dataset.GetRasterBand(1).Fill(1)
+        dataset = None
+    source = reviewed.parent / "all_pad.gpkg"
+    frame = gpd.GeoDataFrame({
+        "GEOID": ["01001"] * 6,
+        "feature_id": [f"01001_{number:04d}" for number in range(1, 7)],
+        "Mang_Type": ["FED"] * 6,
+    }, geometry=[box(0, 0, 100, 100), box(50, 0, 150, 100),
+                 box(180, 0, 190, 20), box(1000, 0, 1010, 10),
+                 box(275, 5, 285, 15), box(285, 5, 295, 15)], crs="EPSG:6933")
+    pyogrio.write_dataframe(frame, source, layer=ALL_PAD_PRODUCT, promote_to_multi=True)
+    return {ALL_PAD_PRODUCT: (source, ALL_PAD_PRODUCT)}, reviewed, frozen, work, raw
+
+
+def test_feature_shards_keep_overlapping_records_independent(feature_raster_inputs):
+    """Same-manager overlaps remain distinct and every shard is pixel safe."""
+    zones, reviewed, frozen, work, raw = feature_raster_inputs
+    plan = freeze_zone_zonals(*feature_raster_inputs, products=(ALL_PAD_PRODUCT,))
+    assert plan.products == (ALL_PAD_PRODUCT,)
+    assert len(plan.jobs) >= 2
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(frozen, encoding="utf-8")
+    assert config["project"].getfloat("max_simplify_tolerance_meters") == 0
+    keys = set()
+    placements = {}
+    for job in plan.jobs:
+        assert job.key_fields == ("GEOID", "feature_id")
+        assert not keys.intersection(job.expected_keys)
+        keys.update(job.expected_keys)
+        for _, identifier in job.expected_keys:
+            placements[identifier] = job.output_base.name
+        shard = work / "feature_zone_shards" / f"{job.output_base.name}.gpkg"
+        frame = pyogrio.read_dataframe(shard, layer=ALL_PAD_PRODUCT)
+        # Rasterization tests pixel centers, and touching boundaries are also
+        # separated. Even after reprojection, shard polygons remain disjoint.
+        for name in ("pollination", "flood"):
+            with gdal.OpenEx(str(reviewed.parent / "source rasters" / f"{name}.tif")) as dataset:
+                geometries = frame.to_crs(dataset.GetProjection()).geometry.to_numpy()
+            for left in range(len(geometries)):
+                for right in range(left):
+                    assert not shapely.intersects(geometries[left], geometries[right])
+    assert len(keys) == 6
+    assert placements["01001_0001"] != placements["01001_0002"]
+    assert placements["01001_0001"] == placements["01001_0004"]
+    assert placements["01001_0005"] != placements["01001_0006"]
+    write_pairs(plan)
+    values = read_zone_raster_sums(plan)
+    assert set(values) == {ALL_PAD_PRODUCT}
+    assert len(values[ALL_PAD_PRODUCT]) == 6
+    # Frozen provenance is sufficient after raster inputs are removed.
+    for raster in (reviewed.parent / "source rasters").glob("*.tif"):
+        raster.unlink()
+    loaded = read_frozen_zone_raster_plan(
+        zones, frozen, work, raw, expected_raster_columns=plan.raster_columns,
+        products=(ALL_PAD_PRODUCT,))
+    assert loaded == plan
+
+
+@pytest.mark.parametrize("change", ["source", "shard", "simplification"])
+def test_feature_reuse_rejects_changed_geometry_provenance(feature_raster_inputs, change):
+    """Changed feature sources or shards cannot be paired with saved sums."""
+    zones, _, frozen, work, raw = feature_raster_inputs
+    plan = freeze_zone_zonals(*feature_raster_inputs, products=(ALL_PAD_PRODUCT,))
+    if change == "simplification":
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(frozen, encoding="utf-8")
+        config["project"]["max_simplify_tolerance_meters"] = "15"
+        with frozen.open("w", encoding="utf-8") as stream:
+            config.write(stream)
+        message = "zero geometry simplification"
+    else:
+        path = (zones[ALL_PAD_PRODUCT][0] if change == "source" else
+                work / "feature_zone_shards" / f"{plan.jobs[0].output_base.name}.gpkg")
+        frame = pyogrio.read_dataframe(path, layer=ALL_PAD_PRODUCT)
+        frame.geometry = frame.geometry.translate(xoff=1)
+        path.unlink()
+        pyogrio.write_dataframe(frame, path, layer=ALL_PAD_PRODUCT, promote_to_multi=True)
+        message = "shard provenance is invalid"
+    with pytest.raises(ValueError, match=message):
+        read_frozen_zone_raster_plan(zones, frozen, work, raw,
+                                    expected_raster_columns=plan.raster_columns, products=(ALL_PAD_PRODUCT,))
+
+
+def test_additional_inputs_match_existing_active_rasters(raster_inputs):
+    """An added product cannot silently use different raster files or settings."""
+    _, reviewed, frozen, _, _ = raster_inputs
+    freeze_zone_zonals(*raster_inputs)
+    rasters, _ = validate_additional_raster_inputs(reviewed, frozen)
+    assert len(rasters) == 2
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(reviewed, encoding="utf-8")
+    config["project"]["max_simplify_tolerance_meters"] = "10"
+    with reviewed.open("w", encoding="utf-8") as stream:
+        config.write(stream)
+    with pytest.raises(ValueError, match="saved reviewed max_simplify"):
+        validate_additional_raster_inputs(reviewed, frozen)
+
+
+def test_feature_product_needs_separate_plan(raster_inputs):
+    """Existing products retain their original simplification settings."""
+    zones, reviewed, frozen, work, raw = raster_inputs
+    zones[ALL_PAD_PRODUCT] = zones["counties"]
+    with pytest.raises(ValueError, match="separate no-simplification"):
+        freeze_zone_zonals(zones, reviewed, frozen, work, raw, products=(*ZONE_PRODUCTS, ALL_PAD_PRODUCT))
+
+
+@pytest.mark.skipif(not os.environ.get("SNAPP_TEST_ZONAL_RUNNER"), reason="Set SNAPP_TEST_ZONAL_RUNNER for toolkit integration")
+def test_feature_shards_match_independent_toolkit_pixel_sums(feature_raster_inputs):
+    """Run real overlapping feature jobs and compare independent pixel masks."""
+    zones, reviewed, frozen, _, _ = feature_raster_inputs
+    plan = freeze_zone_zonals(*feature_raster_inputs, products=(ALL_PAD_PRODUCT,))
+    subprocess.run([sys.executable, "-B", os.environ["SNAPP_TEST_ZONAL_RUNNER"], str(frozen),
+                    "--job-workers", "2", "--raster-workers", "2"], check=True, capture_output=True, text=True)
+    actual = read_zone_raster_sums(plan)[ALL_PAD_PRODUCT].set_index("feature_id")
+    features = pyogrio.read_dataframe(zones[ALL_PAD_PRODUCT][0], layer=ALL_PAD_PRODUCT)
+    for name in ("pollination", "flood"):
+        with gdal.OpenEx(str(reviewed.parent / "source rasters" / f"{name}.tif")) as raster:
+            projection = raster.GetProjection()
+            srs = osr.SpatialReference(wkt=projection)
+            for row in features.to_crs(projection).itertuples():
+                vector = ogr.GetDriverByName("Memory").CreateDataSource("")
+                layer = vector.CreateLayer("feature", srs=srs, geom_type=ogr.wkbMultiPolygon)
+                feature = ogr.Feature(layer.GetLayerDefn())
+                feature.SetGeometry(ogr.CreateGeometryFromWkb(row.geometry.wkb))
+                layer.CreateFeature(feature)
+                mask = gdal.GetDriverByName("MEM").Create("", raster.RasterXSize, raster.RasterYSize, 1, gdal.GDT_Byte)
+                mask.SetProjection(projection)
+                mask.SetGeoTransform(raster.GetGeoTransform())
+                gdal.RasterizeLayer(mask, [1], layer, burn_values=[1])
+                expected = float(mask.ReadAsArray().sum())
+                assert actual.loc[row.feature_id, f"sum_{name}"] == expected
 
 
 def test_freeze_source_pixels_and_split_only_overlapping_product(raster_inputs):

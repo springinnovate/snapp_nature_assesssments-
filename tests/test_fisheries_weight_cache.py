@@ -64,6 +64,40 @@ def test_warm_cache_skips_spatial_reads_and_preserves_all_six_products(inputs, m
     _assert_frames_equal(warm.finish(), expected)
 
 
+def test_all_pad_extension_reuses_original_cache_and_caches_new_features(inputs):
+    """Adding PAD features preserves the original measurement cache identity."""
+    from assessment.assessment_valuation import _AdditionalFisheriesPlan
+    from assessment.prepare_all_pad_zones import ALL_PAD_PRODUCT
+
+    zones, paths, directory = inputs
+    cold = fisheries.FisheriesPlan(zones, paths, cache_dir=directory)
+    expected = _complete(cold)
+    product = "public_lands_by_county_and_manager_type"
+    features = zones[product].copy()
+    features["Mang_Type"] = "TRIB"
+    features["feature_id"] = [f"feature-{i}" for i in range(len(features))]
+    extended = zones | {ALL_PAD_PRODUCT: features}
+    new = _AdditionalFisheriesPlan(extended, paths, directory)
+    assert new.cache_info["status"] == "hit"
+    assert new.cache_info["key"] == cold.cache_info["key"]
+    assert new.cache_info["additional_products"][ALL_PAD_PRODUCT]["status"] == "miss"
+    tasks = list(new.tasks())
+    assert tasks
+    assert all(key[0] == "all_pad" for key, _, _ in tasks)
+    for key, function, arguments in tasks:
+        assert set(arguments[3]) == {ALL_PAD_PRODUCT}
+        new.accept(key, function(*arguments))
+    actual = new.finish()
+    for name in zones:
+        pd.testing.assert_frame_equal(actual[name], expected[name], check_exact=True)
+    pd.testing.assert_frame_equal(actual[ALL_PAD_PRODUCT], expected[product], check_exact=True)
+    warm = _AdditionalFisheriesPlan(extended, paths, directory)
+    assert warm.task_count == 0
+    assert list(warm.tasks()) == []
+    assert warm.cache_info["additional_products"][ALL_PAD_PRODUCT]["status"] == "hit"
+    _assert_frames_equal(warm.finish(), actual)
+
+
 def test_changed_monetary_totals_reuse_weights_but_recalculate_values(inputs):
     """Only spatial weights are cached; current state dollars set current rates."""
     zones, paths, directory = inputs

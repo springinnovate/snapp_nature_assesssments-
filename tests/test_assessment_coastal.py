@@ -15,6 +15,7 @@ from shapely.geometry import Point, box
 
 from assessment.assessment_coastal import CoastalPlan, value_coastal
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.prepare_all_pad_zones import ALL_PAD_PRODUCT
 
 
 class AssessmentCoastalTests(unittest.TestCase):
@@ -86,6 +87,20 @@ class AssessmentCoastalTests(unittest.TestCase):
         np.testing.assert_allclose(values["conservation_lands_by_county_and_manager_type"].mangroves, [25.0])
         # The null study unit only touches the public footprint but overlaps BBB.
         np.testing.assert_allclose(values["bbb_lands_by_county"].mangroves, [np.nan, 0.0])
+
+    def test_all_pad_features_keep_independent_overlapping_values(self) -> None:
+        """Same-manager features retain their own values and original products."""
+        baseline = value_coastal(self.zones, self.paths, geometry_workers=1,
+                                 coral_reference_counties=self.zones["counties"])
+        features = self.zones["public_lands_by_county_and_manager_type"].copy()
+        features["Mang_Type"] = "TRIB"
+        features["feature_id"] = ["01001_1", "01001_2"]
+        values = value_coastal(self.zones | {ALL_PAD_PRODUCT: features}, self.paths, geometry_workers=1,
+                               coral_reference_counties=self.zones["counties"])
+        for product in ZONE_PRODUCTS:
+            pd.testing.assert_frame_equal(values[product], baseline[product], check_exact=True)
+        pd.testing.assert_frame_equal(values[ALL_PAD_PRODUCT],
+                                      baseline["public_lands_by_county_and_manager_type"], check_exact=True)
 
     def test_offshore_corals_are_not_reassigned_to_footprints(self) -> None:
         """Whole counties retain offshore points; masks require point coverage."""

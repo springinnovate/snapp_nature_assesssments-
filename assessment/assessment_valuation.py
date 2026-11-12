@@ -1,4 +1,4 @@
-"""Harmonize raw ecosystem-service measures for the six assessment products."""
+"""Harmonize raw services for assessment footprints and optional PAD-US features."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from assessment.build_county_ecosystem_service_valuations_2026 import (
     validate_crosswalk,
 )
 from assessment.county_derived_metrics import calculate_county_metrics
+from assessment.prepare_all_pad_zones import ALL_PAD_PRODUCT
 
 
 COUNTY_TABLES = ("grazing", "timber", "air_quality", "urban_heat", "physical_health", "jobs", "recreation")
@@ -47,6 +48,56 @@ VALUE_SOURCES = (
 CONFIG_FILES = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv",
                 "export_rules.yaml", "derived_metrics.yaml", "great_lakes_nhd_features.csv",
                 "inland_fisheries_exclusions.csv", "county_area_exclusions.yaml")
+
+
+class _AdditionalFisheriesPlan:
+    """Keep the original six-product cache when adding feature-level PAD zones.
+
+    The original plan retains exactly the same spatial cache identity and
+    arithmetic. Its county measurements also supply the new PAD denominator,
+    so the additional plan only measures counties containing PAD features.
+    """
+
+    def __init__(self, zones, paths, cache_dir):
+        self.plans = {
+            "existing": FisheriesPlan({name: zones[name] for name in ZONE_PRODUCTS}, paths,
+                                      cache_dir=cache_dir),
+            "all_pad": FisheriesPlan({name: zones[name] for name in ("counties", ALL_PAD_PRODUCT)},
+                                     paths, cache_dir=cache_dir),
+        }
+        self.feature_counties = set(zones[ALL_PAD_PRODUCT]["GEOID"])
+        self.task_count = self.plans["existing"].task_count + (
+            len(self.feature_counties) if self.plans["all_pad"].task_count else 0)
+
+    @property
+    def cache_info(self):
+        return {**self.plans["existing"].cache_info,
+                "additional_products": {ALL_PAD_PRODUCT: self.plans["all_pad"].cache_info}}
+
+    def tasks(self):
+        for name, plan in self.plans.items():
+            for key, function, args in plan.tasks():
+                if name == "all_pad":
+                    if key not in self.feature_counties:
+                        plan.accept(key, {})
+                        continue
+                    # Keep the county geometry for source-window reads, but
+                    # measure only its PAD rows. The existing plan supplies
+                    # county raw weights before the new plan is finalized.
+                    context, geoid, county, local, marine, inland = args
+                    args = (context, geoid, county, {ALL_PAD_PRODUCT: local[ALL_PAD_PRODUCT]}, marine, inland)
+                yield (name, key), function, args
+
+    def accept(self, key, result):
+        name, county = key
+        self.plans[name].accept(county, result)
+
+    def finish(self):
+        existing = self.plans["existing"].finish()
+        self.plans["all_pad"].weights["counties"] = self.plans["existing"].weights["counties"].copy()
+        additional = self.plans["all_pad"].finish()
+        pd.testing.assert_frame_equal(existing["counties"], additional["counties"], check_exact=True)
+        return existing | {ALL_PAD_PRODUCT: additional[ALL_PAD_PRODUCT]}
 
 
 @contextmanager
@@ -128,7 +179,9 @@ def _collect_service_values(zones, paths, county_base, crosswalk, coral_referenc
                             *, fisheries_cache_dir=None, cache_report=None):
     """Prepare bounded spatial jobs and share workers with county-table joins."""
     plans = {
-        "fisheries": FisheriesPlan(zones, paths, cache_dir=fisheries_cache_dir),
+        "fisheries": (_AdditionalFisheriesPlan(zones, paths, fisheries_cache_dir)
+                      if ALL_PAD_PRODUCT in zones else
+                      FisheriesPlan(zones, paths, cache_dir=fisheries_cache_dir)),
         "coastal": CoastalPlan(zones, paths, coral_reference_counties=coral_reference_counties),
     }
     table_tasks = ((task, compute_task, (task, paths, county_base, crosswalk, 1))
@@ -279,7 +332,8 @@ def value_zones(
     """Calculate adjusted values, totals, and county ratios on prepared zones.
 
     Args:
-        zones: Six prepared geometry frames with stable county/manager keys.
+        zones: Six prepared geometry frames with stable county/manager keys,
+            optionally including original PAD-US features keyed by feature_id.
         raster_sums: Raw toolkit sums and key columns for each product.
         data_root: Root containing the local input data.
         config_dir: Tracked sources, factors, and output rules.
@@ -293,8 +347,17 @@ def value_zones(
     Raises:
         ValueError: Keys, units, expected services, or reconciliations fail.
     """
-    if set(zones) != set(ZONE_PRODUCTS) or set(raster_sums) != set(zones):
-        raise ValueError("Valuation requires the same six geometry and raster products")
+    if (set(zones) not in (set(ZONE_PRODUCTS), {*ZONE_PRODUCTS, ALL_PAD_PRODUCT})
+            or set(raster_sums) != set(zones)):
+        raise ValueError("Valuation requires matching six geometry and raster products, optionally with all PAD features")
+    if ALL_PAD_PRODUCT in zones:
+        features = zones[ALL_PAD_PRODUCT]
+        feature_area = pd.to_numeric(features["area_ha"], errors="raise")
+        if not np.isfinite(feature_area).all() or not feature_area.gt(0).all():
+            raise ValueError("All PAD feature hectares must be finite and positive")
+        ids = features["feature_id"].astype("string")
+        if not ids.str.strip().ne("").fillna(False).all() or ids.duplicated().any():
+            raise ValueError("All PAD feature IDs must be nonblank and unique")
     paths, factors, rules, derived = load_valuation_config(data_root, config_dir)
     counties = zones["counties"].drop(
         columns=["pct_public_lands", "pct_conservation_lands", "pct_bbb_lands"], errors="ignore")
@@ -341,7 +404,8 @@ def value_zones(
 
     for product, zone in tqdm(zones.items(), desc="Adjust and total zone values", unit="product"):
         is_county = product == "counties"
-        keys = ["GEOID", "Mang_Type"] if product.endswith("_and_manager_type") else ["GEOID"]
+        keys = (["GEOID", "feature_id"] if product == ALL_PAD_PRODUCT else
+                ["GEOID", "Mang_Type"] if product.endswith("_and_manager_type") else ["GEOID"])
         zone_keys = pd.MultiIndex.from_frame(zone[keys])
         raw_sums = raster_sums[product]
         raw_keys = pd.MultiIndex.from_frame(raw_sums[keys])
@@ -382,6 +446,11 @@ def value_zones(
             raise ValueError(f"{product}: an adjusted total component is missing")
         selected = adjusted[non_recreation_components]
         adjusted["total_ecosystem_services"] = selected.fillna(blank_value).sum(axis=1)
+        if product == ALL_PAD_PRODUCT:
+            density_fields = [field for field in adjusted if field.endswith("_adj")]
+            density_fields.append("total_ecosystem_services")
+            densities = adjusted[density_fields].div(feature_area, axis=0).add_suffix("_per_feature_ha")
+            adjusted = pd.concat([adjusted, densities], axis=1)
         coverage[product] = {field: int(selected[field].isna().sum()) for field in selected}
         if is_county:
             adjusted["total_ecosystem_services_w_rec"] = (
@@ -477,7 +546,12 @@ def write_zone_pair(
         text_fields = {name: str for name in attributes if not pd.api.types.is_numeric_dtype(attributes[name])}
         readback = pd.read_csv(staged[0], dtype=text_fields, keep_default_na=False, na_values=[""],
                                float_precision="round_trip")
-        pd.testing.assert_frame_equal(attributes, readback, check_dtype=False, check_exact=False, rtol=1e-12)
+        # CSV blank cells represent both nulls and empty source strings. The
+        # GeoPackage comparison above preserves that distinction exactly.
+        csv_expected = attributes.copy()
+        for name in text_fields:
+            csv_expected[name] = csv_expected[name].replace("", np.nan)
+        pd.testing.assert_frame_equal(csv_expected, readback, check_dtype=False, check_exact=False, rtol=1e-12)
         published = []
         try:
             for path, temporary_path in zip(pair, staged):
