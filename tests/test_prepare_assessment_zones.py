@@ -76,17 +76,21 @@ def zone_inputs(tmp_path):
     ids = ["01001", "01003", "01005"]
     write_layer(counties, {"GEOID": ids, "ALAND": [800000] * 3, "NAME": ["One", "Two", "Three"]}, county_boxes)
     write_layer(land_mask, {"GEOID": ids}, [box(x, 0, x + 1000, 800) for x in range(0, 3000, 1000)])
+    excluded_gap_codes = ["0", "5", "UNK", None, "2.5"]
     write_layer(
         padus,
         {
-            "Mang_Type": ["FED", "STAT", "UNK", "NGO", "PVT", "UNK", "LOC", "FED"],
-            "Des_Tp": ["ND", "ND", "ACC", "ND", "ND", "ND", "ND", "ND"],
-            "GAP_Sts": ["1", "2", "3", "2", "1", "4", "4", "1"],
+            "Mang_Type": ["FED", "STAT", "UNK", "NGO", "PVT", "UNK", "LOC", "FED"]
+            + ["NGO"] * len(excluded_gap_codes),
+            "Des_Tp": ["ND", "ND", "ACC", "ND", "ND", "ND", "ND", "ND"]
+            + ["ND"] * len(excluded_gap_codes),
+            "GAP_Sts": ["1", "2", "3", "2", "1", "4", "4", "1"] + excluded_gap_codes,
         },
         [
             box(0, 0, 600, 750), box(400, 0, 1200, 750), box(1200, 0, 1400, 750),
             box(1300, 0, 1700, 750), box(1600, 0, 1800, 750), box(1800, 0, 1900, 750),
             box(1900, 500, 2000, 750), box(200, 0, 400, 750),
+            *[box(x, 0, x + 100, 750) for x in range(2000, 2500, 100)],
         ],
     )
     write_layer(
@@ -119,7 +123,7 @@ def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
         },
         "conservation_lands_by_county": {
             "01001": (box(0, 0, 1000, 750), 75),
-            "01003": (box(1000, 0, 1800, 750), 60),
+            "01003": (unary_union([box(1000, 0, 1900, 750), box(1900, 500, 2000, 750)]), 70),
         },
         "bbb_lands_by_county": {
             "01001": (box(800, 500, 1000, 750), 5),
@@ -139,6 +143,8 @@ def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
         },
         "conservation_lands_by_county_and_manager_type": {
             **manager_common,
+            ("01003", "UNK"): (unary_union([box(1200, 0, 1400, 750), box(1800, 0, 1900, 750)]), 22.5),
+            ("01003", "LOC"): (box(1900, 500, 2000, 750), 2.5),
             ("01003", "NGO"): (box(1300, 0, 1700, 750), 30),
             ("01003", "PVT"): (box(1600, 0, 1800, 750), 15),
         },
@@ -189,6 +195,7 @@ def test_six_products_use_county_clipped_footprints_and_aland(zone_inputs):
         )
     manifest = json.loads((zones / "zone_manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_id"] == RUN_ID
+    assert manifest["conservation_gap_codes"] == [1, 2, 3, 4]
     assert set(manifest["inputs"]) == {"counties", "land_mask", "padus", "bbb_by_county"}
     assert manifest["inputs"]["land_mask"]["layer"] == "land_mask"
     assert manifest["inputs"]["land_mask"]["sha256"] == hashlib.sha256(

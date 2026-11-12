@@ -25,7 +25,7 @@ from assessment.padus_land_rules import load_rule_config
 
 
 AREA_CRS = "EPSG:6933"
-CONSERVATION_GAP_CODES = (1, 2, 3)
+CONSERVATION_GAP_CODES = (1, 2, 3, 4)
 COUNTY_AREA_FIELDS = (
     "area_ha_county_land",
     "area_ha_public_lands",

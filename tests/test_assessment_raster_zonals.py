@@ -15,12 +15,14 @@ from assessment.assessment_raster_zonals import (
     freeze_zone_zonals,
     read_frozen_zone_raster_plan,
     read_zone_raster_sums,
+    validate_refresh_raster_inputs,
     validate_zone_raster_inputs,
 )
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 
 
 PUBLIC_MANAGERS = "public_lands_by_county_and_manager_type"
+CONSERVATION = "conservation_lands_by_county"
 CONSERVATION_MANAGERS = "conservation_lands_by_county_and_manager_type"
 RESULT_STAMP = "20261106_123456"
 
@@ -157,6 +159,49 @@ def test_collect_same_run_sums_and_preserve_composite_text_keys(raster_inputs):
     ]
 
 
+@pytest.mark.parametrize(("products", "stems", "skipped"), [
+    (
+        (CONSERVATION_MANAGERS, CONSERVATION),
+        (CONSERVATION, f"{CONSERVATION_MANAGERS}__manager_01", f"{CONSERVATION_MANAGERS}__manager_02"),
+        (),
+    ),
+    (("bbb_lands_by_county",), (), ("bbb_lands_by_county",)),
+])
+def test_freeze_and_read_selected_zone_products(raster_inputs, products, stems, skipped):
+    """Freeze only the selected jobs and preserve selected empty products."""
+    zones, _, frozen, work, raw = raster_inputs
+    plan = freeze_zone_zonals(*raster_inputs, products=products)
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(frozen, encoding="utf-8")
+    assert config.sections() == ["project", *(f"job:{stem}" for stem in stems)]
+    assert tuple(job.output_base.name for job in plan.jobs) == stems
+    assert plan.skipped_products == skipped
+    assert not list(work.glob(f"manager_zone_shards/{PUBLIC_MANAGERS}*"))
+
+    write_pairs(plan)
+    reread = read_frozen_zone_raster_plan(
+        zones, frozen, work, raw, expected_raster_columns=plan.raster_columns, products=products,
+    )
+    assert reread == plan
+    sums = read_zone_raster_sums(reread)
+    assert {product for product, frame in sums.items() if not frame.empty} == set(products) - set(skipped)
+    with pytest.raises(ValueError, match="missing required"):
+        read_frozen_zone_raster_plan(zones, frozen, work, raw, expected_raster_columns=plan.raster_columns)
+
+
+@pytest.mark.parametrize("products", [(), ("unknown",), (CONSERVATION, CONSERVATION)])
+def test_invalid_zone_product_selection_fails_before_creating_plan(raster_inputs, products):
+    """Require a nonempty selection of distinct supported products."""
+    zones, _, frozen, work, raw = raster_inputs
+    with pytest.raises(ValueError, match="nonempty subset"):
+        freeze_zone_zonals(*raster_inputs, products=products)
+    assert not frozen.exists() and not work.exists()
+    with pytest.raises(ValueError, match="nonempty subset"):
+        read_frozen_zone_raster_plan(
+            zones, frozen, work, raw, expected_raster_columns=("sum_pollination", "sum_flood"), products=products,
+        )
+
+
 @pytest.mark.parametrize("defect", ["missing_pair", "different_stamp", "wrong_keys", "nonfinite_sum"])
 def test_collect_rejects_incomplete_or_malformed_output(raster_inputs, defect):
     """Require a fresh matched pair and finite sums for every expected key."""
@@ -232,6 +277,12 @@ def test_reuse_frozen_carbon_pixel_column_is_schema_only(raster_inputs):
     original = read_zone_raster_sums(old_plan)
     required = set(old_plan.raster_columns) - {retired}
     retired_tiff.unlink()
+    config["project"]["raster_inventory"] = json.dumps(inventory[:-1])
+    with reviewed.open("w", encoding="utf-8") as stream:
+        config.write(stream)
+    refresh_rasters, blocked = validate_refresh_raster_inputs(reviewed, frozen)
+    assert {f"sum_{raster.path.stem}" for raster in refresh_rasters} == required
+    assert blocked == ["Unavailable: Not a valuation TIFF"]
     county_csv = csvs[raw / "counties" / "counties"]
     saved = pd.read_csv(county_csv, dtype={"GEOID": "string"}).assign(**{retired: "not a value"})
     saved.to_csv(county_csv, index=False)
@@ -248,6 +299,37 @@ def test_reuse_frozen_carbon_pixel_column_is_schema_only(raster_inputs):
     saved.drop(columns=retired).to_csv(county_csv, index=False)
     with pytest.raises(ValueError, match="Unexpected key or raster sum columns"):
         read_zone_raster_sums(plan)
+
+
+@pytest.mark.parametrize(("defect", "message"), [
+    ("new_paths", "same active source TIFF paths"),
+    ("changed_tolerance", "saved max_simplify_tolerance_meters"),
+    ("scaled_saved_raster", "original, unscaled TIFF paths"),
+])
+def test_conservation_refresh_rejects_incompatible_raster_inputs(raster_inputs, defect, message):
+    """Reject changed TIFF locations, simplification, or pixel scaling before a refresh."""
+    _, reviewed, frozen, _, _ = raster_inputs
+    freeze_zone_zonals(*raster_inputs)
+    target = frozen if defect == "scaled_saved_raster" else reviewed
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(target, encoding="utf-8")
+    if defect == "new_paths":
+        other_rasters = reviewed.parent / "replacement rasters"
+        other_rasters.mkdir()
+        for name in ("pollination.tif", "flood.tif"):
+            (other_rasters / name).write_bytes(b"replacement placeholder")
+        config["project"]["raster_dir"] = other_rasters.name
+    elif defect == "changed_tolerance":
+        config["project"]["max_simplify_tolerance_meters"] = "4"
+    else:
+        entries = json.loads(config["project"]["snapp_rasters"])
+        entries[0]["scale"] = 0.09
+        config["project"]["snapp_rasters"] = json.dumps(entries)
+    with target.open("w", encoding="utf-8") as stream:
+        config.write(stream)
+
+    with pytest.raises(ValueError, match=message):
+        validate_refresh_raster_inputs(reviewed, frozen)
 
 
 @pytest.mark.parametrize(("defect", "message"), [

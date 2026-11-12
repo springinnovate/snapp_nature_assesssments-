@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
-from configparser import ConfigParser
+from configparser import ConfigParser, SectionProxy
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -142,6 +142,70 @@ def validate_zone_raster_inputs(config_path: Path) -> tuple[list[RasterInput], l
     return rasters, blocked
 
 
+def _unscaled_raster_paths(project: SectionProxy) -> tuple[str, ...]:
+    """Read the original TIFF paths from a frozen assessment profile."""
+    raster_entries = json.loads(project["snapp_rasters"])
+    raster_paths = tuple(entry["analysis_path"] for entry in raster_entries)
+    if not raster_paths or any(
+        type(entry["scale"]) not in (int, float) or entry["scale"] != 1
+        or entry["analysis_path"] != entry["source_path"]
+        or Path(entry["analysis_path"]).suffix.lower() not in {".tif", ".tiff"}
+        for entry in raster_entries
+    ):
+        raise ValueError("Expected the original, unscaled TIFF paths")
+    return raster_paths
+
+
+def validate_refresh_raster_inputs(
+    config_path: Path, source_frozen_config: Path,
+) -> tuple[list[RasterInput], list[str]]:
+    """Require the same active TIFF paths and simplification for a selective refresh.
+
+    Args:
+        config_path: Reviewed current raster profile.
+        source_frozen_config: Frozen profile that produced the reused raster sums.
+
+    Returns:
+        The checked current raster inputs and reasons for reviewed exclusions.
+
+    Raises:
+        ValueError: The profiles use incompatible raster paths or simplification.
+    """
+    rasters, blocked = validate_zone_raster_inputs(config_path)
+    current = load_run_config(config_path)["project"]
+    source_frozen_config = source_frozen_config.resolve()
+    source = ConfigParser(interpolation=None)
+    with source_frozen_config.open(encoding="utf-8") as stream:
+        source.read_file(stream)
+    try:
+        original = source["project"]
+        original_tolerance = original.getfloat("max_simplify_tolerance_meters")
+        original_paths = {
+            (source_frozen_config.parent / path).resolve() for path in _unscaled_raster_paths(original)
+        }
+    except (KeyError, AttributeError, TypeError, ValueError) as error:
+        raise ValueError(f"Invalid frozen raster metadata in {source_frozen_config}: {error}") from error
+    if original_tolerance != current.getfloat("max_simplify_tolerance_meters"):
+        raise ValueError("Conservation refresh requires the saved max_simplify_tolerance_meters")
+
+    active_paths = {raster.path for raster in rasters}
+    original_paths = {
+        path for path in original_paths
+        if f"sum_{path.stem}" != _RETIRED_CARBON_PIXEL_SUM or path in active_paths
+    }
+    if original_paths != active_paths:
+        raise ValueError("Conservation refresh requires the same active source TIFF paths as the saved run")
+    return rasters, blocked
+
+
+def _selected_products(products: Collection[str]) -> tuple[str, ...]:
+    """Validate a nonempty product selection and retain assessment order."""
+    requested = set(products)
+    if not requested or len(requested) != len(products) or not requested <= _KEY_FIELDS.keys():
+        raise ValueError("Select a nonempty subset of the six prepared zone products")
+    return tuple(product for product in ZONE_PRODUCTS if product in requested)
+
+
 def freeze_zone_zonals(
     zones: Mapping[str, tuple[Path, str]],
     config_path: Path,
@@ -150,6 +214,7 @@ def freeze_zone_zonals(
     raw_results_dir: Path,
     *,
     overlapping_manager_products: Collection[str] | None = None,
+    products: Collection[str] = ZONE_PRODUCTS,
 ) -> ZoneRasterPlan:
     """Freeze fresh source-pixel sums for the exact prepared zone layers.
 
@@ -165,6 +230,7 @@ def freeze_zone_zonals(
         raw_results_dir: Isolated destination for the toolkit result pairs.
         overlapping_manager_products: Products flagged by the zone manifest.
             If omitted, conservatively split both manager products.
+        products: Nonempty subset of zone products to run. Defaults to all six.
 
     Returns:
         The frozen config and exact expected toolkit output plan.
@@ -179,6 +245,7 @@ def freeze_zone_zonals(
         raise FileExistsError(frozen_config)
     if set(zones) != set(ZONE_PRODUCTS):
         raise ValueError("Fresh raster zonals require exactly the six prepared zone products")
+    selected = _selected_products(products)
     split_products = _MANAGER_PRODUCTS if overlapping_manager_products is None else set(overlapping_manager_products)
     if not split_products <= _MANAGER_PRODUCTS:
         raise ValueError("Overlap flags must refer to manager-type zone products")
@@ -187,7 +254,7 @@ def freeze_zone_zonals(
     zone_jobs: list[ZoneJob] = []
     expected_jobs: list[ZoneRasterJob] = []
     skipped: list[str] = []
-    for product in tqdm(ZONE_PRODUCTS, desc="Plan raster zonals", unit="zone"):
+    for product in tqdm(selected, desc="Plan raster zonals", unit="zone"):
         source, layer = zones[product]
         source = source.resolve()
         key_fields = _KEY_FIELDS[product]
@@ -237,6 +304,7 @@ def read_frozen_zone_raster_plan(
     *,
     expected_raster_columns: Collection[str],
     overlapping_manager_products: Collection[str] | None = None,
+    products: Collection[str] = ZONE_PRODUCTS,
 ) -> ZoneRasterPlan:
     """Reconstruct a completed run's raster plan without touching the TIFFs.
 
@@ -252,6 +320,7 @@ def read_frozen_zone_raster_plan(
         expected_raster_columns: Unscaled sum columns needed by valuation.
         overlapping_manager_products: Original manager-overlap flags, if
             available. Otherwise, infer splitting from the saved job names.
+        products: Nonempty subset of products in the frozen run. Defaults to all six.
 
     Returns:
         A validated plan for read_zone_raster_sums.
@@ -262,6 +331,7 @@ def read_frozen_zone_raster_plan(
     """
     if set(zones) != set(ZONE_PRODUCTS):
         raise ValueError("Reusing raster zonals requires exactly the six prepared zone products")
+    selected = _selected_products(products)
     frozen_config, work_dir, raw_results_dir = (path.resolve() for path in (frozen_config, work_dir, raw_results_dir))
     config = ConfigParser(interpolation=None)
     with frozen_config.open(encoding="utf-8") as stream:
@@ -274,21 +344,13 @@ def read_frozen_zone_raster_plan(
         raise ValueError("Frozen raster config does not reference this run's work directory")
 
     try:
-        raster_entries = json.loads(project["snapp_rasters"])
         inventory = json.loads(project["snapp_source_definition"])["project"]["raster_inventory"]
         unavailable = json.loads(project["snapp_unavailable_zones"])
         blocked = tuple(
             f"{entry['label'].strip()}: {entry.get('reason', 'not approved for this run')}"
             for entry in inventory if not entry["include"]
         )
-        raster_paths = tuple(entry["analysis_path"] for entry in raster_entries)
-        if not raster_paths or any(
-            type(entry["scale"]) not in (int, float) or entry["scale"] != 1
-            or entry["analysis_path"] != entry["source_path"]
-            or Path(entry["analysis_path"]).suffix.lower() not in {".tif", ".tiff"}
-            for entry in raster_entries
-        ):
-            raise ValueError("Expected the original, unscaled TIFF paths")
+        raster_paths = _unscaled_raster_paths(project)
     except (KeyError, AttributeError, TypeError, ValueError) as error:
         raise ValueError(f"Invalid frozen raster metadata in {frozen_config}: {error}") from error
     raster_columns = tuple(f"sum_{Path(path).stem}" for path in raster_paths)
@@ -313,7 +375,7 @@ def read_frozen_zone_raster_plan(
     jobs: list[ZoneRasterJob] = []
     skipped: list[str] = []
     expected_sections = {"project"}
-    for product in tqdm(ZONE_PRODUCTS, desc="Validate frozen raster plan", unit="zone"):
+    for product in tqdm(selected, desc="Validate frozen raster plan", unit="zone"):
         source, layer = zones[product]
         fields = _KEY_FIELDS[product]
         frame = pyogrio.read_dataframe(source, layer=layer, columns=list(fields), read_geometry=False)

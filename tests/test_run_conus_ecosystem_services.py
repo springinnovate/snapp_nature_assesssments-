@@ -1,7 +1,10 @@
 """Exercise the CONUS assessment wrapper without running production analysis."""
 
-import json
+from configparser import ConfigParser
+from contextlib import redirect_stderr
 from importlib.util import find_spec
+from io import StringIO
+import json
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
@@ -77,6 +80,8 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             "--counties", str(counties), "--run-id", self.run_id,
         ]
         self.calls = []
+        self.toolkit_batches = []
+        self.zone_geometries = {}
         self.fail_runner = False
         self.read_rasters = Mock(return_value={})
         self.valuation = Mock(side_effect=self.fake_valuation)
@@ -93,18 +98,22 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             self.assertEqual(command[command.index("--land-mask") + 1], str(self.land_mask))
             self.assertEqual(command[command.index("--land-mask-layer") + 1], "county_land_mask")
             self.assertEqual(Path(command[command.index("--output-root") + 1]), self.work.parent)
+            run_id = command[command.index("--run-id") + 1]
+            zone_root = self.work.with_name(run_id) / "zonal_units"
             outputs = {}
             for product in wrapper.ZONE_PRODUCTS:
-                path = self.zone_root / product / f"{product}_{self.run_id}.gpkg"
+                path = zone_root / product / f"{product}_{run_id}.gpkg"
                 path.parent.mkdir(parents=True)
                 frame = self.county.copy()
+                if product in self.zone_geometries:
+                    frame = frame.set_geometry([self.zone_geometries[product]])
                 if product.endswith("_and_manager_type"):
                     frame["Mang_Type"] = "FED"
                 pyogrio.write_dataframe(frame, path, layer=product)
                 outputs[product] = {"path": str(path), "layer": product}
-            (self.zone_root / "zone_manifest.json").write_text(
+            (zone_root / "zone_manifest.json").write_text(
                 json.dumps({
-                    "run_id": self.run_id,
+                    "run_id": run_id,
                     "geographic_scope": "CONUS",
                     "outputs": outputs,
                     "counties_with_manager_overlap": {
@@ -116,8 +125,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             )
         elif Path(command[2]) == self.runner:
             self.calls.append(self.runner.name)
-            self.assertEqual(Path(command[3]), self.frozen)
-            self.assertTrue(self.frozen.is_file())
+            self.assertTrue(Path(command[3]).is_file())
             if self.fail_runner:
                 raise subprocess.CalledProcessError(17, command)
         else:
@@ -165,6 +173,68 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             patch.object(wrapper, "value_zones", self.valuation),
         ):
             return wrapper.run_assessment(args, root=self.root)
+
+    def write_raster_inventory(self) -> None:
+        """Provide real runner configuration metadata for the orchestration tests."""
+        raster_dir = self.root / "rasters"
+        raster_dir.mkdir()
+        inventory = []
+        for column in wrapper.BASE_FIELDS.values():
+            path = raster_dir / f"{column.removeprefix('sum_')}.tif"
+            path.touch()
+            inventory.append({"label": column, "filename": path.name, "units": "test units", "include": True})
+        config = ConfigParser(interpolation=None)
+        config["project"] = {
+            "raster_dir": str(raster_dir), "max_simplify_tolerance_meters": "3",
+            "raster_inventory": json.dumps(inventory),
+        }
+        config["job:template"] = {"zone_key": "unused"}
+        with self.zonal_config.open("w", encoding="utf-8") as stream:
+            config.write(stream)
+
+    def simulate_toolkit(self, command, **kwargs):
+        """Write paired sums for the jobs actually present in each frozen profile."""
+        result = self.fake_subprocess(command, **kwargs)
+        if Path(command[2]) != self.runner:
+            return result
+        frozen = Path(command[3])
+        config = ConfigParser(interpolation=None)
+        config.read(frozen, encoding="utf-8")
+        jobs = [config[name] for name in config.sections() if name.startswith("job:")]
+        self.toolkit_batches.append({job["agg_layer"] for job in jobs})
+        stamp, raster_sum = ("20261106_000001", 1.0) if frozen == self.frozen else ("20261106_000002", 2.0)
+        for job in jobs:
+            columns = job["agg_field"].split(", ")
+            frame = pyogrio.read_dataframe(
+                frozen.parent / job["agg_vector"], layer=job["agg_layer"], columns=columns, read_geometry=False,
+            )
+            for column in wrapper.BASE_FIELDS.values():
+                frame[column] = raster_sum
+            output = frozen.parent / job["output_csv"]
+            stamped = output.with_name(f"{output.stem}_{stamp}.csv")
+            stamped.parent.mkdir(parents=True, exist_ok=True)
+            frame.to_csv(stamped, index=False)
+            stamped.with_suffix(".gpkg").write_bytes(b"simulated toolkit output")
+        return result
+
+    def run_with_toolkit_outputs(self, *argv: str) -> Path | None:
+        """Use the real frozen plan and result readers with simulated toolkit sums."""
+        args = wrapper.parse_args(list(argv))
+        with (
+            patch.object(wrapper.subprocess, "run", side_effect=self.simulate_toolkit),
+            patch.object(wrapper, "load_valuation_config", return_value=(
+                {"air_quality_county_aliases": self.air_aliases}, None, None, {"sources": {"gdp": {"path": "gdp.csv"}}},
+            )),
+            patch.object(wrapper, "value_zones", self.valuation),
+        ):
+            return wrapper.run_assessment(args, root=self.root)
+
+    def conservation_refresh_args(self, run_id: str) -> list[str]:
+        """Use the documented flags for a selective refresh of the fixture run."""
+        return [
+            "--reuse-zonals-from", self.run_id, "--refresh-conservation-zonals",
+            "--runner", str(self.runner), "--run-id", run_id,
+        ]
 
     def test_complete_run_publishes_all_six_pairs(self) -> None:
         """Publish exact pairs and record geometry inputs and stage completion."""
@@ -291,6 +361,88 @@ class ConusEcosystemServicesTests(unittest.TestCase):
                 for product, record in manifest["outputs"].items():
                     gpkg = reused / f"{product}_{reused.name}.gpkg"
                     self.assertEqual(record, {"csv": str(gpkg.with_suffix(".csv")), "gpkg": str(gpkg), "rows": 1})
+
+    def test_refresh_cli_requires_source_and_runner_and_rejects_zone_overrides(self) -> None:
+        """Require saved inputs for the selective workflow and a runner for new zonals."""
+        for argv, error in (
+            (["--refresh-conservation-zonals", "--runner", str(self.runner)], "requires --reuse-zonals-from"),
+            (["--refresh-conservation-zonals", "--reuse-zonals-from", self.run_id], "requires --runner"),
+            ([*self.conservation_refresh_args("refresh"), "--land-mask", str(self.land_mask)], "omit zone overrides"),
+            (["--reuse-zonals-from", self.run_id, "--runner", str(self.runner)], "--runner is only needed"),
+        ):
+            with self.subTest(argv=argv), redirect_stderr(StringIO()) as stderr, self.assertRaises(SystemExit):
+                wrapper.parse_args(argv)
+            self.assertIn(error, stderr.getvalue())
+
+    def test_refresh_validate_only_reads_retained_sums_without_writing(self) -> None:
+        """Check the saved raster pairs and original inputs without launching stages."""
+        self.write_raster_inventory()
+        self.run_with_toolkit_outputs(*self.args)
+        self.calls.clear()
+        self.valuation.reset_mock()
+        self.assertIsNone(self.run_with_toolkit_outputs(*self.conservation_refresh_args("preflight"), "--validate-only"))
+        self.assertEqual(self.calls, [])
+        self.valuation.assert_not_called()
+        for path in (self.results.with_name("preflight"), self.work.with_name("preflight"),
+                     self.frozen.with_name("snapp_six_zone_preflight.yaml")):
+            self.assertFalse(path.exists())
+
+    def test_refresh_runs_only_conservation_jobs_and_supports_later_revaluation(self) -> None:
+        """Keep the original four sums, replace both conservation sums, and revalue the mixed run."""
+        conservation = {"conservation_lands_by_county", "conservation_lands_by_county_and_manager_type"}
+        self.write_raster_inventory()
+        self.zone_geometries.update({product: MultiPolygon([box(0, 0, 5, 10)]) for product in conservation})
+        self.run_with_toolkit_outputs(*self.args)
+        self.zone_geometries.clear()
+        self.calls.clear()
+        source_manifest = self.results / "run_manifest.json"
+        original_artifacts = {path: path.read_bytes() for path in (source_manifest, self.frozen)}
+        refreshed = self.run_with_toolkit_outputs(*self.conservation_refresh_args("gap4"))
+        self.assertEqual(refreshed, self.results.with_name("gap4"))
+        self.assertEqual(self.toolkit_batches, [set(wrapper.ZONE_PRODUCTS), conservation])
+        self.assertEqual(self.calls, ["assessment.prepare_assessment_zones", "runner.py"])
+        for path, original in original_artifacts.items():
+            self.assertEqual(path.read_bytes(), original)
+        manifest = json.loads((refreshed / "run_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(set(manifest["outputs"]), set(wrapper.ZONE_PRODUCTS))
+        self.assertEqual(set(manifest["refreshed_raster_products"]), conservation)
+        self.assertEqual(manifest["reused_zonals_from"]["run_id"], self.run_id)
+        self.assertEqual(set(manifest["reused_zonals_from"]["products"]), set(wrapper.ZONE_PRODUCTS) - conservation)
+        refreshed_zones, refreshed_sums = self.valuation.call_args.args[:2]
+        self.assertEqual(set(refreshed_sums), set(wrapper.ZONE_PRODUCTS))
+        raster_column = next(iter(wrapper.BASE_FIELDS.values()))
+        for product, frame in refreshed_sums.items():
+            self.assertEqual(frame[raster_column].tolist(), [2.0 if product in conservation else 1.0])
+            self.assertEqual(refreshed_zones[product].geometry.area.tolist(), [100.0])
+
+        self.calls.clear()
+        self.assertEqual(
+            self.run_with_toolkit_outputs("--reuse-zonals-from", "gap4", "--run-id", "gap4-revalued"),
+            self.results.with_name("gap4-revalued"),
+        )
+        self.assertEqual(self.calls, [])
+        revalued_zones, revalued_sums = self.valuation.call_args.args[:2]
+        for product in wrapper.ZONE_PRODUCTS:
+            pd.testing.assert_frame_equal(revalued_sums[product], refreshed_sums[product])
+            self.assertEqual(revalued_zones[product].geometry.area.tolist(), [100.0])
+
+    def test_refresh_rejects_changed_retained_geometry_before_toolkit(self) -> None:
+        """Require matching retained geometry before planning or running new raster jobs."""
+        self.write_raster_inventory()
+        self.run_with_toolkit_outputs(*self.args)
+        self.calls.clear()
+        self.valuation.reset_mock()
+        self.zone_geometries["bbb_lands_by_county"] = MultiPolygon([box(0, 0, 5, 10)])
+        with self.assertRaisesRegex(ValueError, "bbb_lands_by_county: .*run fresh zonals"):
+            self.run_with_toolkit_outputs(*self.conservation_refresh_args("mismatch"))
+        self.assertEqual(self.calls, ["assessment.prepare_assessment_zones"])
+        self.valuation.assert_not_called()
+        self.assertFalse(self.frozen.with_name("snapp_six_zone_mismatch.yaml").exists())
+        manifest_path = self.results.with_name("mismatch") / "run_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual(manifest["outputs"], {})
 
     def test_reuse_refuses_a_run_with_unverified_raster_sums(self) -> None:
         """Stop before creating outputs when the source zonals did not finish."""

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Collection
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -11,15 +13,19 @@ import re
 import subprocess
 import sys
 
+import pandas as pd
 import pyogrio
+import shapely
 from tqdm import tqdm
 
 from assessment import REPO_ROOT as ROOT
 from assessment.assessment_geography import PADUS_ANALYSIS_LAYER, PADUS_ANALYSIS_PATH
 from assessment.assessment_raster_zonals import (
+    ZoneRasterPlan,
     freeze_zone_zonals,
     read_frozen_zone_raster_plan,
     read_zone_raster_sums,
+    validate_refresh_raster_inputs,
     validate_zone_raster_inputs,
 )
 from assessment.assessment_valuation import CONFIG_FILES, load_valuation_config, value_zones, write_zone_pair
@@ -34,6 +40,21 @@ _PREPARE = "Prepare six assessment zones"
 _FREEZE = "Freeze raw raster zonal jobs"
 _RUN_RASTERS = "Run and verify raster zonals"
 _REUSE_RASTERS = "Verify reused raster zonals"
+_CONSERVATION_PRODUCTS = ("conservation_lands_by_county", "conservation_lands_by_county_and_manager_type")
+_RETAINED_PRODUCTS = tuple(product for product in ZONE_PRODUCTS if product not in _CONSERVATION_PRODUCTS)
+
+
+@dataclass(frozen=True)
+class SavedZonals:
+    """Verified inputs, geometry paths and raster sums from a saved run."""
+
+    manifest_path: Path
+    manifest: dict
+    zones: dict[str, tuple[Path, str]]
+    overlapping_products: set[str]
+    sums: dict[str, pd.DataFrame]
+    empty_products: tuple[str, ...]
+    frozen_configs: tuple[Path, ...]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -46,7 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         Selected inputs and execution options.
     """
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runner", type=Path, help="Path to zonal_stats_toolkit/runner.py for a fresh run")
+    parser.add_argument("--runner", type=Path, help="Path to zonal_stats_toolkit/runner.py for new raster jobs")
     parser.add_argument("--bbb-by-county", type=Path, help="Prepared BBB county geometry GeoPackage for a fresh run")
     parser.add_argument("--bbb-layer")
     parser.add_argument("--padus-path", type=Path, default=PADUS_ANALYSIS_PATH)
@@ -64,17 +85,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Compatibility override for the entire shared valuation pool, not a nested pool")
     parser.add_argument(
         "--reuse-zonals-from", metavar="RUN_ID",
-        help="Reuse a prior run's prepared zones and verified raster sums; run valuation and publication only",
+        help="Reuse verified raster sums from a prior run",
+    )
+    parser.add_argument(
+        "--refresh-conservation-zonals", action="store_true",
+        help="With --reuse-zonals-from and --runner, rebuild zones and run only conservation raster jobs",
     )
     parser.add_argument("--validate-only", action="store_true", help="Check inputs without creating run files")
     args = parser.parse_args(argv)
     if args.reuse_zonals_from is None:
+        if args.refresh_conservation_zonals:
+            parser.error("--refresh-conservation-zonals requires --reuse-zonals-from and --runner")
         if any(value is None for value in (args.runner, args.bbb_by_county, args.land_mask)):
             parser.error("a fresh run requires --runner, --bbb-by-county, and --land-mask")
-    elif (any(value is not None for value in (args.runner, args.bbb_by_county, args.bbb_layer,
-                                              args.land_mask, args.land_mask_layer, args.counties_layer))
-          or (args.padus_path, args.padus_layer, args.counties) != (PADUS_ANALYSIS_PATH, PADUS_ANALYSIS_LAYER, COUNTY_PATH)):
-        parser.error("--reuse-zonals-from uses the original geometry inputs; omit runner and zone overrides")
+    else:
+        if args.refresh_conservation_zonals and args.runner is None:
+            parser.error("--refresh-conservation-zonals requires --runner")
+        if not args.refresh_conservation_zonals and args.runner is not None:
+            parser.error("--runner is only needed with --refresh-conservation-zonals or a fresh run")
+        if (any(value is not None for value in (args.bbb_by_county, args.bbb_layer, args.land_mask,
+                                                args.land_mask_layer, args.counties_layer))
+                or (args.padus_path, args.padus_layer, args.counties)
+                != (PADUS_ANALYSIS_PATH, PADUS_ANALYSIS_LAYER, COUNTY_PATH)):
+            parser.error("--reuse-zonals-from uses the original geometry inputs; omit zone overrides")
     return args
 
 
@@ -109,12 +142,15 @@ def read_prepared_zones(zone_root: Path, run_id: str) -> tuple[dict[str, tuple[P
     }
 
 
-def read_vector_inputs(args: argparse.Namespace, root: Path) -> dict[str, tuple[str, str]]:
+def read_vector_inputs(
+    args: argparse.Namespace, root: Path, *, recorded: dict | None = None,
+) -> dict[str, tuple[str, str]]:
     """Resolve and validate the vector inputs used by a fresh assessment.
 
     Args:
         args: Fresh-run vector arguments.
         root: Repository root for relative paths.
+        recorded: Original vector paths and layers when refreshing conservation.
 
     Returns:
         Absolute paths and selected layer names keyed by source.
@@ -130,6 +166,8 @@ def read_vector_inputs(args: argparse.Namespace, root: Path) -> dict[str, tuple[
     }
     input_paths = {}
     for key, (path, layer, fields) in vector_inputs.items():
+        if recorded is not None:
+            path, layer = recorded[key]
         path = (root / path).resolve()
         if not path.exists():
             raise FileNotFoundError(f"{key} input not found: {path}")
@@ -147,8 +185,96 @@ def read_vector_inputs(args: argparse.Namespace, root: Path) -> dict[str, tuple[
     return input_paths
 
 
+def verify_retained_zone_geometries(
+    original: dict[str, tuple[Path, str]], rebuilt: dict[str, tuple[Path, str]],
+) -> None:
+    """Require identical keyed geometries before reusing raster sums on rebuilt zones."""
+    for product in _RETAINED_PRODUCTS:
+        fields = ["GEOID", "Mang_Type"] if product.endswith("_and_manager_type") else ["GEOID"]
+        frames = [
+            pyogrio.read_dataframe(path, layer=layer, columns=fields).sort_values(fields)
+            for path, layer in (original[product], rebuilt[product])
+        ]
+        old, new = frames
+        if (old.crs != new.crs or not old[fields].reset_index(drop=True).equals(new[fields].reset_index(drop=True))
+                or old.duplicated(fields).any()
+                or not shapely.equals_exact(shapely.normalize(old.geometry.to_numpy()),
+                                            shapely.normalize(new.geometry.to_numpy()), 0).all()):
+            raise ValueError(f"{product}: retained zone keys, CRS, or geometry changed; run fresh zonals")
+
+
+def read_raster_subset(plan: ZoneRasterPlan, products: Collection[str]) -> dict[str, pd.DataFrame]:
+    """Read selected raster pairs while enforcing a single toolkit stamp per batch."""
+    if set(products) == set(ZONE_PRODUCTS):
+        return read_zone_raster_sums(plan)
+    plan = replace(plan, jobs=tuple(job for job in plan.jobs if job.product in products))
+    sums = read_zone_raster_sums(plan)
+    return {product: sums[product] for product in products}
+
+
+def read_saved_zonals(
+    root: Path, source_id: str, *, products: Collection[str] = ZONE_PRODUCTS, allow_refresh: bool = True,
+) -> SavedZonals:
+    """Load a completed raster run, following the original source of any retained products."""
+    if not _RUN_ID.fullmatch(source_id):
+        raise ValueError("Invalid saved raster run ID")
+    data = root / "data"
+    manifest_path = data / "analysis_results/assessment_runs" / source_id / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (manifest.get("run_id") != source_id or manifest.get("geographic_scope") != "CONUS"
+            or manifest.get("status") not in {"complete", "failed"}
+            or any(manifest.get("stages", {}).get(stage) != "complete"
+                   for stage in (_PREPARE, _FREEZE, _RUN_RASTERS))):
+        raise ValueError(f"Source run {source_id} has no completed, verified CONUS raster zonals")
+    work = data / "processing_outputs/assessment_runs" / source_id
+    zone_root = work / "zonal_units"
+    frozen = root / DEFAULT_CONFIG.relative_to(ROOT).parent / "runs" / f"snapp_six_zone_{source_id}.yaml"
+    raw_root = work / "raw_zonals"
+    for key, expected in {
+        "zone_manifest": zone_root / "zone_manifest.json", "frozen_zonal_config": frozen,
+        "raw_zonal_directory": raw_root,
+    }.items():
+        if Path(manifest.get(key, "")).resolve() != expected.resolve():
+            raise ValueError(f"Source run {source_id} records an unexpected {key} path")
+    zones, overlapping = read_prepared_zones(zone_root, source_id)
+    refreshed = manifest.get("refreshed_raster_products")
+    retained = None
+    if refreshed is not None:
+        if not allow_refresh:
+            raise ValueError("A conservation refresh requires an original full raster run as its source")
+        if refreshed != list(_CONSERVATION_PRODUCTS):
+            raise ValueError(f"Source run {source_id} records unexpected refreshed products")
+        reuse = manifest.get("reused_zonals_from", {})
+        if reuse.get("products") != list(_RETAINED_PRODUCTS):
+            raise ValueError(f"Source run {source_id} records unexpected retained products")
+        retained = read_saved_zonals(root, reuse.get("run_id", ""), products=_RETAINED_PRODUCTS, allow_refresh=False)
+        if (Path(reuse.get("manifest", "")).resolve() != retained.manifest_path.resolve()
+                or manifest["zone_inputs"] != retained.manifest["zone_inputs"]):
+            raise ValueError(f"Source run {source_id} records an inconsistent retained run")
+        verify_retained_zone_geometries(retained.zones, zones)
+    configs = (frozen,) if retained is None else (frozen, *retained.frozen_configs)
+    recorded_hashes = manifest.get("configuration_sha256", {})
+    for config in configs:
+        if str(config) in recorded_hashes and sha256(config) != recorded_hashes[str(config)]:
+            raise ValueError(f"Saved raster configuration changed: {config}")
+    selection = {} if retained is None else {"products": _CONSERVATION_PRODUCTS}
+    plan = read_frozen_zone_raster_plan(
+        zones, frozen, work / "zonal_stats_work", raw_root,
+        expected_raster_columns=tuple(BASE_FIELDS.values()), overlapping_manager_products=overlapping,
+        **selection,
+    )
+    local_products = products if retained is None else _CONSERVATION_PRODUCTS
+    sums = read_raster_subset(plan, local_products)
+    empty = set(plan.skipped_products).intersection(local_products)
+    if retained is not None:
+        sums = retained.sums | sums
+        empty.update(retained.empty_products)
+    return SavedZonals(manifest_path, manifest, zones, overlapping, sums,
+                       tuple(product for product in ZONE_PRODUCTS if product in empty), configs)
+
+
 def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
-    """Value and publish a fresh assessment or reuse completed raster zonals.
+    """Value and publish fresh, saved, or refreshed conservation zonals.
 
     Args:
         args: Parsed inputs and worker limits.
@@ -165,6 +291,8 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     if not _RUN_ID.fullmatch(args.run_id):
         raise ValueError("Run ID must be 1–64 letters, digits, underscores or hyphens")
     source_id = args.reuse_zonals_from
+    refresh = args.refresh_conservation_zonals
+    rebuild_zones = source_id is None or refresh
     if source_id is not None and (not _RUN_ID.fullmatch(source_id) or source_id.casefold() == args.run_id.casefold()):
         raise ValueError("Reuse requires a valid source run ID distinct from the new run ID")
     valuation_workers = args.workers if args.geometry_workers is None else args.geometry_workers
@@ -182,7 +310,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         for path in (results, new_work, new_frozen):
             if path.exists():
                 raise FileExistsError(f"Run path already exists; use a new --run-id: {path}")
-    geometry_run = args.run_id if source_id is None else source_id
+    geometry_run = args.run_id if rebuild_zones else source_id
     work = new_work.with_name(geometry_run)
     frozen = new_frozen.with_name(f"snapp_six_zone_{geometry_run}.yaml")
     zone_root = work / "zonal_units"
@@ -193,11 +321,32 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     gdp_crosswalk = derived["sources"]["gdp"].get("allocation_crosswalk")
     if gdp_crosswalk:
         config_files.append((data / gdp_crosswalk).resolve())
-    if source_id is None:
+    if source_id is not None:
+        saved = read_saved_zonals(
+            root, source_id, products=_RETAINED_PRODUCTS if refresh else ZONE_PRODUCTS,
+            allow_refresh=not refresh,
+        )
+        input_paths = saved.manifest["zone_inputs"]
+        coral_path, coral_layer = input_paths["coral_reference_counties"]
+        if Path(coral_path).resolve() != (root / COUNTY_PATH).resolve():
+            raise ValueError(f"Source run {source_id} records an unexpected coral county reference")
+        info = pyogrio.read_info(coral_path, layer=coral_layer)
+        if not info["crs"] or "GEOID" not in info["fields"]:
+            raise ValueError("Coral county reference must have a CRS and GEOID")
+        blocked = saved.manifest["blocked_rasters"]
+        zones, overlapping_products = saved.zones, saved.overlapping_products
+        raster_sums = saved.sums
+        config_files.extend(saved.frozen_configs)
+    if rebuild_zones:
         runner = (root / args.runner).resolve()
         if not runner.is_file():
             raise FileNotFoundError(f"Toolkit runner not found: {runner}")
-        rasters, blocked = validate_zone_raster_inputs(zonal_config)
+        if refresh:
+            rasters, blocked = validate_refresh_raster_inputs(zonal_config, saved.frozen_configs[0])
+            input_paths = read_vector_inputs(args, root, recorded=input_paths)
+        else:
+            rasters, blocked = validate_zone_raster_inputs(zonal_config)
+            input_paths = read_vector_inputs(args, root)
         raster_fields = {f"sum_{raster.path.stem}" for raster in rasters}
         expected_fields = set(BASE_FIELDS.values())
         if raster_fields != expected_fields:
@@ -205,41 +354,13 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
                 f"TIFF inventory does not match the configured valuation services: "
                 f"missing {sorted(expected_fields - raster_fields)}, extra {sorted(raster_fields - expected_fields)}"
             )
-        input_paths = read_vector_inputs(args, root)
         config_files.extend((zonal_config, root / "config/padus_land_rules.rules"))
-    else:
-        source_manifest_path = results.with_name(source_id) / "run_manifest.json"
-        source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
-        if (source_manifest.get("run_id") != source_id or source_manifest.get("geographic_scope") != "CONUS"
-                or source_manifest.get("status") not in {"complete", "failed"}
-                or any(source_manifest.get("stages", {}).get(stage) != "complete"
-                       for stage in (_PREPARE, _FREEZE, _RUN_RASTERS))):
-            raise ValueError(f"Source run {source_id} has no completed, verified CONUS raster zonals")
-        for key, expected in {
-            "zone_manifest": zone_root / "zone_manifest.json", "frozen_zonal_config": frozen,
-            "raw_zonal_directory": raw_root,
-        }.items():
-            if Path(source_manifest.get(key, "")).resolve() != expected.resolve():
-                raise ValueError(f"Source run {source_id} records an unexpected {key} path")
-        input_paths = source_manifest["zone_inputs"]
-        coral_path, coral_layer = input_paths["coral_reference_counties"]
-        if Path(coral_path).resolve() != (root / COUNTY_PATH).resolve():
-            raise ValueError(f"Source run {source_id} records an unexpected coral county reference")
-        info = pyogrio.read_info(coral_path, layer=coral_layer)
-        if not info["crs"] or "GEOID" not in info["fields"]:
-            raise ValueError("Coral county reference must have a CRS and GEOID")
-        blocked = source_manifest["blocked_rasters"]
-        zones, overlapping_products = read_prepared_zones(zone_root, geometry_run)
-        config_files.append(frozen)
     hashes = {str(path): sha256(path) for path in config_files}
-    if source_id is not None:
-        plan = read_frozen_zone_raster_plan(
-            zones, frozen, work_dir, raw_root, expected_raster_columns=tuple(BASE_FIELDS.values()),
-            overlapping_manager_products=overlapping_products,
-        )
-        raster_sums = read_zone_raster_sums(plan)
     if args.validate_only:
-        detail = "reused zones and raster sums" if source_id is not None else "inputs"
+        if refresh:
+            detail = "conservation refresh inputs and retained raster sums"
+        else:
+            detail = "reused zones and raster sums" if source_id is not None else "inputs"
         print(f"CONUS Ecosystem Services Assessment: {detail} validated; no run files written.", flush=True)
         return None
 
@@ -265,7 +386,10 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         "stages": {}, "outputs": {},
     }
     if source_id is not None:
-        manifest["reused_zonals_from"] = {"run_id": source_id, "manifest": str(source_manifest_path)}
+        manifest["reused_zonals_from"] = {"run_id": source_id, "manifest": str(saved.manifest_path)}
+    if refresh:
+        manifest["refreshed_raster_products"] = list(_CONSERVATION_PRODUCTS)
+        manifest["reused_zonals_from"]["products"] = list(_RETAINED_PRODUCTS)
 
     def record(stage: str, status: str) -> None:
         """Persist stage status and the currently verified outputs."""
@@ -276,9 +400,9 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     env = os.environ.copy()
     env.setdefault("OPENBLAS_NUM_THREADS", "1")
     env.setdefault("OMP_NUM_THREADS", "1")
-    stage = _PREPARE if source_id is None else _REUSE_RASTERS
+    stage = _PREPARE if rebuild_zones else _REUSE_RASTERS
     try:
-        if source_id is None:
+        if rebuild_zones:
             record(stage, "running")
             subprocess.run([
                 sys.executable, "-B", "-m", "assessment.prepare_assessment_zones",
@@ -290,14 +414,21 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
                 "--run-id", args.run_id, "--output-root", str(work.parent), "--workers", str(args.workers),
             ], cwd=root, env=env, check=True)
             zones, overlapping_products = read_prepared_zones(zone_root, geometry_run)
+            if refresh:
+                verify_retained_zone_geometries(saved.zones, zones)
             manifest["manager_overlap_products"] = sorted(overlapping_products)
             record(stage, "complete")
 
             stage = _FREEZE
             record(stage, "running")
+            selection = {"products": _CONSERVATION_PRODUCTS} if refresh else {}
             plan = freeze_zone_zonals(zones, zonal_config, frozen, work_dir, raw_root,
-                                     overlapping_manager_products=overlapping_products)
-            manifest["empty_zone_products"] = list(plan.skipped_products)
+                                     overlapping_manager_products=overlapping_products, **selection)
+            hashes[str(frozen)] = sha256(frozen)
+            empty_products = set(plan.skipped_products)
+            if refresh:
+                empty_products.update(saved.empty_products)
+            manifest["empty_zone_products"] = [product for product in ZONE_PRODUCTS if product in empty_products]
             record(stage, "complete")
 
             stage = _RUN_RASTERS
@@ -307,11 +438,14 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
                     sys.executable, "-B", str(runner), str(plan.frozen_config),
                     "--job-workers", str(args.job_workers), "--raster-workers", str(args.raster_workers),
                 ], cwd=root, env=env, check=True)
-            raster_sums = read_zone_raster_sums(plan)
+            if refresh:
+                raster_sums.update(read_raster_subset(plan, _CONSERVATION_PRODUCTS))
+            else:
+                raster_sums = read_zone_raster_sums(plan)
             record(stage, "complete")
         else:
             manifest["manager_overlap_products"] = sorted(overlapping_products)
-            manifest["empty_zone_products"] = list(plan.skipped_products)
+            manifest["empty_zone_products"] = list(saved.empty_products)
             record(stage, "complete")
 
         stage = "Value all six zone products"

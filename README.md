@@ -65,8 +65,11 @@ conservation status.
   selects records with federal, state, local government, special district,
   joint, or territorial manager types. For records coded as having an unknown
   manager type, it selects the designations listed in the rule.
-- **Conservation lands.** We select records with GAP status 1, 2, or 3,
-  independently of the public-land filter.
+- **Conservation lands.** We select PAD-US records explicitly coded GAP status
+  1, 2, 3, or 4, independently of the public-land filter. Records with missing
+  or unrecognized codes are excluded. Status 4 can include lands with unknown
+  management intent or no known mandate to protect biodiversity.
+  [USGS GAP status codes](https://www.usgs.gov/programs/gap-analysis-project/gap-status-code-frequently-asked-questions-faq)
 
 Land holdings can cross county boundaries, and multiple PAD-US records can
 cover the same ground. To report one public-land or conservation-land estimate
@@ -150,7 +153,8 @@ to recreate the footprint.
 
 *Northern Utah at a common extent and scale. These assessment footprints can
 include water. Public and conservation classifications overlap; the BBB
-footprint represents the mapped land-sale scenario.*
+footprint represents the mapped land-sale scenario. The conservation panel
+shows the earlier GAP 1–3 footprint.*
 
 ### Summarize ecosystem-service rasters
 
@@ -703,16 +707,15 @@ outputs as a record of the inputs and settings.
 ### Revalue a completed run
 
 To update valuation factors, tables, or output fields, reuse the saved analysis
-boundaries and raster sums from the original run that computed the zonals.
-Pass that run's ID to `--reuse-zonals-from` and choose a new `--run-id` for the
+boundaries and raster sums. Pass the ID of the original fresh run or a completed
+conservation refresh to `--reuse-zonals-from` and choose a new `--run-id` for the
 output.
 
 ```cmd
 python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued" --workers 8
 ```
 
-Add `--validate-only` to check reuse before launching. Changes to analysis
-boundaries or service rasters require a fresh assessment run.
+Add `--validate-only` to check reuse before launching.
 Revaluation reuses the ecosystem-service raster sums. Fisheries measurements
 are cached under `data/processing_outputs/fisheries_weights/` as raw freshwater
 hectares and marine shoreline kilometres for all six layers. The first run
@@ -736,3 +739,22 @@ clipping. Both paths retain the configured lake exclusions.
 Use `PROJ_NETWORK=OFF`, as in the launch commands, to enable persistent weight
 reuse with local projection resources. With online projection-grid downloads
 enabled, the pipeline measures fisheries weights without saving or reusing them.
+
+### Refresh conservation zonals to include GAP status 4
+
+Use the original fresh run ID to apply the expanded conservation definition
+while reusing saved zonals for the other four outputs.
+
+```cmd
+set "PROJ_NETWORK=OFF"
+python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --refresh-conservation-zonals --runner "..\zonal_stats_toolkit\runner.py" --run-id "conus-gap4" --workers 8
+```
+
+The refresh rebuilds the six analysis footprints from the original inputs.
+It checks that the geometries and row keys match the saved counties, both
+public-land layers, and BBB lands before reusing their raster sums. It runs
+raster zonals for the two conservation layers and writes six CSV and
+GeoPackage pairs. Use the refresh run ID for later revaluation.
+
+Run a fresh assessment when other analysis footprints, raster inputs, or
+raster settings change.
