@@ -419,14 +419,13 @@ its county total is positive; missing or nonpositive county totals give blank
 ratios. Public, conservation, and BBB lands can overlap, so their shares
 should not be added together.
 
-We also report each category's ES value per land hectare in the county
-summary. We divide the category's `total_ecosystem_services` by its own
-`area_ha_land`, using the by-county public, conservation, or BBB output matched
-on `GEOID`. These denominators are land-only hectares, not full county or
-polygon areas including water. Recreation is excluded. A missing category,
-missing value, or missing or nonpositive land area gives a blank result.
-The units are dollars per land hectare, with the same mixed benefit periods
-as `total_ecosystem_services`.
+For each public, conservation, or BBB by-county footprint, we divide its
+`total_ecosystem_services` (excluding recreation) by its own land-only area,
+`area_ha_land`. The county summary reports the same values matched by
+`GEOID` and leaves the field blank when the county has no footprint for that
+category. In both outputs, a missing or nonfinite total or a missing, invalid,
+or nonpositive land area leaves the value blank. The units are dollars per
+land hectare, with the same mixed benefit periods as `total_ecosystem_services`.
 
 ## Output fields and units
 
@@ -545,9 +544,12 @@ allocate county service estimates.
 | `ratio_public_lands_es_value_to_county_es_value` | Public-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
 | `ratio_conservation_lands_es_value_to_county_es_value` | Conservation-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
 | `ratio_bbb_lands_es_value_to_county_es_value` | BBB-land `total_ecosystem_services` divided by the matching county's `total_ecosystem_services`; both exclude recreation | Fraction, not percent | Counties only |
-| `public_lands_total_es_value_per_land_ha` | Public-land `total_ecosystem_services` divided by public-land `area_ha_land` in the same county; excludes recreation | USD/land hectare, mixed benefit periods | Counties only |
-| `conservation_lands_total_es_value_per_land_ha` | Conservation-land `total_ecosystem_services` divided by conservation-land `area_ha_land` in the same county; excludes recreation | USD/land hectare, mixed benefit periods | Counties only |
-| `bbb_lands_total_es_value_per_land_ha` | BBB-land `total_ecosystem_services` divided by BBB-land `area_ha_land` in the same county; excludes recreation | USD/land hectare, mixed benefit periods | Counties only |
+| `public_lands_counties_total_es_value_per_land_ha` | Public-land `total_ecosystem_services` (excluding recreation) divided by public-land `area_ha_land` in the same county | USD/land hectare, mixed benefit periods | Counties only |
+| `conservation_lands_counties_total_es_value_per_land_ha` | Conservation-land `total_ecosystem_services` (excluding recreation) divided by conservation-land `area_ha_land` in the same county | USD/land hectare, mixed benefit periods | Counties only |
+| `bbb_lands_counties_total_es_value_per_land_ha` | BBB-land `total_ecosystem_services` (excluding recreation) divided by BBB-land `area_ha_land` in the same county | USD/land hectare, mixed benefit periods | Counties only |
+| `total_public_es_value_per_public_land_ha` | The footprint's `total_ecosystem_services` (excluding recreation) divided by its `area_ha_land` | USD/land hectare, mixed benefit periods | `public_lands_by_county` only |
+| `total_conservation_es_value_per_conservation_land_ha` | The footprint's `total_ecosystem_services` (excluding recreation) divided by its `area_ha_land` | USD/land hectare, mixed benefit periods | `conservation_lands_by_county` only |
+| `total_bbb_es_value_per_bbb_land_ha` | The footprint's `total_ecosystem_services` (excluding recreation) divided by its `area_ha_land` | USD/land hectare, mixed benefit periods | `bbb_lands_by_county` only |
 | `GDP_2024` | 2024 county GDP, including population-based allocations where needed | USD; source thousands converted to dollars | Counties only |
 | `GDP_2024_is_allocated` | Whether GDP was allocated from a combined Virginia area | 1 = allocated; 0 = otherwise | Counties only |
 | `Pop_2024` | Estimated county population in 2024 | People | Counties only |
@@ -685,9 +687,10 @@ outputs as a record of the inputs and settings.
 
 ### Revalue a completed run
 
-To update valuation factors, tables, or county metrics (including land-category
-ecosystem-service shares and value per land hectare), reuse a completed run's
-saved analysis boundaries and raster sums. Pass its run ID and a new output ID:
+To update valuation factors, tables, or output fields, reuse the saved analysis
+boundaries and raster sums from the original run that computed the zonals.
+Pass that run's ID to `--reuse-zonals-from` and choose a new `--run-id` for the
+output.
 
 ```cmd
 python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued"

@@ -28,10 +28,13 @@ def test_missing_reporting_area_input_explains_preparation(monkeypatch, source_n
         valuation.load_valuation_config(data, config)
 
 
-@pytest.mark.parametrize(("county_area", "inclusive_area", "reuse_zones"), [
-    (200.0, 400.0, False), (200.0, 400.0, True), (0.0, 400.0, True), (200.0, np.nan, True),
+@pytest.mark.parametrize(("county_area", "inclusive_area", "reuse_zones", "bbb_area"), [
+    (200.0, 400.0, False, 5.0), (200.0, 400.0, True, 0.0),
+    (0.0, 400.0, True, 0.0), (200.0, np.nan, True, 0.0),
 ])
-def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, county_area, inclusive_area, reuse_zones):
+def test_adjustment_and_recreation_are_applied_once(
+    monkeypatch, tmp_path, county_area, inclusive_area, reuse_zones, bbb_area,
+):
     """Check all product keys, land allocation, totals, factors and the output pair."""
     config = REPO_ROOT / "data/workflow_assets/county_integration"
     factors = pd.read_csv(config / "adjustment_factors.csv").set_index("service")
@@ -89,7 +92,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         fields = {"GEOID": ["46102"], "NAME": ["NA"]}
         if product == "counties":
             fields.update(area_ha_county_land=[100.0], area_ha_public_lands=[50.0],
-                          area_ha_conservation_lands=[25.0], area_ha_bbb_lands=[0.0])
+                          area_ha_conservation_lands=[25.0], area_ha_bbb_lands=[bbb_area])
             if reuse_zones:
                 fields.update(pct_public_lands=[50.0], pct_conservation_lands=[25.0], pct_bbb_lands=[0.0])
         else:
@@ -98,7 +101,9 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         if product.endswith("_and_manager_type"):
             fields = {"GEOID": ["46102", "46102"], "Mang_Type": ["FED", "LOC"],
                       "county_land_share": [0.15, 0.1], "area_ha_land": [15.0, 10.0]}
-        if product == "bbb_lands_by_county":
+        if product == "bbb_lands_by_county" and bbb_area:
+            fields["area_ha_land"] = [bbb_area]
+        elif product == "bbb_lands_by_county":
             fields = {"GEOID": pd.Series(dtype="str"), "county_land_share": pd.Series(dtype="float64"),
                       "area_ha_land": pd.Series(dtype="float64")}
         size = len(fields["GEOID"])
@@ -127,12 +132,21 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     }
     per_hectare = derived["county_land_service_value_per_ha"]
     assert per_hectare == {
-        "public_lands_total_es_value_per_land_ha": "public_lands_by_county",
-        "conservation_lands_total_es_value_per_land_ha": "conservation_lands_by_county",
-        "bbb_lands_total_es_value_per_land_ha": "bbb_lands_by_county",
+        "public_lands_counties_total_es_value_per_land_ha": "public_lands_by_county",
+        "conservation_lands_counties_total_es_value_per_land_ha": "conservation_lands_by_county",
+        "bbb_lands_counties_total_es_value_per_land_ha": "bbb_lands_by_county",
     }
+    footprint_per_hectare = derived["footprint_land_service_value_per_ha"]
+    assert footprint_per_hectare == {
+        "total_public_es_value_per_public_land_ha": "public_lands_by_county",
+        "total_conservation_es_value_per_conservation_land_ha": "conservation_lands_by_county",
+        "total_bbb_es_value_per_bbb_land_ha": "bbb_lands_by_county",
+    }
+    footprint_fields = {product: field for field, product in footprint_per_hectare.items()}
     retired_service_fields = {f"ratio_{name}_lands_to_county_ecosystem_services"
                               for name in ("public", "conservation", "bbb")}
+    retired_service_fields.update(f"{name}_lands_total_es_value_per_land_ha"
+                                  for name in ("public", "conservation", "bbb"))
     expected_service_ratios = [
         outputs[product]["total_ecosystem_services"].sum() / county["total_ecosystem_services"]
         for product in service_ratios.values()
@@ -141,21 +155,23 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     expected_per_hectare = [
         outputs["public_lands_by_county"]["total_ecosystem_services"].iloc[0] / 20.0,
         outputs["conservation_lands_by_county"]["total_ecosystem_services"].iloc[0] / 10.0,
-        np.nan,
+        outputs["bbb_lands_by_county"]["total_ecosystem_services"].iloc[0] / bbb_area if bbb_area else np.nan,
     ]
+    expected_footprint_values = dict(zip(per_hectare.values(), expected_per_hectare, strict=True))
     np.testing.assert_allclose(county[list(per_hectare)].to_numpy(dtype=float), expected_per_hectare,
                                equal_nan=True)
     service_fields = [*service_ratios, *per_hectare]
     assert outputs["counties"].columns[-6:].tolist() == service_fields
-    real_land_metrics = valuation.calculate_county_land_service_metrics
+    real_land_metrics = valuation.calculate_land_service_metrics
 
-    def previous_land_metrics(products, ratios, per_hectare_rules):
+    def previous_land_metrics(products, ratios, per_hectare_rules, footprint_rules):
         """Retain the real pre-existing shares while omitting only per-hectare outputs."""
-        return real_land_metrics(products, ratios, per_hectare_rules)[list(ratios)]
+        metrics, _ = real_land_metrics(products, ratios, per_hectare_rules, footprint_rules)
+        return metrics[list(ratios)], {}
 
-    # Removing only the new per-hectare calculation preserves the complete prior export.
+    # All other published attributes and geometries are independent of the per-hectare fields.
     with monkeypatch.context() as original:
-        original.setattr(valuation, "calculate_county_land_service_metrics", previous_land_metrics)
+        original.setattr(valuation, "calculate_land_service_metrics", previous_land_metrics)
         previous, _, _ = valuation.value_zones(
             zones, raster_sums, tmp_path, config, coral_reference_counties=zones["counties"],
             workers=2, geometry_workers=1,
@@ -164,14 +180,24 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         assert retired_service_fields.isdisjoint(frame.columns)
         if product == "counties":
             pd.testing.assert_frame_equal(frame.drop(columns=list(per_hectare)), previous[product])
+            assert set(footprint_per_hectare).isdisjoint(frame.columns)
+        elif product in footprint_fields:
+            field = footprint_fields[product]
+            pd.testing.assert_frame_equal(frame.drop(columns=field), previous[product])
+            assert set(frame).intersection(footprint_per_hectare) == {field}
+            assert set(service_fields).isdisjoint(frame.columns)
+            np.testing.assert_allclose(
+                frame[field], np.full(len(frame), expected_footprint_values[product]), equal_nan=True,
+            )
         else:
             pd.testing.assert_frame_equal(frame, previous[product])
             assert set(service_fields).isdisjoint(frame.columns)
+            assert set(footprint_per_hectare).isdisjoint(frame.columns)
     ratio_fields = [f"ratio_{name}_lands_to_county_area{suffix}"
                     for name in ("public", "conservation", "bbb")
                     for suffix in ("", "_incl_ocean_great_lakes")]
     expected_ratios = [hectares / area if np.isfinite(area) and area > 0 else np.nan
-                       for hectares in (50.0, 25.0, 0.0) for area in (county_area, inclusive_area)]
+                       for hectares in (50.0, 25.0, bbb_area) for area in (county_area, inclusive_area)]
     np.testing.assert_allclose(county[ratio_fields].to_numpy(dtype=float), expected_ratios)
     ratio_start = county.index.get_loc(ratio_fields[0])
     assert county.index[ratio_start:ratio_start + len(ratio_fields)].tolist() == ratio_fields
@@ -216,15 +242,15 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
     assert "integration_county_table_status" in audits
     assert qa["blank_component_rows"]["counties"]["sum_mangrove_coastal_flood_protection_value_adj"] == 1
 
-    for product in ("counties", "public_lands_by_county_and_manager_type", "bbb_lands_by_county"):
+    for product in ZONE_PRODUCTS:
         path = tmp_path / product / f"{product}_test.gpkg"
         csv_path, gpkg = valuation.write_zone_pair(outputs[product], path, product, audits if product == "counties" else {})
         assert csv_path.is_file() and gpkg.is_file()
         published = pyogrio.read_dataframe(gpkg, layer=product)
         assert len(published) == len(outputs[product])
-        if product == "counties":
-            for exported in (pd.read_csv(csv_path), published):
-                assert retired_service_fields.isdisjoint(exported.columns)
+        for exported in (pd.read_csv(csv_path, dtype={"GEOID": str}), published):
+            assert retired_service_fields.isdisjoint(exported.columns)
+            if product == "counties":
                 np.testing.assert_allclose(exported[list(service_ratios)].iloc[0], expected_service_ratios)
                 np.testing.assert_allclose(exported[list(per_hectare)].iloc[0], expected_per_hectare,
                                            equal_nan=True)
@@ -233,6 +259,15 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
                 assert legacy_pct_fields.isdisjoint(exported.columns)
                 start = exported.columns.get_loc(ratio_fields[0])
                 assert exported.columns[start:start + len(ratio_fields)].tolist() == ratio_fields
+            elif product in footprint_fields:
+                field = footprint_fields[product]
+                assert set(exported).intersection(footprint_per_hectare) == {field}
+                np.testing.assert_allclose(
+                    exported[field].to_numpy(dtype=float), np.full(len(exported), expected_footprint_values[product]),
+                    equal_nan=True,
+                )
+            else:
+                assert set(footprint_per_hectare).isdisjoint(exported.columns)
         with pytest.raises(FileExistsError):
             valuation.write_zone_pair(outputs[product], path, product, {})
 
@@ -243,6 +278,7 @@ def test_land_service_metrics_match_geoids_and_preserve_missing_totals(tmp_path)
     derived = yaml.safe_load(config.read_text())
     ratios = derived["county_ecosystem_service_ratios"]
     per_hectare = derived["county_land_service_value_per_ha"]
+    footprint_per_hectare = derived["footprint_land_service_value_per_ha"]
     counties = gpd.GeoDataFrame({
         "GEOID": ["01003", "01001", "01005", "01007", "01009", "01011", "01013"],
         "total_ecosystem_services": [100.0, 200.0, 0.0, np.nan, -10.0, np.inf, 50.0],
@@ -274,7 +310,7 @@ def test_land_service_metrics_match_geoids_and_preserve_missing_totals(tmp_path)
         }),
     }
     originals = {product: frame.copy(deep=True) for product, frame in products.items()}
-    metrics = valuation.calculate_county_land_service_metrics(products, ratios, per_hectare)
+    metrics, densities = valuation.calculate_land_service_metrics(products, ratios, per_hectare, footprint_per_hectare)
     expected = pd.DataFrame({
         list(ratios)[0]: [1.25, 0.25, np.nan, np.nan, np.nan, np.nan, np.nan],
         list(ratios)[1]: [0.0, 0.3, np.nan, np.nan, np.nan, np.nan, 0.0],
@@ -284,6 +320,19 @@ def test_land_service_metrics_match_geoids_and_preserve_missing_totals(tmp_path)
         list(per_hectare)[2]: [np.nan] * 7,
     }, index=counties.index)
     pd.testing.assert_frame_equal(metrics, expected)
+    expected_densities = {
+        "public_lands_by_county": [5.0, 25.0, np.nan, 4.0, -3.0, 4.0, 0.0],
+        "conservation_lands_by_county": [3.0],
+        "bbb_lands_by_county": [],
+    }
+    assert set(densities) == set(expected_densities)
+    for field, product in footprint_per_hectare.items():
+        pd.testing.assert_series_equal(densities[product], pd.Series(
+            expected_densities[product],
+            index=pd.Index(products[product]["GEOID"].astype("string"), name="GEOID"),
+            dtype=float,
+            name=field,
+        ))
     for product, original in originals.items():
         pd.testing.assert_frame_equal(products[product], original)
     # Blank and zero metrics survive both formats with leading-zero GEOIDs.
@@ -321,6 +370,7 @@ def test_land_service_value_per_hectare_handles_category_edge_cases(
     derived = yaml.safe_load(config.read_text())
     ratios = derived["county_ecosystem_service_ratios"]
     per_hectare = derived["county_land_service_value_per_ha"]
+    footprint_per_hectare = derived["footprint_land_service_value_per_ha"]
     products = {"counties": pd.DataFrame({
         "GEOID": ["01001", "01003"], "total_ecosystem_services": [county_total, 100.0],
     }, index=[9, 4])}
@@ -334,15 +384,20 @@ def test_land_service_value_per_hectare_handles_category_edge_cases(
     elif presence == "empty":
         products[category] = products[category].iloc[:0].copy()
 
-    metrics = valuation.calculate_county_land_service_metrics(products, ratios, per_hectare)
+    metrics, densities = valuation.calculate_land_service_metrics(products, ratios, per_hectare, footprint_per_hectare)
 
     assert metrics.index.tolist() == [9, 4]
     assert metrics.columns.tolist() == [*ratios, *per_hectare]
+    footprint_fields = {product: field for field, product in footprint_per_hectare.items()}
     for field, product in per_hectare.items():
         expected_values = [expected, np.nan if presence == "empty" and product == category else 5.0]
         if presence in {"absent", "empty"} and product != category:
             expected_values[0] = numerator / area
         np.testing.assert_allclose(metrics[field], expected_values, equal_nan=True)
+        density = densities[product]
+        assert density.name == footprint_fields[product]
+        assert density.index.tolist() == products[product]["GEOID"].tolist()
+        np.testing.assert_allclose(density, list(reversed(expected_values))[:len(density)], equal_nan=True)
     if presence in {"absent", "empty"}:
         ratio_field = next(field for field, product in ratios.items() if product == category)
         assert metrics.loc[9, ratio_field] == 0.0
@@ -352,8 +407,9 @@ def test_land_service_value_per_hectare_handles_category_edge_cases(
 
 @pytest.mark.parametrize("problem", [
     "duplicate_county", "duplicate_category", "unknown_county", "missing_geoid", "malformed_geoid",
-    "manager_ratio_product", "manager_per_hectare_product", "ratio_field_collision",
-    "per_hectare_field_collision", "cross_mapping_field_collision",
+    "manager_ratio_product", "manager_per_hectare_product", "manager_footprint_product",
+    "ratio_field_collision", "per_hectare_field_collision", "footprint_field_collision",
+    "cross_mapping_field_collision",
 ])
 def test_land_service_metrics_reject_ambiguous_inputs(problem):
     """Reject malformed joins and manager products instead of guessing or overwriting."""
@@ -361,6 +417,7 @@ def test_land_service_metrics_reject_ambiguous_inputs(problem):
     derived = yaml.safe_load(config.read_text())
     ratios = derived["county_ecosystem_service_ratios"]
     per_hectare = derived["county_land_service_value_per_ha"]
+    footprint_per_hectare = derived["footprint_land_service_value_per_ha"]
     products = {name: pd.DataFrame({
         "GEOID": ["01001"], "total_ecosystem_services": [10.0], "area_ha_land": [2.0],
     })
@@ -377,11 +434,15 @@ def test_land_service_metrics_reject_ambiguous_inputs(problem):
         ratios[next(iter(ratios))] = "public_lands_by_county_and_manager_type"
     elif problem == "manager_per_hectare_product":
         per_hectare[next(iter(per_hectare))] = "public_lands_by_county_and_manager_type"
+    elif problem == "manager_footprint_product":
+        footprint_per_hectare[next(iter(footprint_per_hectare))] = "public_lands_by_county_and_manager_type"
     elif problem == "ratio_field_collision":
         products["counties"][next(iter(ratios))] = 0.0
     elif problem == "per_hectare_field_collision":
         products["counties"][next(iter(per_hectare))] = 0.0
+    elif problem == "footprint_field_collision":
+        products[category][next(field for field, product in footprint_per_hectare.items() if product == category)] = 0.0
     else:
         per_hectare[next(iter(ratios))] = per_hectare.pop(next(iter(per_hectare)))
     with pytest.raises(ValueError):
-        valuation.calculate_county_land_service_metrics(products, ratios, per_hectare)
+        valuation.calculate_land_service_metrics(products, ratios, per_hectare, footprint_per_hectare)
