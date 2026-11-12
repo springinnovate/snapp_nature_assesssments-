@@ -152,7 +152,12 @@ def prepare_all_pad_zones(
             raise ValueError(f"County {geoid} produced an unrecoverable PAD-US intersection")
         result.geometry = gpd.GeoSeries(geometry, index=result.index, crs=AREA_CRS)
         area = result.geometry.area.to_numpy()
-        land_area = shapely.area(shapely.intersection(result.geometry.to_numpy(), mask))
+        # build_county_zones prepared this mask. Most inland features are
+        # wholly on land and need no expensive overlay with the coastal mask.
+        shapes = result.geometry.to_numpy()
+        crossing = ~shapely.covers(mask, shapes)
+        land_area = area.copy()
+        land_area[crossing] = shapely.area(shapely.intersection(shapes[crossing], mask))
         tolerance = max(0.01, county_shape.area * 1e-10)
         if (not np.isfinite(area).all() or not np.isfinite(land_area).all()
                 or (land_area < 0).any() or (land_area > area + tolerance).any()

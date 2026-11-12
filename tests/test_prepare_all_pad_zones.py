@@ -128,6 +128,29 @@ def test_land_mask_must_reconcile_with_census_aland(inputs):
     assert not inputs[-1].exists()
 
 
+def test_contained_crossing_and_lake_features_measure_land_separately(inputs):
+    """Lake holes affect allocation area without cutting water from the feature."""
+    padus, _, counties, _, masks, _, output = inputs
+    for path in (padus, counties, masks):
+        path.unlink()
+    county = box(0, 0, 100, 100)
+    lake = box(40, 40, 60, 60)
+    write_layer(counties, {"GEOID": ["01001"], "ALAND": [9600]}, [county])
+    write_layer(masks, {"GEOID": ["01001"]}, [county.difference(lake)])
+    write_layer(padus, {"Mang_Type": ["TRIB"] * 3, "Unit_Nm": ["Land", "Crossing", "Lake"]}, [
+        box(10, 10, 20, 20), box(30, 30, 70, 70), box(45, 45, 55, 55),
+    ])
+    prepare_all_pad_zones(*inputs)
+    result = pyogrio.read_dataframe(output, layer=ALL_PAD_PRODUCT).set_index("Unit_Nm")
+    assert result.loc["Land", "area_ha_land"] == pytest.approx(0.01)
+    assert result.loc["Crossing", "area_ha_land"] == pytest.approx(0.12)
+    assert result.loc["Crossing", "area_ha"] == pytest.approx(0.16)
+    assert result.loc["Lake", "area_ha_land"] == 0
+    assert result.loc["Lake", "area_ha"] == pytest.approx(0.01)
+    assert result.loc["Crossing", "county_land_share"] == pytest.approx(0.125)
+    assert result.loc["Crossing"].geometry.area == pytest.approx(1600)
+
+
 def test_missing_county_mask_fails_before_writing(inputs):
     masks = inputs[4]
     masks.unlink()
