@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from configparser import ConfigParser
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -12,6 +13,9 @@ import re
 import numpy as np
 import pandas as pd
 import pyogrio
+import shapely
+from osgeo import gdal
+from scipy.sparse import csr_array
 from tqdm import tqdm
 
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
@@ -29,6 +33,8 @@ _KEY_FIELDS = {
     for product in ZONE_PRODUCTS
 }
 _MANAGER_PRODUCTS = frozenset(product for product, fields in _KEY_FIELDS.items() if len(fields) == 2)
+ALL_PAD_PRODUCT = "all_PAD_lands_by_county_and_manager_type"
+_KEY_FIELDS[ALL_PAD_PRODUCT] = ("GEOID", "feature_id")
 _RESULT_STAMP = re.compile(r"\d{8}_\d{6}")
 _RETIRED_CARBON_PIXEL_SUM = "sum_totalC_tCO2e_pixel_2020"
 
@@ -70,6 +76,7 @@ class ZoneRasterPlan:
     blocked_rasters: tuple[str, ...]
     skipped_products: tuple[str, ...]
     retired_raster_columns: tuple[str, ...] = ()
+    products: tuple[str, ...] = ZONE_PRODUCTS
 
 
 def _zone_keys(frame: pd.DataFrame, fields: tuple[str, ...], label: str) -> pd.DataFrame:
@@ -92,6 +99,7 @@ def _zone_keys(frame: pd.DataFrame, fields: tuple[str, ...], label: str) -> pd.D
     if (
         not keys["GEOID"].str.fullmatch(r"[0-9]{5}").fillna(False).all()
         or ("Mang_Type" in fields and not keys["Mang_Type"].str.strip().ne("").fillna(False).all())
+        or ("feature_id" in fields and not keys["feature_id"].str.strip().ne("").fillna(False).all())
         or keys.duplicated().any()
     ):
         raise ValueError(f"{label} has blank, malformed, or duplicate zone keys")
@@ -142,6 +150,110 @@ def validate_zone_raster_inputs(config_path: Path) -> tuple[list[RasterInput], l
     return rasters, blocked
 
 
+def validate_additional_raster_inputs(
+    config_path: Path, source_frozen_config: Path,
+) -> tuple[list[RasterInput], list[str]]:
+    """Check that new feature jobs use the saved run's active source TIFFs.
+
+    The shared reviewed simplification setting must still match the original
+    run. Feature jobs explicitly override it to zero when their plan is frozen.
+    """
+    rasters, blocked = validate_zone_raster_inputs(config_path)
+    current = load_run_config(config_path)["project"]
+    source_frozen_config = source_frozen_config.resolve()
+    saved = ConfigParser(interpolation=None)
+    with source_frozen_config.open(encoding="utf-8") as stream:
+        saved.read_file(stream)
+    try:
+        original = saved["project"]
+        entries = json.loads(original["snapp_rasters"])
+        if not entries or any(
+            type(entry["scale"]) not in (int, float) or entry["scale"] != 1
+            or entry["analysis_path"] != entry["source_path"]
+            or Path(entry["analysis_path"]).suffix.lower() not in {".tif", ".tiff"}
+            for entry in entries
+        ):
+            raise ValueError("Expected original, unscaled TIFF paths")
+        paths = {(source_frozen_config.parent / entry["analysis_path"]).resolve() for entry in entries}
+        tolerance = original.getfloat("max_simplify_tolerance_meters")
+    except (KeyError, AttributeError, TypeError, ValueError) as error:
+        raise ValueError(f"Invalid frozen raster metadata in {source_frozen_config}: {error}") from error
+    if tolerance != current.getfloat("max_simplify_tolerance_meters"):
+        raise ValueError("Additional zonals require the saved reviewed max_simplify_tolerance_meters")
+    active = {raster.path.resolve() for raster in rasters}
+    paths = {path for path in paths if f"sum_{path.stem}" != _RETIRED_CARBON_PIXEL_SUM or path in active}
+    if active != paths:
+        raise ValueError("Additional zonals require the same active source TIFF paths as the saved run")
+    return rasters, blocked
+
+
+def _selected_products(products: Collection[str]) -> tuple[str, ...]:
+    """Keep a validated selection in the canonical product order."""
+    requested = set(products)
+    if not requested or len(requested) != len(products) or not requested <= _KEY_FIELDS.keys():
+        raise ValueError("Select a nonempty subset of the prepared zone products")
+    return tuple(product for product in _KEY_FIELDS if product in requested)
+
+
+def _file_digest(path: Path) -> str:
+    """Hash a zone or shard without loading its contents into memory."""
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _feature_key_groups(frame, keys: pd.DataFrame, rasters: list[RasterInput]):
+    """Color overlapping features in every raster CRS for independent sums.
+
+    The toolkit explicitly rasterizes with ALL_TOUCHED=FALSE. Disjoint polygon
+    interiors cannot contain the same pixel center. Also separate touching
+    boundaries and gaps within floating-point tolerance. The plan must disable
+    simplification, which could otherwise introduce new overlaps.
+    """
+    if frame.crs is None or frame.geometry.is_empty.any() or frame.geometry.isna().any():
+        raise ValueError("PAD feature shards require nonempty geometry with a CRS")
+    ordered = keys.sort_values(list(keys.columns)).index
+    geometry = frame.loc[ordered].geometry
+    projections = set()
+    graph = csr_array((len(keys), len(keys)), dtype=bool)
+    for raster in tqdm(rasters, desc="Check PAD raster projections", unit="raster"):
+        with gdal.OpenEx(str(raster.path), gdal.OF_RASTER) as dataset:
+            if dataset is None:
+                raise ValueError(f"Cannot inspect raster grid: {raster.path}")
+            projection = dataset.GetProjection()
+        if not projection:
+            raise ValueError(f"Raster needs a CRS: {raster.path}")
+        if projection in projections:
+            continue
+        projections.add(projection)
+        shapes = geometry.to_crs(projection).to_numpy()
+        bounds = shapely.bounds(shapes)
+        if not np.isfinite(bounds).all():
+            raise ValueError(f"PAD feature cannot be projected onto raster grid: {raster.path}")
+        tolerance = max(1e-9, float(np.max(np.abs(bounds))) * 1e-12)
+        tree = shapely.STRtree(shapes)
+        left_parts, right_parts = [], []
+        for start in tqdm(range(0, len(shapes), 1024), desc="Find PAD overlaps", unit="batch", leave=False):
+            left, right = tree.query(shapes[start:start + 1024], predicate="dwithin", distance=tolerance)
+            left = left + start
+            earlier = right < left
+            left_parts.append(left[earlier])
+            right_parts.append(right[earlier])
+        left, right = np.concatenate(left_parts), np.concatenate(right_parts)
+        projected_graph = csr_array((np.ones(len(left), dtype=bool), (left, right)), shape=graph.shape)
+        graph = graph.maximum(projected_graph)
+        del shapes, bounds, tree, left_parts, right_parts, left, right, projected_graph
+    colors = np.full(len(keys), -1, dtype=np.int64)
+    for index in tqdm(range(len(keys)), desc="Partition overlapping PAD features", unit="feature"):
+        neighbors = graph.indices[graph.indptr[index]:graph.indptr[index + 1]]
+        unavailable = set(colors[neighbors].tolist())
+        color = 0
+        while color in unavailable:
+            color += 1
+        colors[index] = color
+    for color in range(int(colors.max()) + 1):
+        yield f"{ALL_PAD_PRODUCT}__features_{color + 1:04d}", keys.loc[ordered[colors == color]]
+
+
 def freeze_zone_zonals(
     zones: Mapping[str, tuple[Path, str]],
     config_path: Path,
@@ -150,6 +262,7 @@ def freeze_zone_zonals(
     raw_results_dir: Path,
     *,
     overlapping_manager_products: Collection[str] | None = None,
+    products: Collection[str] = ZONE_PRODUCTS,
 ) -> ZoneRasterPlan:
     """Freeze fresh source-pixel sums for the exact prepared zone layers.
 
@@ -177,8 +290,11 @@ def freeze_zone_zonals(
     work_dir, raw_results_dir = work_dir.resolve(), raw_results_dir.resolve()
     if frozen_config.exists():
         raise FileExistsError(frozen_config)
-    if set(zones) != set(ZONE_PRODUCTS):
-        raise ValueError("Fresh raster zonals require exactly the six prepared zone products")
+    products = _selected_products(products)
+    if set(zones) != set(products):
+        raise ValueError("Fresh raster zonals require exactly the selected prepared zone products")
+    if ALL_PAD_PRODUCT in products and len(products) != 1:
+        raise ValueError("PAD feature zonals need a separate no-simplification raster plan")
     split_products = _MANAGER_PRODUCTS if overlapping_manager_products is None else set(overlapping_manager_products)
     if not split_products <= _MANAGER_PRODUCTS:
         raise ValueError("Overlap flags must refer to manager-type zone products")
@@ -187,11 +303,13 @@ def freeze_zone_zonals(
     zone_jobs: list[ZoneJob] = []
     expected_jobs: list[ZoneRasterJob] = []
     skipped: list[str] = []
-    for product in tqdm(ZONE_PRODUCTS, desc="Plan raster zonals", unit="zone"):
+    feature_shards = None
+    for product in tqdm(products, desc="Plan raster zonals", unit="zone"):
         source, layer = zones[product]
         source = source.resolve()
         key_fields = _KEY_FIELDS[product]
-        split = product in split_products
+        is_feature = product == ALL_PAD_PRODUCT
+        split = product in split_products or is_feature
         frame = pyogrio.read_dataframe(source, layer=layer, columns=list(key_fields), read_geometry=split)
         key_values = _zone_keys(frame, key_fields, product)
         if frame.empty:
@@ -200,14 +318,23 @@ def freeze_zone_zonals(
             skipped.append(product)
             continue
 
-        for stem, keys in _job_key_groups(product, key_values, split):
+        if is_feature:
+            feature_shards = {"version": 1, "method": "projected_polygon_conflicts",
+                              "source_sha256": _file_digest(source), "shards": []}
+            groups = _feature_key_groups(frame, key_values, rasters)
+        else:
+            groups = _job_key_groups(product, key_values, split)
+        for stem, keys in groups:
             vector = source
             if split:
-                vector = work_dir / "manager_zone_shards" / f"{stem}.gpkg"
+                directory = "feature_zone_shards" if is_feature else "manager_zone_shards"
+                vector = work_dir / directory / f"{stem}.gpkg"
                 if vector.exists():
                     raise FileExistsError(vector)
                 vector.parent.mkdir(parents=True, exist_ok=True)
                 pyogrio.write_dataframe(frame.loc[keys.index], vector, layer=layer, promote_to_multi=True)
+                if is_feature:
+                    feature_shards["shards"].append({"stem": stem, "sha256": _file_digest(vector)})
             zone_jobs.append(ZoneJob(
                 key=stem, label=product, vector_path=vector, layer=layer,
                 job_stem=stem, results_subdir=product, agg_field=", ".join(key_fields), operations="sum",
@@ -223,9 +350,16 @@ def freeze_zone_zonals(
         frozen_config, work_dir, raw_results_dir, rasters, zone_jobs, config_path,
         [f"{product}: empty zone layer" for product in skipped],
     )
+    if ALL_PAD_PRODUCT in products:
+        config = ConfigParser(interpolation=None)
+        config.read(frozen_config, encoding="utf-8")
+        config["project"]["max_simplify_tolerance_meters"] = "0"
+        config["project"]["snapp_feature_shards"] = json.dumps(feature_shards)
+        with frozen_config.open("w", encoding="utf-8") as stream:
+            config.write(stream)
     return ZoneRasterPlan(
         frozen_config, tuple(f"sum_{raster.path.stem}" for raster in rasters),
-        tuple(expected_jobs), tuple(blocked), tuple(skipped),
+        tuple(expected_jobs), tuple(blocked), tuple(skipped), products=products,
     )
 
 
@@ -237,6 +371,7 @@ def read_frozen_zone_raster_plan(
     *,
     expected_raster_columns: Collection[str],
     overlapping_manager_products: Collection[str] | None = None,
+    products: Collection[str] = ZONE_PRODUCTS,
 ) -> ZoneRasterPlan:
     """Reconstruct a completed run's raster plan without touching the TIFFs.
 
@@ -260,8 +395,11 @@ def read_frozen_zone_raster_plan(
         ValueError: The saved config is incompatible with the requested zones,
             unscaled sum schema, or original run paths.
     """
-    if set(zones) != set(ZONE_PRODUCTS):
-        raise ValueError("Reusing raster zonals requires exactly the six prepared zone products")
+    products = _selected_products(products)
+    if set(zones) != set(products):
+        raise ValueError("Reusing raster zonals requires exactly the selected prepared zone products")
+    if ALL_PAD_PRODUCT in products and len(products) != 1:
+        raise ValueError("PAD feature zonals need a separate no-simplification raster plan")
     frozen_config, work_dir, raw_results_dir = (path.resolve() for path in (frozen_config, work_dir, raw_results_dir))
     config = ConfigParser(interpolation=None)
     with frozen_config.open(encoding="utf-8") as stream:
@@ -272,6 +410,8 @@ def read_frozen_zone_raster_plan(
     if (project.get("name") != frozen_config.stem
             or (frozen_config.parent / project.get("global_work_dir", "")).resolve() != work_dir):
         raise ValueError("Frozen raster config does not reference this run's work directory")
+    if ALL_PAD_PRODUCT in products and project.getfloat("max_simplify_tolerance_meters") != 0:
+        raise ValueError("Saved PAD feature zonals must use zero geometry simplification")
 
     try:
         raster_entries = json.loads(project["snapp_rasters"])
@@ -313,7 +453,7 @@ def read_frozen_zone_raster_plan(
     jobs: list[ZoneRasterJob] = []
     skipped: list[str] = []
     expected_sections = {"project"}
-    for product in tqdm(ZONE_PRODUCTS, desc="Validate frozen raster plan", unit="zone"):
+    for product in tqdm(products, desc="Validate frozen raster plan", unit="zone"):
         source, layer = zones[product]
         fields = _KEY_FIELDS[product]
         frame = pyogrio.read_dataframe(source, layer=layer, columns=list(fields), read_geometry=False)
@@ -323,14 +463,43 @@ def read_frozen_zone_raster_plan(
                 raise ValueError("The counties zone must not be empty")
             skipped.append(product)
             continue
-        split = product in split_products
-        for stem, group in _job_key_groups(product, keys, split):
+        is_feature = product == ALL_PAD_PRODUCT
+        split = product in split_products or is_feature
+        if is_feature:
+            try:
+                metadata = json.loads(project["snapp_feature_shards"])
+                if (metadata["version"] != 1 or metadata["method"] != "projected_polygon_conflicts"
+                        or metadata["source_sha256"] != _file_digest(source)):
+                    raise ValueError("source changed")
+                groups = []
+                assigned = set()
+                all_keys = set(keys.itertuples(index=False, name=None))
+                for number, item in enumerate(metadata["shards"], start=1):
+                    stem = f"{ALL_PAD_PRODUCT}__features_{number:04d}"
+                    vector = work_dir / "feature_zone_shards" / f"{stem}.gpkg"
+                    if item["stem"] != stem or _file_digest(vector) != item["sha256"]:
+                        raise ValueError("shard changed")
+                    shard = pyogrio.read_dataframe(vector, layer=layer, columns=list(fields), read_geometry=False)
+                    group = _zone_keys(shard, fields, stem)
+                    group_keys = set(group.itertuples(index=False, name=None))
+                    if not group_keys or assigned.intersection(group_keys) or not group_keys <= all_keys:
+                        raise ValueError("invalid shard keys")
+                    assigned.update(group_keys)
+                    groups.append((stem, group))
+                if assigned != all_keys:
+                    raise ValueError("incomplete shard keys")
+            except (KeyError, AttributeError, TypeError, ValueError, OSError) as error:
+                raise ValueError(f"Saved PAD feature shard provenance is invalid: {error}") from error
+        else:
+            groups = _job_key_groups(product, keys, split)
+        for stem, group in groups:
             section = f"job:{stem}"
             expected_sections.add(section)
             if section not in config:
                 raise ValueError(f"Frozen raster config is missing required [{section}]")
             job = config[section]
-            vector = work_dir / "manager_zone_shards" / f"{stem}.gpkg" if split else source.resolve()
+            directory = "feature_zone_shards" if is_feature else "manager_zone_shards"
+            vector = work_dir / directory / f"{stem}.gpkg" if split else source.resolve()
             output_base = raw_results_dir / product / stem
             expected = {"agg_vector": vector, "output_csv": output_base.with_suffix(".csv"),
                         "output_gpkg": output_base.with_suffix(".gpkg")}
@@ -344,7 +513,7 @@ def read_frozen_zone_raster_plan(
                     or set(job) != {*expected, "agg_layer", "agg_field", "operations", "base_raster_pattern"}):
                 raise ValueError(f"Frozen [{section}] has an unexpected zone or raster sum schema")
             expected_keys = frozenset(group.itertuples(index=False, name=None))
-            if split:
+            if split and not is_feature:
                 shard = pyogrio.read_dataframe(vector, layer=layer, columns=list(fields), read_geometry=False)
                 shard_keys = _zone_keys(shard, fields, stem)
                 if frozenset(shard_keys.itertuples(index=False, name=None)) != expected_keys:
@@ -358,6 +527,7 @@ def read_frozen_zone_raster_plan(
         frozen_config, tuple(column for column in raster_columns if column in required_columns),
         tuple(jobs), blocked, tuple(skipped),
         tuple(column for column in raster_columns if column in retired_columns),
+        products=products,
     )
 
 
@@ -374,7 +544,7 @@ def read_zone_raster_sums(plan: ZoneRasterPlan) -> dict[str, pd.DataFrame]:
     Raises:
         ValueError: Outputs are missing, ambiguous, stale, or malformed.
     """
-    frames: dict[str, list[pd.DataFrame]] = {product: [] for product in ZONE_PRODUCTS}
+    frames: dict[str, list[pd.DataFrame]] = {product: [] for product in plan.products}
     run_stamp = None
     for job in tqdm(plan.jobs, desc="Read raster sum tables", unit="job"):
         prefix = f"{job.output_base.name}_"

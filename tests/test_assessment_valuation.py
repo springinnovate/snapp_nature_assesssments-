@@ -13,6 +13,27 @@ import yaml
 from assessment import REPO_ROOT
 import assessment.assessment_valuation as valuation
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
+from assessment.prepare_all_pad_zones import ALL_PAD_PRODUCT
+
+
+@pytest.mark.parametrize(("field", "values", "message"), [
+    ("area_ha", [0.0, 1.0], "finite and positive"),
+    ("area_ha", [-1.0, 1.0], "finite and positive"),
+    ("area_ha", [np.nan, 1.0], "finite and positive"),
+    ("area_ha", [np.inf, 1.0], "finite and positive"),
+    ("feature_id", [None, "01001_2"], "nonblank and unique"),
+    ("feature_id", [" ", "01001_2"], "nonblank and unique"),
+    ("feature_id", ["01001_1", "01001_1"], "nonblank and unique"),
+])
+def test_invalid_pad_feature_keys_or_areas_fail_before_loading_sources(tmp_path, field, values, message):
+    """Invalid density denominators and ambiguous features fail in preflight."""
+    zones = {name: gpd.GeoDataFrame() for name in ZONE_PRODUCTS}
+    features = gpd.GeoDataFrame({"feature_id": ["01001_1", "01001_2"], "area_ha": [1.0, 2.0]})
+    features[field] = values
+    zones[ALL_PAD_PRODUCT] = features
+    with pytest.raises(ValueError, match=message):
+        valuation.value_zones(zones, {name: pd.DataFrame() for name in zones}, tmp_path, tmp_path,
+                              coral_reference_counties=gpd.GeoDataFrame(), workers=1)
 
 
 @pytest.mark.parametrize("source_name", ["county_area", "county_area_inclusive", "natural_areas"])
@@ -28,12 +49,13 @@ def test_missing_reporting_area_input_explains_preparation(monkeypatch, source_n
         valuation.load_valuation_config(data, config)
 
 
+@pytest.mark.parametrize("include_all_pad", [False, True])
 @pytest.mark.parametrize(("county_area", "inclusive_area", "reuse_zones", "bbb_area", "manager_area"), [
     (200.0, 400.0, False, 5.0, 10.0), (200.0, 400.0, True, 0.0, 0.0),
     (0.0, 400.0, True, 0.0, np.nan), (200.0, np.nan, True, 0.0, 10.0),
 ])
 def test_adjustment_and_recreation_are_applied_once(
-    monkeypatch, tmp_path, county_area, inclusive_area, reuse_zones, bbb_area, manager_area,
+    monkeypatch, tmp_path, county_area, inclusive_area, reuse_zones, bbb_area, manager_area, include_all_pad,
 ):
     """Check all product keys, land allocation, totals, factors and the output pair."""
     config = REPO_ROOT / "data/workflow_assets/county_integration"
@@ -98,7 +120,8 @@ def test_adjustment_and_recreation_are_applied_once(
         "conservation_lands_by_county_and_manager_type": [12.0, manager_area / 2],
     }
     zones, raster_sums = {}, {}
-    for product in ZONE_PRODUCTS:
+    products = (*ZONE_PRODUCTS, ALL_PAD_PRODUCT) if include_all_pad else ZONE_PRODUCTS
+    for product in products:
         fields = {"GEOID": ["46102"], "NAME": ["NA"]}
         if product == "counties":
             fields.update(area_ha_county_land=[100.0], area_ha_public_lands=[50.0],
@@ -116,10 +139,20 @@ def test_adjustment_and_recreation_are_applied_once(
         elif product == "bbb_lands_by_county":
             fields = {"GEOID": pd.Series(dtype="str"), "county_land_share": pd.Series(dtype="float64"),
                       "area_ha_land": pd.Series(dtype="float64")}
+        if product == ALL_PAD_PRODUCT:
+            fields = {
+                "GEOID": ["46102", "46102"], "Mang_Type": ["TRIB", "TRIB"],
+                "OBJECTID": [123, 456], "feature_id": ["46102_123", "46102_456"],
+                "area_ha": [4.0, 10.0], "area_ha_land": [1.0, 2.0],
+                "county_land_share": [0.01, 0.02], "Loc_Own": ["", None],
+                "GAP_Sts": ["4", None], "Unit_Nm": ["NA", "County, Park"],
+                "SHAPE_Area": [123456.0, 987654.0],
+            }
         size = len(fields["GEOID"])
         zones[product] = gpd.GeoDataFrame(fields, geometry=[MultiPolygon([box(0, 0, 100, 100)])] * size,
                                            crs="EPSG:6933")
-        keys = ["GEOID", "Mang_Type"] if "Mang_Type" in fields else ["GEOID"]
+        keys = (["GEOID", "feature_id"] if product == ALL_PAD_PRODUCT else
+                ["GEOID", "Mang_Type"] if "Mang_Type" in fields else ["GEOID"])
         sums = zones[product][keys].copy()
         for source in valuation.BASE_FIELDS.values():
             sums[source] = [100 * (index + 1) for index in range(size)]
@@ -132,7 +165,28 @@ def test_adjustment_and_recreation_are_applied_once(
         zones, raster_sums, tmp_path, config, coral_reference_counties=zones["counties"],
         workers=2,
     )
-    assert set(outputs) == set(ZONE_PRODUCTS)
+    assert set(outputs) == set(products)
+    if include_all_pad:
+        original, _, _ = valuation.value_zones(
+            {name: zones[name] for name in ZONE_PRODUCTS},
+            {name: raster_sums[name] for name in ZONE_PRODUCTS}, tmp_path, config,
+            coral_reference_counties=zones["counties"], workers=2,
+        )
+        for name in ZONE_PRODUCTS:
+            pd.testing.assert_frame_equal(outputs[name], original[name], check_exact=True)
+        features = outputs[ALL_PAD_PRODUCT]
+        adjusted_fields = [field for field in features if field.endswith("_adj")]
+        assert len(adjusted_fields) == 26
+        assert sum(field.endswith("_per_feature_ha") for field in features) == 27
+        for field in [*adjusted_fields, "total_ecosystem_services"]:
+            np.testing.assert_allclose(features[f"{field}_per_feature_ha"],
+                                       features[field] / [4.0, 10.0], equal_nan=True)
+        np.testing.assert_allclose(features.grazing_adj, [0.4, 0.8])
+        np.testing.assert_allclose(features.grazing_adj_per_feature_ha, [0.1, 0.08])
+        assert features.Mang_Type.tolist() == ["TRIB", "TRIB"]
+        assert features.OBJECTID.tolist() == [123, 456]
+        assert features.Loc_Own.iloc[0] == ""
+        assert pd.isna(features.Loc_Own.iloc[1])
     assert qa["fisheries_weights_cache"] == {"status": "hit", "key": "fixture-key"}
     county = outputs["counties"].iloc[0]
     service_ratios = derived["county_ecosystem_service_ratios"]
@@ -263,7 +317,7 @@ def test_adjustment_and_recreation_are_applied_once(
     assert "integration_county_table_status" in audits
     assert qa["blank_component_rows"]["counties"]["sum_mangrove_coastal_flood_protection_value_adj"] == 1
 
-    for product in ZONE_PRODUCTS:
+    for product in products:
         path = tmp_path / product / f"{product}_test.gpkg"
         csv_path, gpkg = valuation.write_zone_pair(outputs[product], path, product, audits if product == "counties" else {})
         assert csv_path.is_file() and gpkg.is_file()

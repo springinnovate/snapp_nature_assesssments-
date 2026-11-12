@@ -308,6 +308,141 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         reconstruct.assert_not_called()
         self.assertFalse(self.results.with_name("revalued").exists())
 
+    def test_add_pad_reuses_six_products_and_later_reuses_all_seven(self) -> None:
+        """Run only the additional batch, then follow both saved batches on revaluation."""
+        self.run_wrapper()
+        original_bytes = {path: path.read_bytes() for path in self.results.rglob("*") if path.is_file()}
+        pad = self.root / "full-pad.gpkg"
+        feature = self.county.assign(
+            Mang_Type="TRIB", OBJECTID=7, feature_id="01001_7", area_ha=0.01,
+            area_ha_land=0.01, county_land_share=1.0,
+        )
+        pyogrio.write_dataframe(feature, pad, layer="full_pad")
+        pad_run = "with-pad"
+        zone, frozen, work, raw = wrapper.all_pad_paths(self.root, pad_run)
+        six_sums = {product: pd.DataFrame({"GEOID": ["01001"]}) for product in wrapper.ZONE_PRODUCTS}
+        pad_sums = {wrapper.ALL_PAD_PRODUCT: pd.DataFrame({"feature_id": ["01001_7"]})}
+        existing_plan = SimpleNamespace(skipped_products=(), frozen_config=self.frozen)
+        extra_plan = SimpleNamespace(jobs=("pad-only-job",), skipped_products=(), frozen_config=frozen)
+
+        def prepare(*args, **kwargs):
+            self.assertEqual(args[:2], (pad, "full_pad"))
+            self.assertEqual(args[2], self.zone_root / "counties" / f"counties_{self.run_id}.gpkg")
+            self.assertEqual(args[-1], zone)
+            self.assertEqual(kwargs["workers"], 4)
+            zone.parent.mkdir(parents=True)
+            pyogrio.write_dataframe(feature, zone, layer=wrapper.ALL_PAD_PRODUCT)
+            return {"rows": 1}
+
+        def freeze(zones, config, actual_frozen, actual_work, actual_raw, **kwargs):
+            self.assertEqual(zones, {wrapper.ALL_PAD_PRODUCT: (zone, wrapper.ALL_PAD_PRODUCT)})
+            self.assertEqual((actual_frozen, actual_work, actual_raw), (frozen, work, raw))
+            self.assertEqual(kwargs["products"], (wrapper.ALL_PAD_PRODUCT,))
+            frozen.write_text("new PAD-only config", encoding="utf-8")
+            return extra_plan
+
+        def value(zones, sums, *args, **kwargs):
+            self.assertEqual(set(zones), {*wrapper.ZONE_PRODUCTS, wrapper.ALL_PAD_PRODUCT})
+            self.assertEqual(set(sums), set(zones))
+            return {name: frame.assign(es_total=10.0) for name, frame in zones.items()}, {}, {}
+
+        rasters = [SimpleNamespace(path=Path(f"{field.removeprefix('sum_')}.tif"))
+                   for field in wrapper.BASE_FIELDS.values()]
+        config = ({"air_quality_county_aliases": self.air_aliases}, None, None,
+                  {"sources": {"gdp": {"path": "gdp.csv"}}})
+        args = wrapper.parse_args([
+            "--reuse-zonals-from", self.run_id, "--run-id", pad_run, "--include-all-pad",
+            "--runner", str(self.runner), "--all-pad-path", str(pad), "--all-pad-layer", "full_pad",
+        ])
+        with (
+            patch.object(wrapper, "load_valuation_config", return_value=config),
+            patch.object(wrapper, "validate_zone_raster_inputs", return_value=(rasters, [])),
+            patch.object(wrapper, "validate_additional_raster_inputs") as compatible,
+            patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan),
+            patch.object(wrapper, "read_zone_raster_sums", side_effect=[six_sums, pad_sums]),
+            patch.object(wrapper, "prepare_all_pad_zones", side_effect=prepare) as prep,
+            patch.object(wrapper, "freeze_zone_zonals", side_effect=freeze) as freezing,
+            patch.object(wrapper.subprocess, "run") as runner,
+            patch.object(wrapper, "value_zones", side_effect=value),
+        ):
+            result = wrapper.run_assessment(args, self.root)
+        prep.assert_called_once()
+        freezing.assert_called_once()
+        compatible.assert_called_once_with(self.zonal_config, self.frozen)
+        runner.assert_called_once()
+        self.assertEqual(runner.call_args.args[0][2:4], [str(self.runner), str(frozen)])
+        manifest = json.loads((result / "run_manifest.json").read_text())
+        self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(set(manifest["outputs"]), {*wrapper.ZONE_PRODUCTS, wrapper.ALL_PAD_PRODUCT})
+        self.assertNotIn(wrapper._RUN_RASTERS, manifest["stages"])
+        self.assertEqual(manifest["stages"][wrapper._RUN_PAD], "complete")
+        self.assertEqual(original_bytes, {path: path.read_bytes() for path in original_bytes})
+        frozen_bytes = frozen.read_bytes()
+
+        # Both an added-product run and a later valuation-only run remain reusable.
+        source = pad_run
+        for new_id in ("revalue-seven", "revalue-seven-again"):
+            args = wrapper.parse_args(["--reuse-zonals-from", source, "--run-id", new_id])
+            with (
+                patch.object(wrapper, "load_valuation_config", return_value=config),
+                patch.object(wrapper, "read_frozen_zone_raster_plan", side_effect=[existing_plan, extra_plan]),
+                patch.object(wrapper, "read_zone_raster_sums", side_effect=[six_sums, pad_sums]),
+                patch.object(wrapper, "prepare_all_pad_zones") as prep,
+                patch.object(wrapper, "freeze_zone_zonals") as freezing,
+                patch.object(wrapper.subprocess, "run") as runner,
+                patch.object(wrapper, "value_zones", side_effect=value),
+            ):
+                result = wrapper.run_assessment(args, self.root)
+            prep.assert_not_called()
+            freezing.assert_not_called()
+            runner.assert_not_called()
+            self.assertFalse((self.work.parent / new_id).exists())
+            self.assertEqual(frozen.read_bytes(), frozen_bytes)
+            self.assertEqual(len(json.loads((result / "run_manifest.json").read_text())["outputs"]), 7)
+            source = new_id
+
+        # A partial additional batch must never masquerade as a seven-product source.
+        pad_manifest_path = self.results.with_name(pad_run) / "run_manifest.json"
+        complete_manifest = pad_manifest_path.read_text()
+        incomplete = json.loads(complete_manifest)
+        incomplete["status"] = "failed"
+        incomplete["stages"][wrapper._RUN_PAD] = "failed"
+        pad_manifest_path.write_text(json.dumps(incomplete))
+        with (
+            patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan),
+            patch.object(wrapper, "read_zone_raster_sums", return_value=six_sums),
+            self.assertRaisesRegex(ValueError, "has not completed"),
+        ):
+            wrapper.read_saved_zonals(self.root, pad_run)
+        pad_manifest_path.write_text(complete_manifest)
+
+        # Reject altered geometry before reading/reusing its feature sums.
+        zone.write_bytes(zone.read_bytes() + b"changed")
+        with (
+            patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan),
+            patch.object(wrapper, "read_zone_raster_sums", return_value=six_sums),
+            self.assertRaisesRegex(ValueError, "zone_sha256"),
+        ):
+            wrapper.read_saved_zonals(self.root, pad_run)
+
+    def test_add_pad_requires_runner_and_explicit_option_for_source_overrides(self) -> None:
+        """Reject ambiguous combinations before any run work begins."""
+        for extras in (["--include-all-pad"], ["--runner", "runner.py"],
+                       ["--all-pad-layer", "other_layer"]):
+            with self.subTest(extras=extras), self.assertRaises(SystemExit):
+                wrapper.parse_args(["--reuse-zonals-from", "saved", *extras])
+
+    def test_reuse_rejects_cyclic_provenance(self) -> None:
+        """Malformed provenance cannot recurse forever or read outside run roots."""
+        self.results.mkdir(parents=True)
+        manifest = {"run_id": self.run_id, "geographic_scope": "CONUS", "status": "complete",
+                    "stages": {wrapper._REUSE_RASTERS: "complete"},
+                    "reused_zonals_from": {"run_id": self.run_id,
+                        "manifest": str(self.results / "run_manifest.json")}}
+        (self.results / "run_manifest.json").write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "cyclic"):
+            wrapper.read_saved_zonals(self.root, self.run_id)
+
     def test_runner_failure_stops_before_valuation_and_publication(self) -> None:
         """Record the runner failure without publishing any final pair."""
         self.fail_runner = True

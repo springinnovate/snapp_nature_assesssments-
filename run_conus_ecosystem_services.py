@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import os
@@ -11,6 +12,7 @@ import re
 import subprocess
 import sys
 
+import pandas as pd
 import pyogrio
 from tqdm import tqdm
 
@@ -20,12 +22,16 @@ from assessment.assessment_raster_zonals import (
     freeze_zone_zonals,
     read_frozen_zone_raster_plan,
     read_zone_raster_sums,
+    validate_additional_raster_inputs,
     validate_zone_raster_inputs,
 )
 from assessment.assessment_valuation import CONFIG_FILES, load_valuation_config, value_zones, write_zone_pair
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 from assessment.build_county_ecosystem_service_valuations_2026 import BASE_FIELDS, sha256
 from assessment.prepare_tif_zonal_stats_config import DEFAULT_CONFIG
+from assessment.prepare_all_pad_zones import (
+    ALL_PAD_PRODUCT, PADUS_FULL_LAYER, PADUS_FULL_PATH, prepare_all_pad_zones,
+)
 
 
 COUNTY_PATH = Path("data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg")
@@ -34,6 +40,9 @@ _PREPARE = "Prepare six assessment zones"
 _FREEZE = "Freeze raw raster zonal jobs"
 _RUN_RASTERS = "Run and verify raster zonals"
 _REUSE_RASTERS = "Verify reused raster zonals"
+_PREPARE_PAD = "Prepare individual PAD-US county features"
+_FREEZE_PAD = "Freeze individual PAD-US raster jobs"
+_RUN_PAD = "Run and verify individual PAD-US raster zonals"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -46,7 +55,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         Selected inputs and execution options.
     """
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runner", type=Path, help="Path to zonal_stats_toolkit/runner.py for a fresh run")
+    parser.add_argument("--runner", type=Path, help="Path to zonal_stats_toolkit/runner.py for new raster jobs")
     parser.add_argument("--bbb-by-county", type=Path, help="Prepared BBB county geometry GeoPackage for a fresh run")
     parser.add_argument("--bbb-layer")
     parser.add_argument("--padus-path", type=Path, default=PADUS_ANALYSIS_PATH)
@@ -64,17 +73,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Compatibility override for the entire shared valuation pool, not a nested pool")
     parser.add_argument(
         "--reuse-zonals-from", metavar="RUN_ID",
-        help="Reuse a prior run's prepared zones and verified raster sums; run valuation and publication only",
+        help="Reuse a prior run's prepared zones and verified raster sums",
     )
+    parser.add_argument("--include-all-pad", action="store_true",
+                        help="Add original PAD-US features cut by county; run only their new zonals when reusing")
+    parser.add_argument("--all-pad-path", type=Path, default=PADUS_FULL_PATH,
+                        help="Full original PAD-US geodatabase for --include-all-pad")
+    parser.add_argument("--all-pad-layer", default=PADUS_FULL_LAYER,
+                        help="Original combined PAD-US source layer, preserving all its attributes")
     parser.add_argument("--validate-only", action="store_true", help="Check inputs without creating run files")
     args = parser.parse_args(argv)
     if args.reuse_zonals_from is None:
         if any(value is None for value in (args.runner, args.bbb_by_county, args.land_mask)):
             parser.error("a fresh run requires --runner, --bbb-by-county, and --land-mask")
-    elif (any(value is not None for value in (args.runner, args.bbb_by_county, args.bbb_layer,
+    elif (any(value is not None for value in (args.bbb_by_county, args.bbb_layer,
                                               args.land_mask, args.land_mask_layer, args.counties_layer))
           or (args.padus_path, args.padus_layer, args.counties) != (PADUS_ANALYSIS_PATH, PADUS_ANALYSIS_LAYER, COUNTY_PATH)):
-        parser.error("--reuse-zonals-from uses the original geometry inputs; omit runner and zone overrides")
+        parser.error("--reuse-zonals-from uses the original geometry inputs; omit zone overrides")
+    if args.include_all_pad and args.runner is None:
+        parser.error("--include-all-pad requires --runner for the new feature zonals")
+    if args.reuse_zonals_from and args.runner is not None and not args.include_all_pad:
+        parser.error("--runner with --reuse-zonals-from requires --include-all-pad")
+    if not args.include_all_pad and (args.all_pad_path, args.all_pad_layer) != (PADUS_FULL_PATH, PADUS_FULL_LAYER):
+        parser.error("--all-pad-path and --all-pad-layer require --include-all-pad")
     return args
 
 
@@ -147,6 +168,100 @@ def read_vector_inputs(args: argparse.Namespace, root: Path) -> dict[str, tuple[
     return input_paths
 
 
+@dataclass
+class SavedZonals:
+    """Validated original and optional feature-level raster batches."""
+
+    manifest_path: Path
+    manifest: dict
+    base_run_id: str
+    base_manifest: dict
+    zones: dict[str, tuple[Path, str]]
+    sums: dict[str, pd.DataFrame]
+    overlap: set[str]
+    empty_products: tuple[str, ...]
+    frozen_configs: tuple[Path, ...]
+    all_pad: dict | None = None
+
+
+def all_pad_paths(root: Path, run_id: str) -> tuple[Path, Path, Path, Path]:
+    """Return isolated paths for one run's additional feature raster batch."""
+    work = root / "data/processing_outputs/assessment_runs" / run_id
+    zone = work / "zonal_units" / ALL_PAD_PRODUCT / f"{ALL_PAD_PRODUCT}_{run_id}.gpkg"
+    frozen = root / DEFAULT_CONFIG.relative_to(ROOT).parent / "runs" / f"snapp_all_pad_{run_id}.yaml"
+    return zone, frozen, work / "all_pad_zonal_stats_work", work / "all_pad_raw_zonals"
+
+
+def read_saved_zonals(root: Path, run_id: str, seen: frozenset[str] = frozenset()) -> SavedZonals:
+    """Follow saved provenance and verify each raster batch once, without rerunning it."""
+    if not _RUN_ID.fullmatch(run_id) or run_id.casefold() in seen:
+        raise ValueError("Invalid or cyclic saved raster provenance")
+    seen = seen | {run_id.casefold()}
+    manifest_path = root / "data/analysis_results/assessment_runs" / run_id / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    stages = manifest.get("stages", {})
+    if (manifest.get("run_id") != run_id or manifest.get("geographic_scope") != "CONUS"
+            or manifest.get("status") not in {"complete", "failed"}):
+        raise ValueError(f"Source run {run_id} has no completed, verified CONUS raster zonals")
+    parent = manifest.get("reused_zonals_from")
+    if parent is not None:
+        if stages.get(_REUSE_RASTERS) != "complete":
+            raise ValueError(f"Source run {run_id} has no completed, verified CONUS raster zonals")
+        parent_id = parent["run_id"]
+        expected = root / "data/analysis_results/assessment_runs" / parent_id / "run_manifest.json"
+        if Path(parent.get("manifest", "")).resolve() != expected.resolve():
+            raise ValueError("Unexpected reused manifest path")
+        saved = read_saved_zonals(root, parent_id, seen)
+        saved.manifest_path, saved.manifest = manifest_path, manifest
+        for field in ("zone_manifest", "frozen_zonal_config", "raw_zonal_directory"):
+            if Path(manifest.get(field, "")).resolve() != Path(saved.base_manifest[field]).resolve():
+                raise ValueError(f"Source run {run_id} records an unexpected {field} path")
+    else:
+        if any(stages.get(stage) != "complete" for stage in (_PREPARE, _FREEZE, _RUN_RASTERS)):
+            raise ValueError(f"Source run {run_id} has no completed, verified CONUS raster zonals")
+        work = root / "data/processing_outputs/assessment_runs" / run_id
+        zone_root = work / "zonal_units"
+        frozen = root / DEFAULT_CONFIG.relative_to(ROOT).parent / "runs" / f"snapp_six_zone_{run_id}.yaml"
+        raw = work / "raw_zonals"
+        for field, expected in {"zone_manifest": zone_root / "zone_manifest.json",
+                                "frozen_zonal_config": frozen, "raw_zonal_directory": raw}.items():
+            if Path(manifest.get(field, "")).resolve() != expected.resolve():
+                raise ValueError(f"Source run {run_id} records an unexpected {field} path")
+        zones, overlap = read_prepared_zones(zone_root, run_id)
+        plan = read_frozen_zone_raster_plan(
+            zones, frozen, work / "zonal_stats_work", raw,
+            expected_raster_columns=tuple(BASE_FIELDS.values()), overlapping_manager_products=overlap,
+        )
+        saved = SavedZonals(manifest_path, manifest, run_id, manifest, zones,
+                            read_zone_raster_sums(plan), overlap, tuple(plan.skipped_products), (frozen,))
+    additional = manifest.get("all_pad_zonals")
+    if additional != saved.all_pad:
+        if saved.all_pad is not None or additional is None:
+            raise ValueError("Saved run changes or drops inherited PAD-US raster provenance")
+        if (additional.get("run_id") != run_id
+                or any(stages.get(stage) != "complete" for stage in (_PREPARE_PAD, _FREEZE_PAD, _RUN_PAD))):
+            raise ValueError("PAD-US feature raster batch has not completed")
+        zone, frozen, work, raw = all_pad_paths(root, run_id)
+        for field, expected in {"zone": zone, "frozen_config": frozen,
+                                "work_directory": work, "raw_directory": raw}.items():
+            if Path(additional.get(field, "")).resolve() != expected.resolve():
+                raise ValueError(f"Unexpected PAD-US {field} path")
+        for field, path in (("zone_sha256", zone), ("frozen_sha256", frozen)):
+            if additional.get(field) != sha256(path):
+                raise ValueError(f"Saved PAD-US {field} differs from its verified raster batch")
+        extra_zones = {ALL_PAD_PRODUCT: (zone, ALL_PAD_PRODUCT)}
+        plan = read_frozen_zone_raster_plan(
+            extra_zones, frozen, work, raw, expected_raster_columns=tuple(BASE_FIELDS.values()),
+            products=(ALL_PAD_PRODUCT,), overlapping_manager_products=(),
+        )
+        saved.zones = saved.zones | extra_zones
+        saved.sums = saved.sums | read_zone_raster_sums(plan)
+        saved.empty_products += tuple(plan.skipped_products)
+        saved.frozen_configs += (frozen,)
+        saved.all_pad = additional
+    return saved
+
+
 def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     """Value and publish a fresh assessment or reuse completed raster zonals.
 
@@ -178,8 +293,9 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     results = data / "analysis_results/assessment_runs" / args.run_id
     new_work = data / "processing_outputs/assessment_runs" / args.run_id
     new_frozen = zonal_config.parent / "runs" / f"snapp_six_zone_{args.run_id}.yaml"
+    pad_zone, pad_frozen, pad_work, pad_raw = all_pad_paths(root, args.run_id)
     if not args.validate_only:
-        for path in (results, new_work, new_frozen):
+        for path in (results, new_work, new_frozen, pad_frozen):
             if path.exists():
                 raise FileExistsError(f"Run path already exists; use a new --run-id: {path}")
     geometry_run = args.run_id if source_id is None else source_id
@@ -193,7 +309,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     gdp_crosswalk = derived["sources"]["gdp"].get("allocation_crosswalk")
     if gdp_crosswalk:
         config_files.append((data / gdp_crosswalk).resolve())
-    if source_id is None:
+    if source_id is None or args.include_all_pad:
         runner = (root / args.runner).resolve()
         if not runner.is_file():
             raise FileNotFoundError(f"Toolkit runner not found: {runner}")
@@ -205,22 +321,20 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
                 f"TIFF inventory does not match the configured valuation services: "
                 f"missing {sorted(expected_fields - raster_fields)}, extra {sorted(raster_fields - expected_fields)}"
             )
+    if source_id is None:
         input_paths = read_vector_inputs(args, root)
         config_files.extend((zonal_config, root / "config/padus_land_rules.rules"))
     else:
-        source_manifest_path = results.with_name(source_id) / "run_manifest.json"
-        source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
-        if (source_manifest.get("run_id") != source_id or source_manifest.get("geographic_scope") != "CONUS"
-                or source_manifest.get("status") not in {"complete", "failed"}
-                or any(source_manifest.get("stages", {}).get(stage) != "complete"
-                       for stage in (_PREPARE, _FREEZE, _RUN_RASTERS))):
-            raise ValueError(f"Source run {source_id} has no completed, verified CONUS raster zonals")
-        for key, expected in {
-            "zone_manifest": zone_root / "zone_manifest.json", "frozen_zonal_config": frozen,
-            "raw_zonal_directory": raw_root,
-        }.items():
-            if Path(source_manifest.get(key, "")).resolve() != expected.resolve():
-                raise ValueError(f"Source run {source_id} records an unexpected {key} path")
+        saved = read_saved_zonals(root, source_id)
+        if args.include_all_pad and saved.all_pad is not None:
+            raise ValueError("Source run already contains all-PAD zonals; omit --include-all-pad and --runner to reuse them")
+        source_manifest_path = saved.manifest_path
+        source_manifest = saved.base_manifest
+        geometry_run = saved.base_run_id
+        work = new_work.with_name(geometry_run)
+        zone_root, work_dir, raw_root = work / "zonal_units", work / "zonal_stats_work", work / "raw_zonals"
+        frozen = saved.frozen_configs[0]
+        zones, raster_sums, overlapping_products = saved.zones, saved.sums, saved.overlap
         input_paths = source_manifest["zone_inputs"]
         coral_path, coral_layer = input_paths["coral_reference_counties"]
         if Path(coral_path).resolve() != (root / COUNTY_PATH).resolve():
@@ -229,15 +343,23 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         if not info["crs"] or "GEOID" not in info["fields"]:
             raise ValueError("Coral county reference must have a CRS and GEOID")
         blocked = source_manifest["blocked_rasters"]
-        zones, overlapping_products = read_prepared_zones(zone_root, geometry_run)
-        config_files.append(frozen)
+        config_files.extend(saved.frozen_configs)
+    if args.include_all_pad:
+        full_pad_path = (root / args.all_pad_path).resolve()
+        if not full_pad_path.exists():
+            raise FileNotFoundError(f"Full PAD-US source not found: {full_pad_path}")
+        info = pyogrio.read_info(full_pad_path, layer=args.all_pad_layer)
+        if (not info["crs"] or "Mang_Type" not in info["fields"]
+                or info["geometry_type"] not in {"Polygon", "MultiPolygon"}):
+            raise ValueError("Full PAD-US source must contain polygon geometry, a CRS, and Mang_Type")
+        mask_path, mask_layer = input_paths["land_mask"]
+        info = pyogrio.read_info(mask_path, layer=mask_layer)
+        if not info["crs"] or "GEOID" not in info["fields"]:
+            raise ValueError("Original county land mask must contain a CRS and GEOID")
+        if source_id is not None:
+            validate_additional_raster_inputs(zonal_config, frozen)
+        config_files.append(zonal_config)
     hashes = {str(path): sha256(path) for path in config_files}
-    if source_id is not None:
-        plan = read_frozen_zone_raster_plan(
-            zones, frozen, work_dir, raw_root, expected_raster_columns=tuple(BASE_FIELDS.values()),
-            overlapping_manager_products=overlapping_products,
-        )
-        raster_sums = read_zone_raster_sums(plan)
     if args.validate_only:
         detail = "reused zones and raster sums" if source_id is not None else "inputs"
         print(f"CONUS Ecosystem Services Assessment: {detail} validated; no run files written.", flush=True)
@@ -266,6 +388,8 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
     }
     if source_id is not None:
         manifest["reused_zonals_from"] = {"run_id": source_id, "manifest": str(source_manifest_path)}
+        if saved.all_pad is not None:
+            manifest["all_pad_zonals"] = saved.all_pad
 
     def record(stage: str, status: str) -> None:
         """Persist stage status and the currently verified outputs."""
@@ -311,10 +435,46 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
             record(stage, "complete")
         else:
             manifest["manager_overlap_products"] = sorted(overlapping_products)
-            manifest["empty_zone_products"] = list(plan.skipped_products)
+            manifest["empty_zone_products"] = list(saved.empty_products)
             record(stage, "complete")
 
-        stage = "Value all six zone products"
+        if args.include_all_pad:
+            stage = _PREPARE_PAD
+            record(stage, "running")
+            provenance = prepare_all_pad_zones(
+                full_pad_path, args.all_pad_layer, *zones["counties"],
+                Path(input_paths["land_mask"][0]), input_paths["land_mask"][1], pad_zone,
+                workers=args.workers,
+            )
+            extra_zones = {ALL_PAD_PRODUCT: (pad_zone, ALL_PAD_PRODUCT)}
+            manifest["all_pad_zonals"] = {
+                "run_id": args.run_id, "zone": str(pad_zone), "zone_sha256": sha256(pad_zone),
+                "frozen_config": str(pad_frozen), "work_directory": str(pad_work),
+                "raw_directory": str(pad_raw), "preparation": provenance,
+            }
+            record(stage, "complete")
+            stage = _FREEZE_PAD
+            record(stage, "running")
+            pad_plan = freeze_zone_zonals(
+                extra_zones, zonal_config, pad_frozen, pad_work, pad_raw,
+                products=(ALL_PAD_PRODUCT,), overlapping_manager_products=(),
+            )
+            manifest["all_pad_zonals"]["frozen_sha256"] = sha256(pad_frozen)
+            manifest["all_pad_zonals"]["raster_jobs"] = len(pad_plan.jobs)
+            record(stage, "complete")
+            stage = _RUN_PAD
+            record(stage, "running")
+            if pad_plan.jobs:
+                subprocess.run([
+                    sys.executable, "-B", str(runner), str(pad_plan.frozen_config),
+                    "--job-workers", str(args.job_workers), "--raster-workers", str(args.raster_workers),
+                ], cwd=root, env=env, check=True)
+            raster_sums = raster_sums | read_zone_raster_sums(pad_plan)
+            zones = zones | extra_zones
+            manifest["empty_zone_products"].extend(pad_plan.skipped_products)
+            record(stage, "complete")
+
+        stage = "Value all seven zone products" if ALL_PAD_PRODUCT in zones else "Value all six zone products"
         record(stage, "running")
         if any(sha256(path) != digest for path, digest in hashes.items()):
             raise ValueError("Assessment configuration changed during the run")
@@ -334,9 +494,9 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         manifest["valuation_qa"] = coverage
         record(stage, "complete")
 
-        stage = "Publish six CSV and GeoPackage pairs"
+        stage = "Publish seven CSV and GeoPackage pairs" if ALL_PAD_PRODUCT in zones else "Publish six CSV and GeoPackage pairs"
         record(stage, "running")
-        for product in tqdm(ZONE_PRODUCTS, desc="Publish assessment pairs", unit="product"):
+        for product in tqdm(zones, desc="Publish assessment pairs", unit="product"):
             output = results / f"{product}_{args.run_id}.gpkg"
             csv_path, gpkg_path = write_zone_pair(
                 valued[product], output, product, county_audits if product == "counties" else {},

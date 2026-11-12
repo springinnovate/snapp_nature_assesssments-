@@ -12,6 +12,10 @@ output layers, each as a CSV and GeoPackage pair:
 5. Conservation lands by county and manager type
 6. Big Beautiful Bill (BBB) candidate lands by county
 
+With `--include-all-pad`, a seventh pair reports individual PAD-US features
+cut by county, preserving their original attributes. See
+[all-PAD feature output](#all-pad-feature-output).
+
 ![Map of CONUS county boundaries with the assessment's public-land footprints shown in green.](docs/images/assessment_geography.png)
 
 *Public-land footprints across the assessment's 3,109 counties and county
@@ -506,6 +510,50 @@ identifies the layers containing each value.
 | `total_ecosystem_services` | Sum of the 18 selected service components, excluding recreation | USD, mixed benefit periods | All outputs |
 | `total_ecosystem_services_w_rec` | The same total plus recreation | USD, mixed benefit periods | Counties only |
 
+### All-PAD feature output
+
+The optional `all_PAD_lands_by_county_and_manager_type` pair uses the full
+`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` layer. Every
+source feature with a positive-area intersection with a CONUS county is
+included, without GAP-status or public-land filtering. Existing conservation
+outputs continue to use GAP Status 1–3.
+
+One row represents one original PAD-US feature intersected with one county.
+Separate source features remain separate even when they have the same
+`Mang_Type`. A multipart intersection stays in one row. All original fields,
+including ownership, management, designation, source metadata, original area
+fields, and source `OBJECTID`, pass through. Missing manager labels remain as
+supplied. The GeoPackage preserves null versus empty text; both appear as blank
+cells in the CSV.
+
+| Added field | Meaning |
+| --- | --- |
+| `feature_id` | Unique `GEOID_OBJECTID` identifier for the county-cut feature |
+| `GEOID` | Five-character county identifier |
+| `area_ha` | Area of the county-cut feature, including water, in hectares |
+| `area_ha_land` | Feature's intersection with the Census county land mask, in hectares |
+| `county_land_share` | Land intersection area divided by county Census ALAND |
+| All 26 non-recreation `*_adj` fields above | Same adjusted service calculations as the other footprint outputs |
+| Their `*_adj_factor` fields | Applied service adjustment factors |
+| `total_ecosystem_services` | Same 18-component total, excluding recreation |
+| Each `*_adj` field with `_per_feature_ha` appended | Adjusted service value divided by this row's `area_ha` |
+| `total_ecosystem_services_per_feature_ha` | Total divided by this row's `area_ha` |
+
+New hectare fields are measured in EPSG:6933. Original `GIS_Acres`,
+`SHAPE_Area`, and `SHAPE_Length` retain their source values and do not describe
+the county-cut piece. County-based values still use `county_land_share` for
+allocation; all new density fields divide by the full feature hectares.
+Missing service values remain missing in their densities and contribute zero
+to the total, matching existing outputs.
+
+Original PAD-US features can overlap. Their values are independently measured
+and must not be summed as a deduplicated county total. The new raster jobs use
+zero geometry simplification and separate groups for features that overlap or
+touch in any input raster's coordinate system. A small numerical buffer also
+separates nearly touching boundaries. With the toolkit's pixel-center sampling,
+this prevents one feature from taking another feature's pixels. Existing
+six-product raster jobs retain their original settings.
+
 ### Adjustment factors
 
 Each service has a `*_adj_factor` field recording the applied multiplier.
@@ -703,7 +751,8 @@ outputs as a record of the inputs and settings.
 ### Revalue a completed run
 
 To update valuation factors, tables, or output fields, reuse the saved analysis
-boundaries and raster sums from the original run that computed the zonals.
+boundaries and raster sums from a run with verified zonals. A later revaluation
+can also be used as the source; its manifest leads back to the original batches.
 Pass that run's ID to `--reuse-zonals-from` and choose a new `--run-id` for the
 output.
 
@@ -736,3 +785,40 @@ clipping. Both paths retain the configured lake exclusions.
 Use `PROJ_NETWORK=OFF`, as in the launch commands, to enable persistent weight
 reuse with local projection resources. With online projection-grid downloads
 enabled, the pipeline measures fisheries weights without saving or reusing them.
+
+### Add all-PAD features while reusing existing zonals
+
+From the repository root in an activated `zonal-stats-toolkit` environment,
+use a new run ID and the saved run containing the existing six products:
+
+```cmd
+set "PROJ_NETWORK=OFF"
+python -B run_conus_ecosystem_services.py ^
+  --reuse-zonals-from "20261107T064228536906Z" ^
+  --include-all-pad ^
+  --runner "..\zonal_stats_toolkit\runner.py" ^
+  --run-id "20261112-all-pad-features" ^
+  --workers 16
+```
+
+Add `--validate-only` to check the saved results, source paths, and raster
+compatibility without writing run files. This command retains the existing six
+geometries and raster sums, builds the new individual PAD-US county features,
+and runs raster jobs only for that seventh product. It then values and publishes
+all seven CSV/GeoPackage pairs in the new run directory. County, public,
+conservation, and BBB zonals are not rerun. Existing fisheries weights remain
+reusable; new PAD feature measurements have their own cache.
+
+The full PAD-US source defaults to
+`data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb`.
+Use `--all-pad-path` and `--all-pad-layer` if it is stored elsewhere. These are
+separate from the VectorAnalysis input used for the existing analyses.
+`--include-all-pad` also works with a fresh assessment command.
+
+For subsequent valuation-only runs, reuse the new run and omit the addition
+flag and runner. The manifest preserves both raster batches:
+
+```cmd
+set "PROJ_NETWORK=OFF"
+python -B run_conus_ecosystem_services.py --reuse-zonals-from "20261112-all-pad-features" --run-id "all-pad-revalued" --workers 16
+```
