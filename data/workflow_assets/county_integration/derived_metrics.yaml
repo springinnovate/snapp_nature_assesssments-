@@ -113,3 +113,11 @@ county_ecosystem_service_ratios:
   ratio_public_lands_es_value_to_county_es_value: public_lands_by_county
   ratio_conservation_lands_es_value_to_county_es_value: conservation_lands_by_county
   ratio_bbb_lands_es_value_to_county_es_value: bbb_lands_by_county
+
+# County-only USD per land hectare: the category's own total_ecosystem_services
+# divided by its area_ha_land, matched by GEOID. Recreation is excluded.
+# Missing categories and missing/nonpositive land hectares produce blanks.
+county_land_service_value_per_ha:
+  public_lands_total_es_value_per_land_ha: public_lands_by_county
+  conservation_lands_total_es_value_per_land_ha: conservation_lands_by_county
+  bbb_lands_total_es_value_per_land_ha: bbb_lands_by_county
