@@ -16,6 +16,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pyogrio
+from pyproj import network
 import shapely
 from tqdm import tqdm
 import yaml
@@ -54,9 +55,11 @@ def _valuation_pool(workers):
     if workers < 1:
         raise ValueError("Valuation workers must be positive")
     limits = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
-    previous = {name: os.environ.get(name) for name in limits}
+    settings = dict.fromkeys(limits, "1")
+    settings["PROJ_NETWORK"] = "ON" if network.is_network_enabled() else "OFF"
+    previous = {name: os.environ.get(name) for name in settings}
     try:
-        os.environ.update(dict.fromkeys(limits, "1"))
+        os.environ.update(settings)
         with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
             yield pool
     finally:
@@ -121,17 +124,21 @@ def _run_source_tasks(pool, plans, table_tasks, workers):
     return tables, plans["fisheries"].finish(), plans["coastal"].finish()
 
 
-def _collect_service_values(zones, paths, county_base, crosswalk, coral_reference_counties, workers):
+def _collect_service_values(zones, paths, county_base, crosswalk, coral_reference_counties, workers,
+                            *, fisheries_cache_dir=None, cache_report=None):
     """Prepare bounded spatial jobs and share workers with county-table joins."""
     plans = {
-        "fisheries": FisheriesPlan(zones, paths),
+        "fisheries": FisheriesPlan(zones, paths, cache_dir=fisheries_cache_dir),
         "coastal": CoastalPlan(zones, paths, coral_reference_counties=coral_reference_counties),
     }
     table_tasks = ((task, compute_task, (task, paths, county_base, crosswalk, 1))
                    for task in COUNTY_TABLES)
     print(f"Value services with one shared pool: {workers} processes (1 native thread each)", flush=True)
     with _valuation_pool(workers) as pool:
-        return _run_source_tasks(pool, plans, table_tasks, workers)
+        results = _run_source_tasks(pool, plans, table_tasks, workers)
+    if cache_report is not None:
+        cache_report.update(plans["fisheries"].cache_info)
+    return results
 
 
 def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.DataFrame, dict, dict]:
@@ -288,8 +295,11 @@ def value_zones(
     air_summary = None
     task_metadata = []
     status_frames = []
+    fisheries_cache = {}
     tables, fisheries, coastal = _collect_service_values(
         zones, paths, county_base, crosswalk, coral_reference_counties, workers,
+        fisheries_cache_dir=data_root / "processing_outputs" / "fisheries_weights",
+        cache_report=fisheries_cache,
     )
     # Completion order must not affect exported field or provenance row order.
     for task in COUNTY_TABLES:
@@ -394,6 +404,7 @@ def value_zones(
     )
     result_frames["counties"] = pd.concat([result_frames["counties"], county_land_metrics], axis=1)
     return result_frames, county_audits, {
+        "fisheries_weights_cache": fisheries_cache,
         "total_components": non_recreation_components,
         "blank_component_rows": coverage,
         "county_only_component": recreation_field,

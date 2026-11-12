@@ -11,13 +11,14 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from pyogrio import read_dataframe, read_info
-from pyproj import Transformer
+from pyproj import Transformer, network
 import shapely
 from tqdm import tqdm
 
 from assessment.assessment_geography import CONUS_STATE_FIPS, county_bounds_in_crs
 from assessment.build_county_ecosystem_service_valuations_2026 import AREA_CRS, STATE_NAMES, close, numbers
 from assessment.geometry_utils import repair_polygonal_geometry
+from assessment.fisheries_weights_cache import FisheriesWeightsCache
 
 _FIELDS = {
     "marine_fisheries": "ncp_value",
@@ -142,9 +143,23 @@ def _measure(zone, tree: shapely.STRtree, *, length: bool) -> float:
         Sum of feature lengths or areas in the zone, or zero for no overlap.
     """
     ids = tree.query(zone, predicate="intersects")
-    intersections = shapely.intersection(tree.geometries[ids], zone)
-    measures = shapely.length(intersections) if length else shapely.area(intersections)
-    return float(measures.sum()) / (1000 if length else 10_000)
+    candidates = tree.geometries[ids]
+    if length:
+        return float(shapely.length(shapely.intersection(candidates, zone)).sum()) / 1000
+    if not len(candidates):
+        return 0.0
+    # The prepared predicate avoids constructive overlay for whole water
+    # polygons inside the zone, including features sharing its boundary.
+    # Preparing changes only the query index, not the coordinates or topology.
+    shapely.prepare(zone)
+    contained = shapely.covers(zone, candidates)
+    measures = np.empty(len(candidates), dtype=float)
+    measures[contained] = shapely.area(candidates[contained])
+    crossing = ~contained
+    if crossing.any():
+        measures[crossing] = shapely.area(shapely.intersection(candidates[crossing], zone))
+    # Retain tree-query order so the shortcut does not reorder the sum.
+    return float(measures.sum()) / 10_000
 
 
 @lru_cache(maxsize=1)
@@ -205,7 +220,7 @@ def _county_weights(context, geoid, county, local_zones, measure_marine, measure
 class FisheriesPlan:
     """Prepare county jobs for a caller-owned pool and reconcile their weights."""
 
-    def __init__(self, zones: Mapping[str, gpd.GeoDataFrame], paths: Mapping[str, Path]):
+    def __init__(self, zones: Mapping[str, gpd.GeoDataFrame], paths: Mapping[str, Path], *, cache_dir=None):
         """Validate sources and retain projected geometry only in the coordinator."""
         if "counties" not in zones or zones["counties"].empty:
             raise ValueError("A complete counties layer is required for fisheries denominators")
@@ -217,11 +232,35 @@ class FisheriesPlan:
         non_conus = sorted(set(county_ids.str[:2]) - CONUS_STATE_FIPS)
         if non_conus:
             raise ValueError(f"CONUS fisheries received out-of-scope county state FIPS codes: {non_conus}")
+        for product, ids in self.zone_ids.items():
+            if not ids.isin(county_ids).all():
+                raise ValueError(f"{product} fisheries zones contain unknown county GEOIDs")
+        self.totals = {service: _read_state_totals(paths[service], field) for service, field in _FIELDS.items()}
+        self.weights = {product: np.zeros((len(frame), len(_FIELDS))) for product, frame in zones.items()}
+        self.remaining = set(county_ids)
+        self.task_count = len(county_ids)
+        # Online grid downloads can change coordinate operations while a job
+        # runs. Persistent reuse requires the documented offline PROJ setting.
+        online = network.is_network_enabled()
+        self.cache = (FisheriesWeightsCache(cache_dir, zones, paths, self.totals)
+                      if cache_dir is not None and not online else None)
+        self.cache_info = {"status": "disabled"} if self.cache is None else self.cache.report
+        if cache_dir is not None and online:
+            self.cache_info["reason"] = "proj_network_enabled"
+            print("Fisheries weights cache disabled: set PROJ_NETWORK=OFF for stable local projections.", flush=True)
+        if self.cache is not None:
+            cached = self.cache.load()
+            if cached is not None:
+                self.weights = cached
+                self.remaining.clear()
+                self.task_count = 0
+                return
+            # A content change may preserve size/mtime: do not reuse a stale
+            # in-memory source index after the persistent cache misses.
+            _fisheries_context.cache_clear()
         self.projected, self.by_county = {}, {}
         for product, frame in zones.items():
             ids = self.zone_ids[product]
-            if not ids.isin(county_ids).all():
-                raise ValueError(f"{product} fisheries zones contain unknown county GEOIDs")
             geometries = frame.to_crs(AREA_CRS).geometry.to_numpy(copy=True)
             for position in np.flatnonzero(~shapely.is_valid(geometries)):
                 repaired = repair_polygonal_geometry(shapely.make_valid(geometries[position]))
@@ -230,7 +269,6 @@ class FisheriesPlan:
                 geometries[position] = repaired
             self.projected[product] = geometries
             self.by_county[product] = ids.groupby(ids, sort=False).indices
-        self.totals = {service: _read_state_totals(paths[service], field) for service, field in _FIELDS.items()}
         coast_info = read_info(paths["coastline_lines"])
         if not coast_info["crs"]:
             raise ValueError(f"Coastline input must define a CRS: {paths['coastline_lines']}")
@@ -249,12 +287,11 @@ class FisheriesPlan:
         # Validate source geometries before submitting jobs, also warming the
         # cache for the standalone thread-based compatibility entry point.
         _fisheries_context(*self.context)
-        self.weights = {product: np.zeros((len(frame), len(_FIELDS))) for product, frame in zones.items()}
-        self.remaining = set(county_ids)
-        self.task_count = len(county_ids)
 
     def tasks(self):
         """Yield county-local payloads lazily so a bounded pool queue limits copies."""
+        if self.task_count == 0:
+            return
         for county_pos, geoid in enumerate(self.zone_ids["counties"]):
             local = {}
             for product, groups in self.by_county.items():
@@ -311,6 +348,8 @@ class FisheriesPlan:
             allocated = results["counties"][service].groupby(county_states).sum(min_count=1)
             for state, value in state_totals.dropna().items():
                 close(allocated.loc[state], value, f"{service} state {state} allocation")
+        if self.cache is not None:
+            self.cache.save(self.weights)
         return results
 
 

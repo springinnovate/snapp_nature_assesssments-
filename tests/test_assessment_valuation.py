@@ -77,8 +77,10 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         return pd.DataFrame({"es_total": total, "Pop_2024": 10, "area_ha_county": county_area,
                              "area_ha_county_incl_ocean_great_lakes": inclusive_area}), {}
 
-    def collect_values(zones, paths, base, crosswalk, reference, workers):
+    def collect_values(zones, paths, base, crosswalk, reference, workers, *, fisheries_cache_dir, cache_report):
         """Isolate export arithmetic from the independently tested task scheduler."""
+        assert fisheries_cache_dir == tmp_path / "processing_outputs" / "fisheries_weights"
+        cache_report.update(status="hit", key="fixture-key")
         return (
             {task: county_task(task, paths, base, crosswalk, 1) for task in valuation.COUNTY_TABLES},
             vector_values({"marine_fisheries": 4, "inland_fisheries": 8}, zones),
@@ -122,6 +124,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         workers=2,
     )
     assert set(outputs) == set(ZONE_PRODUCTS)
+    assert qa["fisheries_weights_cache"] == {"status": "hit", "key": "fixture-key"}
     county = outputs["counties"].iloc[0]
     service_ratios = derived["county_ecosystem_service_ratios"]
     assert service_ratios == {

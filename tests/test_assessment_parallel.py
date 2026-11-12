@@ -23,6 +23,11 @@ def _worker_environment():
     return os.getpid(), get_start_method(), {name: os.environ.get(name) for name in NATIVE_LIMITS}
 
 
+def _worker_projection_network():
+    """Report the projection setting inherited before a worker imports PROJ."""
+    return os.environ.get("PROJ_NETWORK"), valuation.network.is_network_enabled()
+
+
 def _fail():
     """Raise a recognizable task error."""
     raise ValueError("fixture geometry failed")
@@ -167,7 +172,7 @@ def test_collection_uses_one_executor_for_all_families(monkeypatch):
         assert geometry_workers == 1
         return ("tables", name)
 
-    monkeypatch.setattr(valuation, "FisheriesPlan", lambda *_: plans["fisheries"])
+    monkeypatch.setattr(valuation, "FisheriesPlan", lambda *_, **__: plans["fisheries"])
     monkeypatch.setattr(valuation, "CoastalPlan", lambda *_, **__: plans["coastal"])
     monkeypatch.setattr(valuation, "ProcessPoolExecutor", SinglePool)
     monkeypatch.setattr(valuation, "compute_task", county_table)
@@ -219,7 +224,16 @@ def test_pool_rejects_nonpositive_workers():
         pytest.fail("Invalid worker budget must not yield")
 
 
-def test_real_spatial_plans_share_spawned_pool_and_match_one_worker(monkeypatch):
+def test_workers_use_effective_parent_projection_network_setting(monkeypatch):
+    """An API-selected offline projection policy overrides stale inherited env."""
+    monkeypatch.setenv("PROJ_NETWORK", "ON")
+    monkeypatch.setattr(valuation.network, "is_network_enabled", lambda: False)
+    with valuation._valuation_pool(1) as pool:
+        assert pool.submit(_worker_projection_network).result(timeout=60) == ("OFF", False)
+    assert os.environ["PROJ_NETWORK"] == "ON"
+
+
+def test_real_spatial_plans_share_spawned_pool_and_match_one_worker(monkeypatch, tmp_path):
     """Run real GeoPackage tasks and dependent coastal batches through one pool."""
     # Reuse the fixture builders without exposing their TestCase classes to
     # pytest collection in this module.
@@ -245,9 +259,17 @@ def test_real_spatial_plans_share_spawned_pool_and_match_one_worker(monkeypatch)
             zones, paths, geometry_workers=1, coral_reference_counties=counties,
         )
         monkeypatch.setattr(valuation, "compute_task", _county_table_fixture)
-        results = [valuation._collect_service_values(
-            zones, paths, county_base, crosswalk, counties, workers=workers,
-        ) for workers in (1, 2)]
+        results, reports = [], []
+        for workers in (1, 2):
+            report = {}
+            results.append(valuation._collect_service_values(
+                zones, paths, county_base, crosswalk, counties, workers=workers,
+                fisheries_cache_dir=tmp_path / "weights", cache_report=report,
+            ))
+            reports.append(report)
+        assert reports[0]["status"] == "miss" and reports[0]["written"]
+        assert reports[1]["status"] == "hit"
+        assert reports[1]["key"] == reports[0]["key"]
         for tables, fisheries, coastal in results:
             assert set(tables) == set(valuation.COUNTY_TABLES)
             assert set(fisheries) == set(coastal) == set(zones)
