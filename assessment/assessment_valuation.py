@@ -92,51 +92,66 @@ def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.D
     return paths, factors, rules, derived
 
 
-def calculate_county_service_shares(
-    products: Mapping[str, pd.DataFrame], ratios: Mapping[str, str]
+def calculate_county_land_service_metrics(
+    products: Mapping[str, pd.DataFrame], ratios: Mapping[str, str], per_hectare: Mapping[str, str]
 ) -> pd.DataFrame:
-    """Compare land-category service totals with their county totals.
+    """Calculate land-category value shares and value per land hectare.
 
     Args:
         products: Valued products containing GEOID and total_ecosystem_services.
+            Land-category products also contain area_ha_land.
         ratios: Output field names mapped to by-county land products.
+        per_hectare: Per-hectare output names mapped to by-county land products.
 
     Returns:
-        Ratio columns in county row order, using totals excluding recreation.
-        An absent land-category row contributes zero. Missing totals and
-        nonpositive or nonfinite county denominators produce NaN.
+        Columns in county row order, using totals excluding recreation. An
+        absent category contributes zero to its county value share, but has
+        no per-hectare value. Missing totals and missing, nonpositive, or
+        nonfinite denominators produce NaN.
 
     Raises:
         ValueError: Products, county keys, or output names are invalid.
     """
     expected = {"public_lands_by_county", "conservation_lands_by_county", "bbb_lands_by_county"}
-    if len(ratios) != len(expected) or set(ratios.values()) != expected:
-        raise ValueError("County service shares require the three by-county land products")
+    if any(len(mapping) != len(expected) or set(mapping.values()) != expected
+           for mapping in (ratios, per_hectare)):
+        raise ValueError("County land-service metrics require the three by-county land products")
     counties = products["counties"]
-    if set(ratios).intersection(counties.columns):
-        raise ValueError("County service-share fields collide with existing attributes")
-    totals = {}
+    if (set(ratios).intersection(per_hectare)
+            or (set(ratios) | set(per_hectare)).intersection(counties.columns)):
+        raise ValueError("County land-service fields collide with existing attributes")
+    totals, areas = {}, {}
     for product in ("counties", *ratios.values()):
         frame = products[product]
         ids = pd.Index(frame["GEOID"].astype("string"), name="GEOID")
         if not ids.is_unique or not ids.str.fullmatch(r"\d{5}").fillna(False).all():
-            raise ValueError(f"{product}: service shares require unique five-character GEOIDs")
+            raise ValueError(f"{product}: land-service metrics require unique five-character GEOIDs")
         values = pd.to_numeric(frame["total_ecosystem_services"], errors="raise")
         totals[product] = pd.Series(values.to_numpy(dtype=float, na_value=np.nan), index=ids)
+        if product != "counties":
+            land = pd.to_numeric(frame["area_ha_land"], errors="raise")
+            areas[product] = pd.Series(land.to_numpy(dtype=float, na_value=np.nan), index=ids)
     county_total = totals["counties"]
     denominator = county_total.to_numpy()
     usable = np.isfinite(denominator) & (denominator > 0)
-    shares = pd.DataFrame(index=counties.index)
+    metrics = pd.DataFrame(index=counties.index)
     for output, product in ratios.items():
         if not totals[product].index.isin(county_total.index).all():
-            raise ValueError(f"{product}: service shares contain GEOIDs absent from counties")
+            raise ValueError(f"{product}: land-service metrics contain GEOIDs absent from counties")
         # Only absent category rows become zero; observed missing totals stay missing.
         numerator = totals[product].reindex(county_total.index, fill_value=0.0).to_numpy()
-        shares[output] = np.divide(
+        metrics[output] = np.divide(
             numerator, denominator, out=np.full(len(counties), np.nan),
             where=usable & np.isfinite(numerator),
         )
-    return shares
+    for output, product in per_hectare.items():
+        numerator = totals[product].reindex(county_total.index).to_numpy()
+        denominator = areas[product].reindex(county_total.index).to_numpy()
+        metrics[output] = np.divide(
+            numerator, denominator, out=np.full(len(counties), np.nan),
+            where=np.isfinite(numerator) & np.isfinite(denominator) & (denominator > 0),
+        )
+    return metrics
 
 
 def value_zones(
@@ -291,8 +306,10 @@ def value_zones(
             raise ValueError(f"{product}: exported valuation fields collide with zone attributes")
         result_frames[product] = gpd.GeoDataFrame(pd.concat([zone, adjusted], axis=1),
                                                  geometry=zone.geometry.name, crs=zone.crs)
-    county_shares = calculate_county_service_shares(result_frames, derived["county_ecosystem_service_ratios"])
-    result_frames["counties"] = pd.concat([result_frames["counties"], county_shares], axis=1)
+    county_land_metrics = calculate_county_land_service_metrics(
+        result_frames, derived["county_ecosystem_service_ratios"], derived["county_land_service_value_per_ha"],
+    )
+    result_frames["counties"] = pd.concat([result_frames["counties"], county_land_metrics], axis=1)
     return result_frames, county_audits, {
         "total_components": non_recreation_components,
         "blank_component_rows": coverage,
