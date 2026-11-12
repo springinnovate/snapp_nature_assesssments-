@@ -173,6 +173,11 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         manifest = json.loads((self.results / "run_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["status"], "complete")
         self.assertEqual(manifest["geographic_scope"], "CONUS")
+        self.assertEqual(manifest["valuation_execution"], {
+            "executor": "shared_process_pool", "workers": 4, "native_threads_per_worker": 1,
+        })
+        self.assertEqual(self.valuation.call_args.kwargs["workers"], 4)
+        self.assertNotIn("geometry_workers", self.valuation.call_args.kwargs)
         self.assertEqual(manifest["configuration_sha256"][str(self.air_aliases)],
                          wrapper.sha256(self.air_aliases))
         self.assertEqual(manifest["valuation_inputs"]["air_quality_county_aliases"], str(self.air_aliases))
@@ -203,6 +208,19 @@ class ConusEcosystemServicesTests(unittest.TestCase):
                 attributes = pd.read_csv(csv_path, dtype={"GEOID": str})
                 self.assertEqual(attributes.GEOID.tolist(), ["01001"])
                 self.assertEqual("recreation_adj" in attributes, product == "counties")
+
+    def test_legacy_geometry_limit_overrides_one_valuation_pool(self) -> None:
+        """Keep preparation and valuation limits without nested worker counts."""
+        self.run_wrapper("--workers", "2", "--geometry-workers", "3")
+        manifest = json.loads((self.results / "run_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["valuation_execution"]["workers"], 3)
+        self.assertEqual(self.valuation.call_args.kwargs["workers"], 3)
+        self.assertNotIn("geometry_workers", self.valuation.call_args.kwargs)
+
+    def test_workers_controls_shared_pool_without_legacy_override(self) -> None:
+        """Use the requested worker count for all non-zonal task families."""
+        self.run_wrapper("--workers", "2")
+        self.assertEqual(self.valuation.call_args.kwargs["workers"], 2)
 
     def test_reuse_verified_run_without_preparing_zones_or_running_toolkit(self) -> None:
         """Revalue saved sums in a new directory without changing the source run."""

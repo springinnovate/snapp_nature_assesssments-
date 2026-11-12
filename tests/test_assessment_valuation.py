@@ -77,11 +77,15 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         return pd.DataFrame({"es_total": total, "Pop_2024": 10, "area_ha_county": county_area,
                              "area_ha_county_incl_ocean_great_lakes": inclusive_area}), {}
 
-    monkeypatch.setattr(valuation, "compute_task", county_task)
-    monkeypatch.setattr(valuation, "value_fisheries", lambda zones, *_: vector_values(
-        {"marine_fisheries": 4, "inland_fisheries": 8}, zones))
-    monkeypatch.setattr(valuation, "value_coastal", lambda zones, *_, **__: vector_values(
-        {"corals": 5, "mangroves": np.nan}, zones))
+    def collect_values(zones, paths, base, crosswalk, reference, workers):
+        """Isolate export arithmetic from the independently tested task scheduler."""
+        return (
+            {task: county_task(task, paths, base, crosswalk, 1) for task in valuation.COUNTY_TABLES},
+            vector_values({"marine_fisheries": 4, "inland_fisheries": 8}, zones),
+            vector_values({"corals": 5, "mangroves": np.nan}, zones),
+        )
+
+    monkeypatch.setattr(valuation, "_collect_service_values", collect_values)
     monkeypatch.setattr(valuation, "calculate_county_metrics", county_metrics)
 
     zones, raster_sums = {}, {}
@@ -115,7 +119,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
 
     outputs, audits, qa = valuation.value_zones(
         zones, raster_sums, tmp_path, config, coral_reference_counties=zones["counties"],
-        workers=2, geometry_workers=1,
+        workers=2,
     )
     assert set(outputs) == set(ZONE_PRODUCTS)
     county = outputs["counties"].iloc[0]
@@ -158,7 +162,7 @@ def test_adjustment_and_recreation_are_applied_once(monkeypatch, tmp_path, count
         original.setattr(valuation, "calculate_county_land_service_metrics", previous_land_metrics)
         previous, _, _ = valuation.value_zones(
             zones, raster_sums, tmp_path, config, coral_reference_counties=zones["counties"],
-            workers=2, geometry_workers=1,
+            workers=2,
         )
     for product, frame in outputs.items():
         assert retired_service_fields.isdisjoint(frame.columns)

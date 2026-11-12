@@ -12,7 +12,7 @@ from tqdm import tqdm
 from assessment.geometry_utils import repair_polygonal_geometry
 
 
-def allocate_coral_values(counties, points):
+def allocate_coral_values(counties, points, *, show_progress=True):
     """Sum whole BC_USD11 point values in their nearest counties.
 
     Distance is measured to unsimplified county polygons, not centroids, in a
@@ -24,6 +24,7 @@ def allocate_coral_values(counties, points):
         counties: GeoDataFrame with unique five-digit GEOID values and polygons.
         points: GeoDataFrame with unique OBJECTID values, BC_USD11, and Points.
             Both inputs must declare their coordinate reference systems.
+        show_progress: Display local progress bars; disable inside pool workers.
 
     Returns:
         Tuple of raw county totals, county statuses, and one audit row per point.
@@ -52,7 +53,8 @@ def allocate_coral_values(counties, points):
 
     repaired = []
     for identifier, geometry in tqdm(zip(ids, counties.geometry), total=len(counties),
-                                     desc="Validate coral county geometry", unit="county"):
+                                     desc="Validate coral county geometry", unit="county",
+                                     disable=not show_progress):
         if (geometry is None or geometry.is_empty
                 or geometry.geom_type not in {"Polygon", "MultiPolygon"}
                 or not np.isfinite(shapely.get_coordinates(geometry)).all()):
@@ -61,7 +63,8 @@ def allocate_coral_values(counties, points):
         if geometry is None or geometry.area <= 0:
             raise ValueError(f"Invalid county polygon: {identifier}")
         repaired.append(geometry)
-    with tqdm(total=2, desc="Project coral allocation inputs to WGS84", unit="layer") as progress:
+    with tqdm(total=2, desc="Project coral allocation inputs to WGS84", unit="layer",
+              disable=not show_progress) as progress:
         county_geometry = gpd.GeoSeries(repaired, crs=counties.crs).to_crs(4326)
         progress.update(1)
         point_geometry = points.geometry.to_crs(4326)
@@ -73,7 +76,8 @@ def allocate_coral_values(counties, points):
     unknown = set()
     audit = []
     for key, value, point in tqdm(zip(keys, values, point_geometry), total=len(points),
-                                  desc="Assign coral points to nearest counties", unit="point"):
+                                  desc="Assign coral points to nearest counties", unit="point",
+                                  disable=not show_progress):
         if (point is None or point.is_empty or point.geom_type != "Point"
                 or not point.is_valid or not np.isfinite(shapely.get_coordinates(point)).all()
                 or not -180 <= point.x <= 180 or not -90 <= point.y <= 90):

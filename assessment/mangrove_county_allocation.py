@@ -185,6 +185,26 @@ def allocate_mangrove_values(counties, polygons, value_field="Ben_Stock_2020",
     for name, value in (("workers", workers), ("chunk_size", chunk_size)):
         if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
+    prepared = _prepare_allocation(counties, polygons, value_field, id_field, chunk_size)
+    county_index, source_geometry, source_values, source_keys, county_geometry, metadata = prepared
+    county_tree = shapely.STRtree(county_geometry)
+    arguments = [(start, min(start + chunk_size, len(polygons)), source_geometry,
+                  source_values, source_keys, county_geometry, county_tree, metadata)
+                 for start in range(0, len(polygons), chunk_size)]
+    # Consume chunks in source order so worker count cannot affect summation.
+    if workers == 1:
+        results = [_allocate_chunk(*argument) for argument in arguments]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_allocate_chunk, *argument) for argument in arguments]
+            results = [future.result() for future in tqdm(
+                futures, desc="Allocate mangrove study units", unit="batch")]
+    return _finish_allocation(county_index, metadata, results)
+
+
+def _prepare_allocation(counties, polygons, value_field="Ben_Stock_2020",
+                        id_field="source_id", chunk_size=2000):
+    """Validate and project inputs once before scheduling source intersections."""
     for label, frame, identifier in (("counties", counties, "GEOID"),
                                       ("study units", polygons, id_field)):
         if not isinstance(frame, gpd.GeoDataFrame) or frame.crs is None:
@@ -207,30 +227,22 @@ def allocate_mangrove_values(counties, polygons, value_field="Ben_Stock_2020",
     county_index = pd.Index(counties["GEOID"], name="GEOID")
     source_keys = polygons[id_field].astype(str).str.strip().tolist()
     metadata = {field: polygons[field].tolist() for field in ("ISO3", "Country") if field in polygons}
-    if polygons.empty:
-        return (pd.Series(0.0, index=county_index, name="mangroves"),
-                pd.Series("no_intersection", index=county_index, name="mangroves_status"),
-                pd.DataFrame(columns=AUDIT_COLUMNS + list(metadata)))
-    county_geometry = np.asarray(_project_polygons(counties, "counties", chunk_size, require_area=True), dtype=object)
-    source_geometry = _project_polygons(polygons, "mangrove study units", chunk_size)
-    county_tree = shapely.STRtree(county_geometry)
-    chunks = [(start, min(start + chunk_size, len(polygons))) for start in range(0, len(polygons), chunk_size)]
-    arguments = [(start, stop, source_geometry, source_values, source_keys,
-                  county_geometry, county_tree, metadata) for start, stop in chunks]
+    county_geometry = np.asarray(_project_polygons(
+        counties, "counties", chunk_size, require_area=True) if not polygons.empty else [], dtype=object)
+    source_geometry = np.asarray(_project_polygons(
+        polygons, "mangrove study units", chunk_size) if not polygons.empty else [], dtype=object)
+    return county_index, source_geometry, source_values, source_keys, county_geometry, metadata
+
+
+def _finish_allocation(county_index, metadata, results):
+    """Combine source batches in source order, retaining unknown-source flags."""
     by_county = [[] for _ in county_index]
     missing_counties, audit_rows = set(), []
-    # Consume futures in source order, so thread count cannot change summation
-    # order or audit row order. Shapely releases the GIL during intersections.
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(_allocate_chunk, *argument) for argument in arguments]
-        with tqdm(total=len(polygons), desc="Allocate mangrove study units", unit="feature") as progress:
-            for future in futures:
-                rows, contributions, unknown = future.result()
-                audit_rows.extend(rows)
-                for county_position, contribution in contributions:
-                    by_county[county_position].append(contribution)
-                missing_counties.update(unknown)
-                progress.update(len(rows))
+    for rows, contributions, unknown in results:
+        audit_rows.extend(rows)
+        for county_position, contribution in contributions:
+            by_county[county_position].append(contribution)
+        missing_counties.update(unknown)
     values = pd.Series(0.0, index=county_index, name="mangroves")
     status = pd.Series("no_intersection", index=county_index, name="mangroves_status")
     for position, contributions in enumerate(tqdm(by_county, desc="Sum mangrove county shares", unit="county")):

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from pathlib import Path
 
 import geopandas as gpd
@@ -81,6 +82,11 @@ def read_marine_shoreline(path: Path, counties: gpd.GeoDataFrame) -> shapely.STR
     if not info["crs"]:
         raise ValueError(f"Coastline input must define a CRS: {path}")
     bounds = county_bounds_in_crs(counties, info["crs"])
+    return _read_marine_shoreline_bounds(path, bounds)
+
+
+def _read_marine_shoreline_bounds(path, bounds):
+    """Load the marine index within an already validated source-CRS envelope."""
     coast = read_dataframe(path, columns=["NAME"], bbox=bounds)
     great_lakes = coast["NAME"].astype("string").str.strip().str.casefold().eq("great lakes")
     # Clip the candidate lines before projection, not after: distant parts
@@ -141,164 +147,186 @@ def _measure(zone, tree: shapely.STRtree, *, length: bool) -> float:
     return float(measures.sum()) / (1000 if length else 10_000)
 
 
-def value_fisheries(
-    zones: Mapping[str, gpd.GeoDataFrame],
-    paths: Mapping[str, Path],
-    geometry_workers: int,
-) -> dict[str, pd.DataFrame]:
-    """Measure fishery weights and apply one rate per service and state.
+@lru_cache(maxsize=1)
+def _fisheries_context(sources, shoreline_bounds, water_crs):
+    """Cache read-only source indexes once per worker, never the national NHD.
 
-    CONUS county measurements set the fixed state denominators. Each footprint,
-    including each manager row, gets the same rate times its own weight. The
-    Great Lakes are excluded from marine shoreline and inland water area.
-    Great Salt Lake is excluded only from Utah's inland water area. The
-    state totals, source data and zone geometries are not changed.
+    Source signatures contain path, size and modification time so a new plan
+    cannot reuse cached geometries after an input changes in the same process.
+    No open GDAL dataset handles are shared between processes.
+    """
+    paths = {name: Path(path) for name, path, _, _ in sources}
+    water_path = paths["freshwater_polygons"]
+    return (
+        _read_marine_shoreline_bounds(paths["coastline_lines"], shoreline_bounds),
+        read_excluded_lakes(water_path, paths["great_lakes_features"], "Great Lakes"),
+        read_excluded_lakes(water_path, paths["inland_fisheries_exclusions"], "Great Salt Lake"),
+        Transformer.from_crs(AREA_CRS, water_crs, always_xy=True),
+    )
 
-    Args:
-        zones: Product frames keyed by name, with GEOID and geometry. The
-            counties product must contain one row per county in the contiguous
-            United States and DC; the other frames can repeat GEOID for manager
-            groups.
-        paths: Input paths keyed as in the county integration sources table.
-        geometry_workers: Maximum concurrent county measurement tasks.
 
-    Returns:
-        A table per product, indexed like its zone frame, with unadjusted
-        marine_fisheries and inland_fisheries values. A measured zero in a
-        valued state is zero; missing state values remain null.
+def _county_weights(context, geoid, county, local_zones, measure_marine, measure_inland):
+    """Measure every product's local rows using one indexed county NHD read.
 
-    Raises:
-        ValueError: Zone keys, spatial measurements, or state allocations
-            are inconsistent with the full-county baseline.
+    The module-level worker is spawn-picklable. Its payload contains only this
+    county's geometries and output positions, not the six national datasets.
+    """
+    if not measure_marine and not measure_inland:
+        return {}
+    marine_tree, great_lakes, great_salt_lake, to_native = _fisheries_context(*context)
+    inland_tree = None
+    if measure_inland:
+        water_path = next(path for name, path, _, _ in context[0] if name == "freshwater_polygons")
+        bbox = to_native.transform_bounds(*county.bounds, densify_pts=41)
+        water = read_dataframe(water_path, columns=[], bbox=bbox).to_crs(AREA_CRS)
+        candidates = water.geometry.to_numpy(copy=True)
+        invalid = ~shapely.is_valid(candidates)
+        if invalid.any():
+            candidates[invalid] = shapely.make_valid(candidates[invalid])
+        inland_tree = shapely.STRtree(candidates)
+    excluded_lakes = great_salt_lake if geoid[:2] == _UTAH_FIPS else great_lakes
+    county_lakes = (
+        shapely.intersection(excluded_lakes, county)
+        if measure_inland and shapely.intersects(excluded_lakes, county) else None
+    )
+    measured = {}
+    for product, (positions, geometries) in local_zones.items():
+        values = np.zeros((len(positions), len(_FIELDS)), dtype=float)
+        for row, geometry in enumerate(geometries):
+            if measure_marine:
+                values[row, 0] = _measure(geometry, marine_tree, length=True)
+            if inland_tree is not None:
+                inland_zone = shapely.difference(geometry, county_lakes) if county_lakes is not None else geometry
+                values[row, 1] = _measure(inland_zone, inland_tree, length=False)
+        measured[product] = positions, values
+    return measured
+
+
+class FisheriesPlan:
+    """Prepare county jobs for a caller-owned pool and reconcile their weights."""
+
+    def __init__(self, zones: Mapping[str, gpd.GeoDataFrame], paths: Mapping[str, Path]):
+        """Validate sources and retain projected geometry only in the coordinator."""
+        if "counties" not in zones or zones["counties"].empty:
+            raise ValueError("A complete counties layer is required for fisheries denominators")
+        self.zones = zones
+        self.zone_ids = {product: frame["GEOID"].astype("string") for product, frame in zones.items()}
+        county_ids = self.zone_ids["counties"]
+        if county_ids.duplicated().any() or not county_ids.str.fullmatch(r"[0-9]{5}", na=False).all():
+            raise ValueError("Fisheries county GEOIDs must be unique five-digit strings")
+        non_conus = sorted(set(county_ids.str[:2]) - CONUS_STATE_FIPS)
+        if non_conus:
+            raise ValueError(f"CONUS fisheries received out-of-scope county state FIPS codes: {non_conus}")
+        self.projected, self.by_county = {}, {}
+        for product, frame in zones.items():
+            ids = self.zone_ids[product]
+            if not ids.isin(county_ids).all():
+                raise ValueError(f"{product} fisheries zones contain unknown county GEOIDs")
+            geometries = frame.to_crs(AREA_CRS).geometry.to_numpy(copy=True)
+            for position in np.flatnonzero(~shapely.is_valid(geometries)):
+                repaired = repair_polygonal_geometry(shapely.make_valid(geometries[position]))
+                if repaired is None:
+                    raise ValueError(f"Invalid {product} fisheries geometry for GEOID {ids.iloc[position]}")
+                geometries[position] = repaired
+            self.projected[product] = geometries
+            self.by_county[product] = ids.groupby(ids, sort=False).indices
+        self.totals = {service: _read_state_totals(paths[service], field) for service, field in _FIELDS.items()}
+        coast_info = read_info(paths["coastline_lines"])
+        if not coast_info["crs"]:
+            raise ValueError(f"Coastline input must define a CRS: {paths['coastline_lines']}")
+        # Compute from actual county vertices, not a transformed bounding box.
+        bounds = county_bounds_in_crs(zones["counties"], coast_info["crs"])
+        water_path = paths["freshwater_polygons"]
+        water_info = read_info(water_path)
+        if not water_info["crs"] or not water_info["capabilities"]["fast_spatial_filter"]:
+            raise ValueError(f"Freshwater input must have a CRS and a spatial index: {water_path}")
+        sources = []
+        for name in ("coastline_lines", "freshwater_polygons", "great_lakes_features", "inland_fisheries_exclusions"):
+            path = Path(paths[name]).resolve()
+            stat = path.stat()
+            sources.append((name, str(path), stat.st_size, stat.st_mtime_ns))
+        self.context = (tuple(sources), bounds, water_info["crs"])
+        # Validate source geometries before submitting jobs, also warming the
+        # cache for the standalone thread-based compatibility entry point.
+        _fisheries_context(*self.context)
+        self.weights = {product: np.zeros((len(frame), len(_FIELDS))) for product, frame in zones.items()}
+        self.remaining = set(county_ids)
+        self.task_count = len(county_ids)
+
+    def tasks(self):
+        """Yield county-local payloads lazily so a bounded pool queue limits copies."""
+        for county_pos, geoid in enumerate(self.zone_ids["counties"]):
+            local = {}
+            for product, groups in self.by_county.items():
+                positions = groups.get(geoid)
+                if positions is not None:
+                    local[product] = positions, self.projected[product][positions]
+            yield geoid, _county_weights, (
+                self.context, geoid, self.projected["counties"][county_pos], local,
+                geoid[:2] in self.totals["marine_fisheries"].index,
+                geoid[:2] in self.totals["inland_fisheries"].index,
+            )
+
+    def accept(self, key, result):
+        """Place a completed county in fixed row positions, independent of order."""
+        if key not in self.remaining:
+            raise ValueError(f"Duplicate or unknown fisheries county result: {key}")
+        for product, (positions, values) in result.items():
+            self.weights[product][positions] = values
+        self.remaining.remove(key)
+
+    def finish(self):
+        """Apply fixed state rates and retain the county and footprint checks."""
+        if self.remaining:
+            raise ValueError(f"Missing fisheries county results: {sorted(self.remaining)}")
+        county_ids = self.zone_ids["counties"]
+        county_states = county_ids.str[:2].to_numpy()
+        baseline = pd.DataFrame(self.weights["counties"], index=county_ids, columns=_FIELDS)
+        state_weights = baseline.groupby(county_states).sum()
+        rate_by_state = {}
+        for service, state_totals in self.totals.items():
+            support = state_weights[service].reindex(state_totals.index)
+            unsupported = support.isna() | support.le(0)
+            if unsupported.any():
+                raise ValueError(f"No allocation support for {service} states: {list(support.index[unsupported])}")
+            rate_by_state[service] = state_totals / support
+
+        results = {}
+        for product, frame in self.zones.items():
+            values = self.weights[product]
+            if not np.isfinite(values).all() or (values < 0).any():
+                raise ValueError(f"Nonfinite or negative fisheries weights in {product}")
+            if product != "counties":
+                county_values = baseline.reindex(self.zone_ids[product]).to_numpy()
+                tolerance = np.maximum(1e-7, county_values * 1e-9)
+                if (values > county_values + tolerance).any():
+                    raise ValueError(f"Fisheries weight exceeds county baseline in {product}")
+                values = np.minimum(values, county_values)
+            table = pd.DataFrame(index=frame.index)
+            for col, service in enumerate(_FIELDS):
+                rates = self.zone_ids[product].str[:2].map(rate_by_state[service]).to_numpy(dtype=float)
+                table[service] = values[:, col] * rates
+            results[product] = table
+        for service, state_totals in self.totals.items():
+            allocated = results["counties"][service].groupby(county_states).sum(min_count=1)
+            for state, value in state_totals.dropna().items():
+                close(allocated.loc[state], value, f"{service} state {state} allocation")
+        return results
+
+
+def value_fisheries(zones, paths, geometry_workers):
+    """Standalone fisheries calculation; the assessment uses its shared pool.
+
+    Full counties define state denominators for every footprint and manager
+    row. Great Lakes water and shoreline are excluded; Great Salt Lake water
+    is excluded in Utah. Missing state values remain null.
     """
     if geometry_workers < 1:
         raise ValueError("Fisheries geometry_workers must be positive")
-    if "counties" not in zones or zones["counties"].empty:
-        raise ValueError("A complete counties layer is required for fisheries denominators")
-
-    zone_ids = {product: frame["GEOID"].astype("string") for product, frame in zones.items()}
-    county_ids = zone_ids["counties"]
-    if county_ids.duplicated().any() or not county_ids.str.fullmatch(r"[0-9]{5}", na=False).all():
-        raise ValueError("Fisheries county GEOIDs must be unique five-digit strings")
-    non_conus = sorted(set(county_ids.str[:2]) - CONUS_STATE_FIPS)
-    if non_conus:
-        raise ValueError(f"CONUS fisheries received out-of-scope county state FIPS codes: {non_conus}")
-    projected = {}
-    by_county = {}
-    for product, frame in zones.items():
-        ids = zone_ids[product]
-        if not ids.isin(county_ids).all():
-            raise ValueError(f"{product} fisheries zones contain unknown county GEOIDs")
-        geometries = frame.to_crs(AREA_CRS).geometry.to_numpy(copy=True)
-        for position in np.flatnonzero(~shapely.is_valid(geometries)):
-            repaired = repair_polygonal_geometry(shapely.make_valid(geometries[position]))
-            if repaired is None:
-                raise ValueError(f"Invalid {product} fisheries geometry for GEOID {ids.iloc[position]}")
-            geometries[position] = repaired
-        projected[product] = geometries
-        by_county[product] = ids.groupby(ids, sort=False).indices
-
-    totals = {service: _read_state_totals(paths[service], field) for service, field in _FIELDS.items()}
-    marine_tree = read_marine_shoreline(paths["coastline_lines"], zones["counties"])
-    water_path = paths["freshwater_polygons"]
-    great_lakes = read_excluded_lakes(water_path, paths["great_lakes_features"], "Great Lakes")
-    great_salt_lake = read_excluded_lakes(
-        water_path, paths["inland_fisheries_exclusions"], "Great Salt Lake",
-    )
-    water_info = read_info(water_path)
-    if not water_info["crs"] or not water_info["capabilities"]["fast_spatial_filter"]:
-        raise ValueError(f"Freshwater input must have a CRS and a spatial index: {water_path}")
-    to_native = Transformer.from_crs(AREA_CRS, water_info["crs"], always_xy=True)
-
-    def county_weights(task: tuple[int, str]) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-        """Read local water once and measure all zone rows for a county.
-
-        Args:
-            task: Position of the county row and its GEOID.
-
-        Returns:
-            Products represented in this county, each with its row positions
-            and an aligned array of marine kilometres and inland hectares.
-        """
-        county_pos, geoid = task
-        state = geoid[:2]
-        county = projected["counties"][county_pos]
-        measure_marine = state in totals["marine_fisheries"].index
-        measure_inland = state in totals["inland_fisheries"].index
-        if not measure_marine and not measure_inland:
-            return {}
-        inland_tree = None
-        if measure_inland:
-            # The NHD layer has millions of features. The native-CRS spatial
-            # filter uses its R-tree before reading any candidate geometries.
-            bbox = to_native.transform_bounds(*county.bounds, densify_pts=41)
-            water = read_dataframe(water_path, columns=[], bbox=bbox).to_crs(AREA_CRS)
-            candidates = water.geometry.to_numpy(copy=True)
-            invalid = ~shapely.is_valid(candidates)
-            if invalid.any():
-                candidates[invalid] = shapely.make_valid(candidates[invalid])
-            inland_tree = shapely.STRtree(candidates)
-        excluded_lakes = great_salt_lake if state == _UTAH_FIPS else great_lakes
-        county_lakes = (
-            shapely.intersection(excluded_lakes, county)
-            if measure_inland and shapely.intersects(excluded_lakes, county) else None
-        )
-        measured = {}
-        for product, groups in by_county.items():
-            positions = groups.get(geoid)
-            if positions is None:
-                continue
-            values = np.zeros((len(positions), len(_FIELDS)), dtype=float)
-            for row, position in enumerate(positions):
-                geometry = projected[product][position]
-                if measure_marine:
-                    values[row, 0] = _measure(geometry, marine_tree, length=True)
-                if inland_tree is not None:
-                    inland_zone = shapely.difference(geometry, county_lakes) if county_lakes is not None else geometry
-                    values[row, 1] = _measure(inland_zone, inland_tree, length=False)
-            measured[product] = positions, values
-        return measured
-
-    weights = {product: np.zeros((len(frame), len(_FIELDS))) for product, frame in zones.items()}
+    plan = FisheriesPlan(zones, paths)
     with ThreadPoolExecutor(max_workers=geometry_workers) as pool:
-        for measured in tqdm(
-            pool.map(county_weights, enumerate(county_ids)), total=len(county_ids),
-            desc="Measure fisheries zones", unit="county",
-        ):
-            for product, (positions, values) in measured.items():
-                weights[product][positions] = values
-
-    county_states = county_ids.str[:2].to_numpy()
-    baseline = pd.DataFrame(weights["counties"], index=county_ids, columns=_FIELDS)
-    state_weights = baseline.groupby(county_states).sum()
-    rate_by_state = {}
-    for service, state_totals in totals.items():
-        support = state_weights[service].reindex(state_totals.index)
-        unsupported = support.isna() | support.le(0)
-        if unsupported.any():
-            raise ValueError(f"No allocation support for {service} states: {list(support.index[unsupported])}")
-        rate_by_state[service] = state_totals / support
-
-    results = {}
-    for product, frame in zones.items():
-        values = weights[product]
-        if not np.isfinite(values).all() or (values < 0).any():
-            raise ValueError(f"Nonfinite or negative fisheries weights in {product}")
-        if product != "counties":
-            county_values = baseline.reindex(zone_ids[product]).to_numpy()
-            tolerance = np.maximum(1e-7, county_values * 1e-9)
-            if (values > county_values + tolerance).any():
-                raise ValueError(f"Fisheries weight exceeds county baseline in {product}")
-            # Only suppress sub-tolerance numerical overlay excess.
-            values = np.minimum(values, county_values)
-        table = pd.DataFrame(index=frame.index)
-        for col, service in enumerate(_FIELDS):
-            rates = zone_ids[product].str[:2].map(rate_by_state[service]).to_numpy(dtype=float)
-            table[service] = values[:, col] * rates
-        results[product] = table
-
-    for service, state_totals in totals.items():
-        allocated = results["counties"][service].groupby(county_states).sum(min_count=1)
-        for state, value in state_totals.dropna().items():
-            close(allocated.loc[state], value, f"{service} state {state} allocation")
-    return results
+        futures = {pool.submit(function, *args): key for key, function, args in plan.tasks()}
+        for future in tqdm(as_completed(futures), total=plan.task_count,
+                           desc="Measure fisheries zones", unit="county"):
+            plan.accept(futures[future], future.result())
+    return plan.finish()

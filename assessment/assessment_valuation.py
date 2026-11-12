@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from contextlib import ExitStack, closing, contextmanager
+from multiprocessing import get_context
+import os
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -17,8 +20,8 @@ import shapely
 from tqdm import tqdm
 import yaml
 
-from assessment.assessment_coastal import value_coastal
-from assessment.assessment_fisheries import value_fisheries
+from assessment.assessment_coastal import CoastalPlan
+from assessment.assessment_fisheries import FisheriesPlan
 from assessment.assessment_geography import CONUS_STATE_FIPS
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 from assessment.build_county_ecosystem_service_valuations_2026 import (
@@ -43,6 +46,92 @@ VALUE_SOURCES = (
 CONFIG_FILES = ("sources.csv", "adjustment_factors.csv", "ct_county_crosswalk.csv",
                 "export_rules.yaml", "derived_metrics.yaml", "great_lakes_nhd_features.csv",
                 "inland_fisheries_exclusions.csv", "county_area_exclusions.yaml")
+
+
+@contextmanager
+def _valuation_pool(workers):
+    """Own one spawned pool; limit native threads before child imports NumPy."""
+    if workers < 1:
+        raise ValueError("Valuation workers must be positive")
+    limits = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+    previous = {name: os.environ.get(name) for name in limits}
+    try:
+        os.environ.update(dict.fromkeys(limits, "1"))
+        with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
+            yield pool
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _run_source_tasks(pool, plans, table_tasks, workers):
+    """Interleave service families and dependent batches in one bounded queue.
+
+    Only this parent submits work. Plans supply (key, function, args) tasks;
+    accepting a result may release dependent tasks. Result keys, rather than
+    completion order, determine output row and summation order.
+    """
+    ready = deque([("tables", iter(table_tasks)),
+                   *((name, iter(plan.tasks())) for name, plan in plans.items())])
+    pending, tables = {}, {}
+    with ExitStack() as stack:
+        progress = {
+            name: stack.enter_context(tqdm(total=total, desc=label, unit=unit, position=position))
+            for position, (name, total, label, unit) in enumerate((
+                ("tables", len(COUNTY_TABLES), "Join county service tables", "service"),
+                ("fisheries", plans["fisheries"].task_count, "Measure fisheries zones", "county"),
+                ("coastal", None, "Value coastal batches", "batch"),
+            ))
+        }
+        try:
+            while ready or pending:
+                # Keep large geometry payloads bounded, including on Windows.
+                while ready and len(pending) < 2 * workers:
+                    family, tasks = ready.popleft()
+                    task = next(tasks, None)
+                    if task is None:
+                        continue
+                    key, function, args = task
+                    pending[pool.submit(function, *args)] = family, key
+                    ready.append((family, tasks))
+                if not pending:
+                    continue
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    family, key = pending.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as error:
+                        error.add_note(f"Valuation task: {family} {key}")
+                        raise
+                    if family == "tables":
+                        tables[key] = result
+                    else:
+                        released = plans[family].accept(key, result)
+                        if released is not None:
+                            ready.appendleft((family, iter(released)))
+                    progress[family].update(1)
+        except BaseException:
+            for future in pending:
+                future.cancel()
+            raise
+    return tables, plans["fisheries"].finish(), plans["coastal"].finish()
+
+
+def _collect_service_values(zones, paths, county_base, crosswalk, coral_reference_counties, workers):
+    """Prepare bounded spatial jobs and share workers with county-table joins."""
+    plans = {
+        "fisheries": FisheriesPlan(zones, paths),
+        "coastal": CoastalPlan(zones, paths, coral_reference_counties=coral_reference_counties),
+    }
+    table_tasks = ((task, compute_task, (task, paths, county_base, crosswalk, 1))
+                   for task in COUNTY_TABLES)
+    print(f"Value services with one shared pool: {workers} processes (1 native thread each)", flush=True)
+    with _valuation_pool(workers) as pool:
+        return _run_source_tasks(pool, plans, table_tasks, workers)
 
 
 def load_valuation_config(data_root: Path, config_dir: Path) -> tuple[dict, pd.DataFrame, dict, dict]:
@@ -162,7 +251,6 @@ def value_zones(
     *,
     coral_reference_counties: gpd.GeoDataFrame,
     workers: int,
-    geometry_workers: int,
 ) -> tuple[dict[str, gpd.GeoDataFrame], dict[str, pd.DataFrame], dict]:
     """Calculate adjusted values, totals, and county ratios on prepared zones.
 
@@ -173,8 +261,7 @@ def value_zones(
         config_dir: Tracked sources, factors, and output rules.
         coral_reference_counties: Original county reference used to assign
             coral points before retaining only CONUS values.
-        workers: Concurrent county table tasks.
-        geometry_workers: Concurrent spatial measurement workers.
+        workers: Processes shared by county tables, fisheries and coastal batches.
 
     Returns:
         Valued geometry frames, county audit tables, and run-level coverage QA.
@@ -201,22 +288,18 @@ def value_zones(
     air_summary = None
     task_metadata = []
     status_frames = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        pending = [pool.submit(compute_task, task, paths, county_base, crosswalk, geometry_workers)
-                   for task in COUNTY_TABLES]
-        for task, future in tqdm(zip(COUNTY_TABLES, pending), total=len(pending),
-                                 desc="Join county service tables", unit="service"):
-            result = future.result()
-            originals.update(result["originals"])
-            task_metadata.extend(result["metadata"])
-            status_frames.extend(result["statuses"])
-            if task == "air_quality":
-                air_summary = result["summary_fields"]
-    tabular = pd.DataFrame(originals, index=county_base.index)
-    fisheries = value_fisheries(zones, paths, geometry_workers)
-    coastal = value_coastal(
-        zones, paths, geometry_workers, coral_reference_counties=coral_reference_counties,
+    tables, fisheries, coastal = _collect_service_values(
+        zones, paths, county_base, crosswalk, coral_reference_counties, workers,
     )
+    # Completion order must not affect exported field or provenance row order.
+    for task in COUNTY_TABLES:
+        result = tables[task]
+        originals.update(result["originals"])
+        task_metadata.extend(result["metadata"])
+        status_frames.extend(result["statuses"])
+        if task == "air_quality":
+            air_summary = result["summary_fields"]
+    tabular = pd.DataFrame(originals, index=county_base.index)
     result_frames = {}
     county_audits = {}
     coverage = {}

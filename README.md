@@ -658,6 +658,18 @@ python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county
 Run the second command after validation passes. Use `--help` for worker
 settings and additional input options.
 
+`--workers` sets the size of one shared process pool for the non-zonal valuation
+stage (default: 4). County-table joins, fisheries measurements by county, and
+coastal allocation batches share those workers. Progress bars count completed
+tasks. Each process uses one native computation thread. Increase `--workers`
+if memory and disk throughput permit; for example, use `--workers 8`.
+Geometry preparation also uses this setting on fresh runs. Raster zonals use
+their separate `--job-workers` and `--raster-workers` settings.
+
+`--geometry-workers`, when supplied, overrides the size of the entire valuation
+pool; it does not create an additional pool. Final table assembly and verified
+file publication run in the parent process.
+
 ### 4. Find the output files
 
 ```text
@@ -690,8 +702,10 @@ ecosystem-service shares and value per land hectare), reuse a completed run's
 saved analysis boundaries and raster sums. Pass its run ID and a new output ID:
 
 ```cmd
-python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued"
+python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued" --workers 8
 ```
 
 Add `--validate-only` to check reuse before launching. Changes to analysis
 boundaries or service rasters require a fresh assessment run.
+Revaluation recomputes fisheries and coastal allocations from their vector
+sources; it reuses the ecosystem-service raster sums.
