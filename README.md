@@ -2,7 +2,7 @@
 
 This repository implements a data pipeline that estimates the monetary value
 of ecosystem services across the contiguous 48 states and Washington, DC
-(CONUS). It combines raster, tabular, and vector datasets and produces six
+(CONUS). It combines raster, tabular, and vector datasets to produce seven
 output layers, each as a CSV and GeoPackage pair:
 
 1. Counties
@@ -11,10 +11,11 @@ output layers, each as a CSV and GeoPackage pair:
 4. Conservation lands by county
 5. Conservation lands by county and manager type
 6. Big Beautiful Bill (BBB) candidate lands by county
+7. All PAD-US features cut by county, with original manager types and attributes
 
-With `--include-all-pad`, a seventh pair reports individual PAD-US features
-cut by county, preserving their original attributes. See
-[all-PAD feature output](#all-pad-feature-output).
+The [all-PAD feature output](#all-pad-feature-output) reports individual
+PAD-US features rather than merged public or conservation footprints.
+Each source feature remains separate within each county it intersects.
 
 ![Map of CONUS county boundaries with the assessment's public-land footprints shown in green.](docs/images/assessment_geography.png)
 
@@ -26,8 +27,9 @@ settings are recorded in the [figure provenance](docs/images/map_sources.json).*
 
 The assessment brings together ecosystem-service estimates supplied as raster
 maps, county and state tables, and mapped study sites. We summarize or
-distribute these estimates across counties and the public, conservation, and
-BBB lands within them. We then apply unit conversions and monetary adjustments
+distribute these estimates across counties, the public, conservation, and
+BBB lands within them, and individual PAD-US features.
+We then apply unit conversions and monetary adjustments
 to report individual service values, combined totals, and county comparisons.
 
 The pipeline follows four stages:
@@ -39,8 +41,9 @@ The pipeline follows four stages:
    [assigning estimates from tables and study sites](#allocate-service-values).
 3. [Apply monetary adjustments](#adjust-monetary-values) and
    [calculate totals and county comparisons](#combine-service-estimates-and-compare-counties).
-4. Report the results in the [six output layers](#output-fields-and-units),
-   including public and conservation land breakdowns by manager type.
+4. Report the results in the [output layers](#output-fields-and-units),
+   including public and conservation land breakdowns by manager type and
+   individual PAD-US features.
 
 ## Methods
 
@@ -86,21 +89,42 @@ classifications represent separate views of the landscape.
 *Larimer County illustrates the two public-land outputs: one merged footprint
 per county, or separate footprints for each manager type within the county.*
 
+#### Individual PAD-US features
+
+For the all-PAD output, we value individual features from the full
+`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` layer. We include
+every source feature with a positive-area intersection with a CONUS county,
+regardless of its manager type or GAP status. We split each feature at county
+boundaries and retain its source attributes, including ownership, management,
+designation, and source `OBJECTID`.
+
+Features with the same manager type remain separate, and a multipart
+intersection remains one row. Overlapping source features each receive an
+independent valuation; their sums can count the same ground and service values
+more than once. Use the merged public or conservation outputs for those
+categories' county totals.
+
 ### Measure area and shoreline
 
 Area measurements let us compare ecosystem-service value per hectare across
 counties of different sizes and allocate county service estimates to public,
-conservation, and BBB lands. Shoreline length and inland water area let us
-distribute statewide fisheries totals among counties and land categories.
+conservation, and BBB lands, and to individual PAD-US features. Shoreline
+length and inland water area let us distribute statewide fisheries totals
+among counties and the lands within them.
 
 We calculate polygon areas and shoreline lengths in the equal-area projection
 EPSG:6933. The measurements serve different purposes:
 
-- **Land area.** We intersect public, conservation, and BBB polygons with the
-  2024 Census land mask, constructed from TIGER/Line Faces classified as land. The
-  intersection area divided by Census county land area (`ALAND`) gives the
-  fraction of county land in each category. County land hectares come directly
-  from `ALAND`, converted from square metres.
+- **Land area.** We intersect public, conservation, BBB, and all-PAD polygons
+  with the 2024 Census land mask, constructed from TIGER/Line Faces classified
+  as land. The intersection area divided by Census county land area (`ALAND`)
+  gives the fraction of county land within each polygon. County land hectares
+  come directly from `ALAND`, converted from square metres.
+- **Individual PAD-US feature area.** For all-PAD value-per-hectare fields,
+  we measure the full county-cut feature, including water, as `area_ha`.
+  Its land-only area, `area_ha_land`, determines its share of county-based
+  service values. Original PAD-US area attributes describe the source feature,
+  not its county-cut piece.
 - **County area.** We measure two areas for each county. The first excludes the
   [National Hydrography Dataset (NHD) Great Lakes polygons](data/workflow_assets/county_integration/great_lakes_nhd_features.csv)
   and water outside the U.S. boundary connected to the TIGER marine shoreline.
@@ -160,9 +184,14 @@ footprint represents the mapped land-sale scenario.*
 
 For services supplied as raster maps, we calculate each analysis area's value
 by summing values for valid pixels whose centers fall within its boundaries.
-This includes service pixels over land or water inside the polygon. Boundary
-simplification is capped at 15 m, with smaller tolerances for small or narrow
-polygon parts, and we sample overlapping manager areas separately. The
+This includes service pixels over land or water inside the polygon. For the
+county and grouped public, conservation, and BBB layers, boundary simplification
+is capped at 15 m, with smaller tolerances for small or narrow polygon parts.
+We sample overlapping manager areas separately. For individual all-PAD
+features, we use no boundary
+simplification and separate raster batches for features that overlap or touch
+in any input raster's coordinate system. This lets each feature receive its
+own pixel-center samples. The
 [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml)
 identifies the source files and units.
 
@@ -217,6 +246,8 @@ are supplied by county or can be summed to counties. To estimate the value
 associated with public, conservation, or BBB lands, we multiply each county
 estimate by the fraction of county land in that category. We calculate
 manager-type values using the same procedure for each manager's land area.
+For all-PAD features, we use each county-cut feature's land area divided by
+the county's Census land area.
 
 The entries below describe the source data and the modifications needed to
 report each service. Source links identify files in the downloaded
@@ -267,7 +298,7 @@ their paths.
   [Outdoor Recreation & Data Lab](https://outdoorrd.org/) supplied county
   totals of annual recreation use value for protected areas, in 2024 dollars.
   These totals provide no basis for distinguishing recreation value within
-  public, conservation, or BBB subareas.
+  public, conservation, BBB, or individual PAD-US subareas.
 - **Connecticut county geography.** In 2022, at Connecticut's request, the
   U.S. Census Bureau adopted the state's nine existing planning regions as
   county equivalents in place of its eight historical counties. The planning
@@ -302,8 +333,9 @@ Fisheries are the services supplied as statewide estimates.
   *Adjustment to source data:* We exclude the Great Lakes and the Great Salt
   Lake from the water-area weights before calculating the shares.
 
-For public, conservation, and BBB lands, including manager-type groups, we
-use the shoreline length or inland water area within those polygons. The
+For public, conservation, and BBB lands, including manager-type groups, and
+for individual all-PAD features, we use the shoreline length or inland water
+area within each polygon. The
 denominator remains the total eligible shoreline length or water area across
 the state's counties.
 
@@ -317,17 +349,17 @@ Great Salt Lake remains in the county reporting-area calculation.*
 
 Coral and mangrove valuations come from mapped points and study-area polygons.
 We use their locations and areas of overlap to assign coastal-protection
-benefits to counties and land categories:
+benefits to counties, land categories, and individual all-PAD features:
 
 - **Corals.** We assign each point's value to its nearest county in the
   national reference layer and retain assignments to CONUS counties. A public,
-  conservation, or BBB polygon in the assigned county receives the value if
-  the point falls inside or on its boundary.
+  conservation, BBB, or all-PAD polygon in the assigned county receives the
+  value if the point falls inside or on its boundary.
 - **Mangroves.** We use study units identified as U.S. units (`ISO3 = 'USA'`).
-  Each county or land category receives a share of the study unit's value
-  proportional to its overlap with that unit. We calculate these shares using
-  the unit's total overlap with CONUS counties, so only the county-intersected
-  portion determines how the value is distributed.
+  Each county, land category, or all-PAD feature receives a share of the study
+  unit's value proportional to its overlap with that unit. We calculate these
+  shares using the unit's total overlap with CONUS counties, so only the
+  county-intersected portion determines how the value is distributed.
 
 ### Adjust monetary values
 
@@ -355,13 +387,14 @@ and the resulting value in `sum_CO2e_mitigation_dollar_value_per_pixel_adj`.
 ### Combine service estimates and compare counties
 
 Once we have calculated the adjusted dollar value of each service, we sum
-the estimates for each county, public-land area, conservation-land area, and
-BBB area, including the public and conservation manager-type breakdowns.
+the estimates for each county, public-land area, conservation-land area, BBB
+area, and all-PAD feature, including the public and conservation
+manager-type breakdowns.
 
 #### Ecosystem-service totals
 
 - **`total_ecosystem_services`** contains the sum of 18 adjusted service
-  components for each row in all six output layers. It uses the
+  components for each row in every output layer. It uses the
   [service list](data/workflow_assets/county_integration/derived_metrics.yaml)
   with recreation handled separately.
 - **`total_ecosystem_services_w_rec`** appears in the county output and equals
@@ -436,7 +469,7 @@ dollars per land hectare, with the same mixed benefit periods as
 
 ## Output fields and units
 
-The assessment produces six output layers, each with a CSV and GeoPackage:
+The assessment produces seven output layers, each with a CSV and GeoPackage:
 
 1. Counties: `counties`
 2. Public lands by county: `public_lands_by_county`
@@ -444,24 +477,30 @@ The assessment produces six output layers, each with a CSV and GeoPackage:
 4. Conservation lands by county: `conservation_lands_by_county`
 5. Conservation lands by county and manager type: `conservation_lands_by_county_and_manager_type`
 6. BBB candidate lands by county: `bbb_lands_by_county`
+7. All PAD-US features cut by county: `all_PAD_lands_by_county_and_manager_type`
 
 Each row describes the county, land category, or county–manager combination
-named by its layer. The CSV and GeoPackage contain the same attributes; the
-GeoPackage also contains the polygon geometry in EPSG:6933.
+named by its layer. In the all-PAD output, each row describes one
+original feature's intersection with one county, identified by `feature_id`.
+Despite its filename, this layer does not merge features by manager type.
+The CSV and GeoPackage contain the same attributes; the GeoPackage also
+contains the polygon geometry in EPSG:6933.
 
 ### Geographic and land-area fields
 
-In the tables below, **All outputs** means all six layers; **Counties only**
-means the county summary; **Land categories** means the five other layers,
-including their manager-type breakdowns; and **Manager types** means the two
-layers grouped by both county and manager type.
+In the tables below, **All outputs** means all seven layers.
+**Counties only** means the county summary; **Land categories** means
+the five public, conservation, and BBB layers; **Manager types** means the two
+layers grouped by county and manager type; and **All-PAD features** means the
+original-feature layer.
 
 | Field | Meaning | Units | Present in |
 | --- | --- | --- | --- |
 | `GEOID` | County or county-equivalent identifier; preserve leading zeroes | Five-character code | All outputs |
 | `Mang_Type` | PAD-US manager type; `UNSPECIFIED` denotes a missing manager label | Code | Manager types |
-| `area_ha_land` | Land-only area of the public, conservation, or BBB polygon | Hectares | Land categories |
-| `county_land_share` | Polygon's land area divided by Census county land area; used to allocate county service estimates | Fraction from 0 to 1 | Land categories |
+| `Mang_Type` | Original PAD-US manager type, with missing labels preserved as supplied | Code | All-PAD features |
+| `area_ha_land` | Polygon's land-only area within the Census land mask | Hectares | Land categories; All-PAD features |
+| `county_land_share` | Polygon's land area divided by Census county land area; used to allocate county service estimates | Fraction from 0 to 1 | Land categories; All-PAD features |
 | `area_ha_county_land` | Census county land area (`ALAND / 10,000`) | Hectares | Counties only |
 | `area_ha_public_lands` | Unduplicated public land area within the county | Hectares | Counties only |
 | `area_ha_conservation_lands` | Unduplicated conservation land area within the county | Hectares | Counties only |
@@ -512,47 +551,37 @@ identifies the layers containing each value.
 
 ### All-PAD feature output
 
-The optional `all_PAD_lands_by_county_and_manager_type` pair uses the full
-`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` layer. Every
-source feature with a positive-area intersection with a CONUS county is
-included, without GAP-status or public-land filtering. Existing conservation
-outputs continue to use GAP Status 1–3.
+The `all_PAD_lands_by_county_and_manager_type` pair retains the
+original PAD-US attributes alongside the calculated service and area fields
+below. The [feature-selection method](#individual-pad-us-features) defines its rows.
+Missing manager labels remain as supplied. The GeoPackage preserves null
+versus empty text; both appear as blank cells in the CSV.
 
-One row represents one original PAD-US feature intersected with one county.
-Separate source features remain separate even when they have the same
-`Mang_Type`. A multipart intersection stays in one row. All original fields,
-including ownership, management, designation, source metadata, original area
-fields, and source `OBJECTID`, pass through. Missing manager labels remain as
-supplied. The GeoPackage preserves null versus empty text; both appear as blank
-cells in the CSV.
+| Field | Meaning | Units |
+| --- | --- | --- |
+| `OBJECTID` | Original PAD-US feature identifier; can repeat when a feature crosses counties | Source identifier |
+| `feature_id` | Unique `GEOID_OBJECTID` identifier for the county-cut feature | Text identifier |
+| `GEOID` | County containing the feature piece | Five-character code |
+| `area_ha` | Full area of the county-cut feature, including water | Hectares |
+| `area_ha_land` | Feature's intersection with the Census county land mask | Hectares |
+| `county_land_share` | Land intersection area divided by county Census land area | Fraction from 0 to 1 |
+| All 26 non-recreation `*_adj` fields above | Adjusted service values for this county-cut feature | USD, with benefit periods listed above |
+| Their `*_adj_factor` fields | Applied service adjustment factors | See adjustment-factor table below |
+| `total_ecosystem_services` | Sum of the same 18 selected service components, excluding recreation | USD, mixed benefit periods |
+| Each `*_adj` field with `_per_feature_ha` appended | Adjusted service value divided by this row's `area_ha` | USD/feature hectare, retaining the service's benefit period |
+| `total_ecosystem_services_per_feature_ha` | Total divided by this row's `area_ha` | USD/feature hectare, mixed benefit periods |
 
-| Added field | Meaning |
-| --- | --- |
-| `feature_id` | Unique `GEOID_OBJECTID` identifier for the county-cut feature |
-| `GEOID` | Five-character county identifier |
-| `area_ha` | Area of the county-cut feature, including water, in hectares |
-| `area_ha_land` | Feature's intersection with the Census county land mask, in hectares |
-| `county_land_share` | Land intersection area divided by county Census ALAND |
-| All 26 non-recreation `*_adj` fields above | Same adjusted service calculations as the other footprint outputs |
-| Their `*_adj_factor` fields | Applied service adjustment factors |
-| `total_ecosystem_services` | Same 18-component total, excluding recreation |
-| Each `*_adj` field with `_per_feature_ha` appended | Adjusted service value divided by this row's `area_ha` |
-| `total_ecosystem_services_per_feature_ha` | Total divided by this row's `area_ha` |
+For example, `grazing_adj_per_feature_ha` is `grazing_adj / area_ha`.
+These density fields use the full feature piece, including water, rather
+than the land-only denominator used for the public, conservation, and BBB
+value-per-hectare fields listed below. Recreation and county comparison
+fields appear only in the county summary.
 
-New hectare fields are measured in EPSG:6933. Original `GIS_Acres`,
-`SHAPE_Area`, and `SHAPE_Length` retain their source values and do not describe
-the county-cut piece. County-based values still use `county_land_share` for
-allocation; all new density fields divide by the full feature hectares.
-Missing service values remain missing in their densities and contribute zero
-to the total, matching existing outputs.
-
-Original PAD-US features can overlap. Their values are independently measured
-and must not be summed as a deduplicated county total. The new raster jobs use
-zero geometry simplification and separate groups for features that overlap or
-touch in any input raster's coordinate system. A small numerical buffer also
-separates nearly touching boundaries. With the toolkit's pixel-center sampling,
-this prevents one feature from taking another feature's pixels. Existing
-six-product raster jobs retain their original settings.
+We measure `area_ha` and `area_ha_land` in EPSG:6933. Original `GIS_Acres`,
+`SHAPE_Area`, and `SHAPE_Length` retain their source values; use `area_ha`
+for the county-cut piece. A missing service value gives a blank density
+and contributes zero to the total. Because source features can overlap,
+their service values must not be summed as an unduplicated county total.
 
 ### Adjustment factors
 
@@ -575,7 +604,8 @@ have different units. These are the default values in the
 
 ### County areas and comparisons
 
-These fields appear only in the county output. The paired reporting-area
+The tables identify which comparisons appear in the county summary and which
+densities appear in the land-category outputs. The paired reporting-area
 fields without an inclusive suffix exclude ocean and Great Lakes water but
 retain other inland water. Their `_incl_ocean_great_lakes` companions use the
 full county polygon. Neither version changes the land-only areas used to
@@ -645,7 +675,7 @@ Use the tracked workflow configuration files from this checkout.
 ```text
 data/
 ├── analysis_inputs/
-│   ├── padus/                                  PAD-US 4.1 VectorAnalysis geodatabase
+│   ├── padus/                                  PAD-US 4.1 VectorAnalysis and full geodatabase for all-PAD
 │   ├── zonal_units/
 │   │   ├── counties/                           2024 TIGER/Line county GeoPackage
 │   │   └── bbb_candidate_blm_lands_by_county/    BBB candidate county GeoPackage
@@ -667,7 +697,8 @@ The configuration files and command-line options identify the exact inputs:
 
 | To change | Where to set it |
 | --- | --- |
-| PAD-US | `--padus-path` and `--padus-layer`. The default is `PADUS4_1VectorAnalysis_PADUS_Only.gdb` in `data/analysis_inputs/padus/PADUS4_1VectorAnalysis_PADUS_Only (1)/`, layer `PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP`. |
+| Public/conservation PAD-US | `--padus-path` and `--padus-layer`. The default is `PADUS4_1VectorAnalysis_PADUS_Only.gdb` in `data/analysis_inputs/padus/PADUS4_1VectorAnalysis_PADUS_Only (1)/`, layer `PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP`. |
+| All-PAD source | `--include-all-pad`, with `--all-pad-path` and `--all-pad-layer` to override the full geodatabase and combined layer. The [all-PAD launch instructions](#add-all-pad-features-while-reusing-existing-zonals) give the default path. This source is separate from VectorAnalysis. |
 | County boundaries | `--counties` and `--counties-layer`. Counties require five-digit `GEOID` keys and `ALAND` in square metres. Keep the default national county file at `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` for coral assignments. |
 | Land mask and BBB footprint | `--land-mask` and `--bbb-by-county`, with `--land-mask-layer` and `--bbb-layer` as needed. Match the county release and `GEOID` keys. The mask must contain one footprint for every CONUS county; the BBB file contains one footprint per county with candidate land. |
 | Service TIFFs | The [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml) names the required source TIFFs and their units. Place compatible replacements in `data/analysis_inputs/ecosystem_services/` with the expected names. |
@@ -696,7 +727,8 @@ full-county NLCD GeoPackage selected in `derived_metrics.yaml`.
 In CMD from the repository root, set the paths below to your input files.
 Offline PROJ settings keep county reprojection consistent with the supplied
 land mask. Choose a new `--run-id` for each run, or omit it to use a UTC
-timestamp.
+timestamp. The launch command includes all-PAD features and produces all
+seven output pairs.
 
 ```cmd
 set "PROJ_NETWORK=OFF"
@@ -704,12 +736,16 @@ set "SNAPP_RUNNER=..\zonal_stats_toolkit\runner.py"
 set "SNAPP_BBB=data\analysis_inputs\zonal_units\bbb_candidate_blm_lands_by_county\bbb_candidate_blm_lands_within_5_miles_of_population_centers_by_county_2026_08_09_18_45_22.gpkg"
 set "SNAPP_MASK=data\analysis_inputs\boundaries\county_land\tl_2024_us_county_land_conus.gpkg"
 
-python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --validate-only
-python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --run-id conus-assessment
+python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --include-all-pad --validate-only
+python run_conus_ecosystem_services.py --runner "%SNAPP_RUNNER%" --bbb-by-county "%SNAPP_BBB%" --land-mask "%SNAPP_MASK%" --include-all-pad --run-id conus-assessment
 ```
 
 Run the second command after validation passes. Use `--help` for worker
 settings and additional input options.
+
+If a saved run contains only the county, public, conservation, and BBB layers,
+use the [add-all-PAD command](#add-all-pad-features-while-reusing-existing-zonals)
+to calculate only the missing all-PAD raster sums and publish all seven pairs.
 
 `--workers` sets the size of one shared process pool for the non-zonal valuation
 stage (default: 4). County-table joins, fisheries measurements by county, and
@@ -743,10 +779,13 @@ data/analysis_results/assessment_runs/<run-id>/
 ├── conservation_lands_by_county_and_manager_type_<run-id>.csv
 ├── conservation_lands_by_county_and_manager_type_<run-id>.gpkg
 ├── bbb_lands_by_county_<run-id>.csv
-└── bbb_lands_by_county_<run-id>.gpkg
+├── bbb_lands_by_county_<run-id>.gpkg
+├── all_PAD_lands_by_county_and_manager_type_<run-id>.csv
+└── all_PAD_lands_by_county_and_manager_type_<run-id>.gpkg
 ```
 
-The run folder contains all twelve data files directly. Each product has
+The run folder contains fourteen data files, plus the manifest. All data
+files sit directly in that folder, with no product subdirectories. Each product has
 `<product>_<run-id>.csv` and `<product>_<run-id>.gpkg`. The GeoPackage stores
 the analysis geometry and attributes; the CSV contains the same attributes.
 Check `run_manifest.json` for `"status": "complete"` and the output paths. Keep the manifest with the
@@ -760,6 +799,10 @@ can also be used as the source; its manifest leads back to the original batches.
 Pass that run's ID to `--reuse-zonals-from` and choose a new `--run-id` for the
 output.
 
+Use a source run containing all seven layers, such as `conus-assessment`
+from the launch command above. Omit `--include-all-pad` and `--runner`
+when revaluing that source; its feature zonals are already saved.
+
 ```cmd
 python run_conus_ecosystem_services.py --reuse-zonals-from "conus-assessment" --run-id "conus-revalued" --workers 8
 ```
@@ -768,7 +811,8 @@ Add `--validate-only` to check reuse before launching. Changes to analysis
 boundaries or service rasters require a fresh assessment run.
 Revaluation reuses the ecosystem-service raster sums. Fisheries measurements
 are cached under `data/processing_outputs/fisheries_weights/` as raw freshwater
-hectares and marine shoreline kilometres for all six layers. The first run
+hectares and marine shoreline kilometres. County and grouped land measurements
+share a cache; all-PAD feature measurements have a separate cache. The first run
 measures and saves these weights; later runs reuse them when the spatial inputs
 match. A `Reuse fisheries weights` message confirms reuse. Current state values
 and monetary adjustments are applied on every run. Coastal allocations are
@@ -796,16 +840,17 @@ From the repository root in an activated `zonal-stats-toolkit` environment,
 first update the assessment and `zonal_stats_toolkit` checkouts to versions
 supporting the shared zonal pool. The selected toolkit runner must advertise
 `--total-workers` in its `--help`; the wrapper checks this before preparing
-geometry or writing run files. Use a new run ID and the saved run containing
-the existing six products:
+geometry or writing run files. Use a new run ID and a saved run containing the
+six county and grouped-land products. Replace `saved-six-layer-run` below with
+that run's ID:
 
 ```cmd
 set "PROJ_NETWORK=OFF"
 python -B run_conus_ecosystem_services.py ^
-  --reuse-zonals-from "20261107T064228536906Z" ^
+  --reuse-zonals-from "saved-six-layer-run" ^
   --include-all-pad ^
   --runner "..\zonal_stats_toolkit\runner.py" ^
-  --run-id "20261112-all-pad-shared16" ^
+  --run-id "conus-all-pad" ^
   --zonal-workers 16 ^
   --workers 16
 ```
@@ -820,8 +865,8 @@ stages. Use `--zonal-workers` on fresh runs or when adding all-PAD to a saved ru
 omit it on valuation-only reuse because there are no new raster jobs.
 
 Add `--validate-only` to check the saved results, source paths, and raster
-compatibility without writing run files. This command retains the existing six
-geometries and raster sums, builds the new individual PAD-US county features,
+compatibility without writing run files. This command retains the six saved
+geometries and raster sums, builds the individual PAD-US county features,
 and runs raster jobs only for that seventh product. It then values and publishes
 all seven CSV/GeoPackage pairs in the new run directory. County, public,
 conservation, and BBB zonals are not rerun. Existing fisheries weights remain
@@ -829,14 +874,15 @@ reusable; new PAD feature measurements have their own cache.
 
 The full PAD-US source defaults to
 `data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb`.
-Use `--all-pad-path` and `--all-pad-layer` if it is stored elsewhere. These are
-separate from the VectorAnalysis input used for the existing analyses.
-`--include-all-pad` also works with a fresh assessment command.
+Its default layer is `PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement`.
+Use `--all-pad-path` and `--all-pad-layer` to select another location or layer.
+These are separate from the VectorAnalysis input used for public and
+conservation lands.
 
 For subsequent valuation-only runs, reuse the new run and omit the addition
 flag and runner. The manifest preserves both raster batches:
 
 ```cmd
 set "PROJ_NETWORK=OFF"
-python -B run_conus_ecosystem_services.py --reuse-zonals-from "20261112-all-pad-shared16" --run-id "all-pad-revalued" --workers 16
+python -B run_conus_ecosystem_services.py --reuse-zonals-from "conus-all-pad" --run-id "all-pad-revalued" --workers 16
 ```
