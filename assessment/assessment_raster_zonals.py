@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from configparser import ConfigParser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -531,11 +531,15 @@ def read_frozen_zone_raster_plan(
     )
 
 
-def read_zone_raster_sums(plan: ZoneRasterPlan) -> dict[str, pd.DataFrame]:
+def read_zone_raster_sums(
+    plan: ZoneRasterPlan, *, allow_mixed_timestamps: bool = False,
+) -> dict[str, pd.DataFrame]:
     """Read paired toolkit outputs and reconcile every result with its zone key.
 
     Args:
         plan: Output contract recorded before invoking the zonal toolkit.
+        allow_mixed_timestamps: Allow separately completed toolkit batches from
+            an explicitly recorded resume; each job still requires one pair.
 
     Returns:
         One frame per product, including empty products, with text keys and
@@ -559,7 +563,7 @@ def read_zone_raster_sums(plan: ZoneRasterPlan) -> dict[str, pd.DataFrame]:
         ):
             raise ValueError(f"Expected one nonempty matched toolkit CSV/GPKG pair for {job.output_base}")
         stamp = csvs[0].stem.removeprefix(prefix)
-        if run_stamp is not None and stamp != run_stamp:
+        if not allow_mixed_timestamps and run_stamp is not None and stamp != run_stamp:
             raise ValueError(f"Toolkit result for {job.output_base} has a different run timestamp: {stamp}")
         run_stamp = stamp
 
@@ -583,3 +587,63 @@ def read_zone_raster_sums(plan: ZoneRasterPlan) -> dict[str, pd.DataFrame]:
         })
         for product, parts in frames.items()
     }
+
+
+def completed_zone_raster_jobs(
+    plan: ZoneRasterPlan, *, expected_timestamps: Mapping[str, str] | None = None,
+    check_unexpected_outputs: bool = True,
+) -> tuple[ZoneRasterJob, ...]:
+    """Validate retained pairs before resuming; reject partial or ambiguous files."""
+    completed = []
+    recognized = set()
+    common_stamp = None
+    for job in plan.jobs:
+        paths = [path for path in job.output_base.parent.glob(f"{job.output_base.name}*")
+                 if path.suffix.lower() in {".csv", ".gpkg"}]
+        if not paths:
+            continue
+        prefix = job.output_base.name + "_"
+        if len(paths) != 2 or any(
+            not path.stem.startswith(prefix)
+            or not _RESULT_STAMP.fullmatch(path.stem.removeprefix(prefix)) for path in paths
+        ):
+            raise ValueError(f"Partial or ambiguous toolkit outputs for {job.output_base}")
+        table = read_zone_raster_sums(replace(plan, jobs=(job,)))[job.product]
+        stamp = paths[0].stem.removeprefix(prefix)
+        if expected_timestamps is not None:
+            if expected_timestamps.get(job.output_base.name) != stamp:
+                raise ValueError(f"Unrecorded toolkit result timestamp for {job.output_base}")
+        elif common_stamp is not None and stamp != common_stamp:
+            raise ValueError("Completed toolkit jobs have different run timestamps without resume provenance")
+        common_stamp = stamp
+        vector_path = next(path for path in paths if path.suffix == ".gpkg")
+        columns = [*job.key_fields, *plan.raster_columns]
+        vector = pyogrio.read_dataframe(vector_path, columns=columns, read_geometry=False)
+        keys = _zone_keys(vector, job.key_fields, str(vector_path))
+        if set(keys.itertuples(index=False, name=None)) != job.expected_keys:
+            raise ValueError(f"GeoPackage keys differ from prepared geometry: {vector_path}")
+        vector[list(job.key_fields)] = keys
+        table = table.set_index(list(job.key_fields)).sort_index()
+        vector = vector.set_index(list(job.key_fields)).sort_index()
+        for column in plan.raster_columns:
+            expected = pd.to_numeric(vector[column], errors="raise")
+            actual = table[column]
+            if expected.dtype == np.dtype("float32"):
+                actual = actual.astype("float32")
+            if not np.isfinite(expected.to_numpy()).all() or not np.allclose(
+                actual.to_numpy(), expected.to_numpy(), rtol=1e-12, atol=0,
+            ):
+                raise ValueError(f"CSV/GeoPackage values disagree for {column}: {vector_path}")
+        completed.append(job)
+        recognized.update(path.resolve() for path in paths)
+    for directory in ({job.output_base.parent for job in plan.jobs} if check_unexpected_outputs else ()):
+        unexpected = [path for path in directory.rglob("*")
+                      if path.suffix.lower() in {".csv", ".gpkg"}
+                      and path.resolve() not in recognized]
+        if unexpected:
+            raise ValueError(f"Unexpected toolkit output in resume directory: {unexpected[0]}")
+    if expected_timestamps is not None and set(expected_timestamps) != {
+        job.output_base.name for job in completed
+    }:
+        raise ValueError("Recorded completed toolkit jobs are missing their output pairs")
+    return tuple(completed)

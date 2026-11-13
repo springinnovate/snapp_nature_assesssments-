@@ -886,3 +886,39 @@ flag and runner. The manifest preserves both raster batches:
 set "PROJ_NETWORK=OFF"
 python -B run_conus_ecosystem_services.py --reuse-zonals-from "conus-all-pad" --run-id "all-pad-revalued" --workers 16
 ```
+
+### Resume a failed all-PAD raster run
+
+After the failed process has exited, update both repository checkouts to their
+current main branches. Resume with the failed run's ID to retain its prepared
+PAD-US county features, feature shards, and original six-layer zonals:
+
+```cmd
+set "PROJ_NETWORK=OFF"
+python -B run_conus_ecosystem_services.py ^
+  --resume-run "conus-all-pad" ^
+  --runner "..\zonal_stats_toolkit\runner.py" ^
+  --zonal-workers 16 ^
+  --workers 16 ^
+  --validate-only
+```
+
+Remove `--validate-only` after preflight succeeds. The command reports how many
+all-PAD raster jobs remain, runs those jobs, and publishes all seven output pairs
+in the same assessment-run directory. It checks the recorded configuration,
+prepared-feature, frozen-plan, and shard hashes before continuing. Completed raw
+CSV/GeoPackage pairs must have matching county/feature keys and values; incomplete
+or ambiguous pairs require attention. Each resumed raster batch has a separate
+execution config and provenance entry; the original frozen plan is retained.
+
+The pipeline records source-TIFF content hashes before running all-PAD raster jobs.
+If a saved run has no TIFF hashes, preflight rejects TIFFs modified after
+the frozen plan was created, then records their current hashes for subsequent
+checks. This cannot retrospectively detect a replaced TIFF whose modification
+time was preserved.
+
+Resume applies when feature preparation and job freezing completed but the
+all-PAD raster stage failed. It requires these input checks to pass and rejects
+another active resume or existing final assessment outputs. For a failure after the
+raster stage completed, use [valuation-only reuse](#revalue-a-completed-run)
+with a new run ID.

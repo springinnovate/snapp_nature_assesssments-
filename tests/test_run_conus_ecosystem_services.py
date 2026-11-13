@@ -420,6 +420,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             patch.object(wrapper, "load_valuation_config", return_value=config),
             patch.object(wrapper, "validate_zone_raster_inputs", return_value=(rasters, [])),
             patch.object(wrapper, "validate_additional_raster_inputs") as compatible,
+            patch.object(wrapper, "verify_pad_raster_sources", return_value={}),
             patch.object(wrapper, "read_frozen_zone_raster_plan", return_value=existing_plan),
             patch.object(wrapper, "read_zone_raster_sums", side_effect=[six_sums, pad_sums]),
             patch.object(wrapper, "prepare_all_pad_zones", side_effect=prepare) as prep,
