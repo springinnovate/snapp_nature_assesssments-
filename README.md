@@ -752,8 +752,12 @@ stage (default: 4). County-table joins, fisheries measurements by county, and
 coastal allocation batches share those workers. Progress bars count completed
 tasks. Each process uses one native computation thread. Increase `--workers`
 if memory and disk throughput permit; for example, use `--workers 8`.
-Geometry preparation also uses this setting on fresh runs. Raster zonals use
-their separate `--job-workers` and `--raster-workers` settings.
+Geometry preparation also uses this setting. For raster zonals,
+`--zonal-workers N` uses one process pool across feature groups and rasters,
+with at most N compute processes. It requires an updated toolkit with
+`--total-workers` support. If omitted, the legacy `--job-workers` and
+`--raster-workers` settings apply (both default to 2). Do not combine those
+legacy flags with `--zonal-workers`.
 
 `--geometry-workers`, when supplied, overrides the size of the entire valuation
 pool; it does not create an additional pool. Final table assembly and verified
@@ -833,8 +837,12 @@ enabled, the pipeline measures fisheries weights without saving or reusing them.
 ### Add all-PAD features while reusing existing zonals
 
 From the repository root in an activated `zonal-stats-toolkit` environment,
-use a new run ID and a saved run containing the six county and grouped-land
-products. Replace `saved-six-layer-run` below with that run's ID:
+first update the assessment and `zonal_stats_toolkit` checkouts to versions
+supporting the shared zonal pool. The selected toolkit runner must advertise
+`--total-workers` in its `--help`; the wrapper checks this before preparing
+geometry or writing run files. Use a new run ID and a saved run containing the
+six county and grouped-land products. Replace `saved-six-layer-run` below with
+that run's ID:
 
 ```cmd
 set "PROJ_NETWORK=OFF"
@@ -843,8 +851,18 @@ python -B run_conus_ecosystem_services.py ^
   --include-all-pad ^
   --runner "..\zonal_stats_toolkit\runner.py" ^
   --run-id "conus-all-pad" ^
+  --zonal-workers 16 ^
   --workers 16
 ```
+
+The zonal pool shares its 16 compute processes across `(feature group, raster)`
+tasks, so multiple groups can run concurrently without creating a raster pool
+inside each group. Grouping batches the work; every feature still receives its
+own zonal values. The coordinator and progress-manager processes do not perform
+zonal computation and are separate from the 16-worker limit. `--workers 16`
+controls geometry preparation and non-zonal valuation, which run in separate
+stages. Use `--zonal-workers` on fresh runs or when adding all-PAD to a saved run;
+omit it on valuation-only reuse because there are no new raster jobs.
 
 Add `--validate-only` to check the saved results, source paths, and raster
 compatibility without writing run files. This command retains the six saved
