@@ -44,7 +44,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
             {"GEOID": ["01001"], "ALAND": [100]},
             geometry=[MultiPolygon([box(0, 0, 10, 10)])], crs="EPSG:6933",
         )
-        counties, padus = self.root / "counties.gpkg", self.root / "padus.gpkg"
+        counties, self.padus = self.root / "counties.gpkg", self.root / "padus.gpkg"
         pyogrio.write_dataframe(self.county, counties, layer="counties_input")
         reference = self.root / wrapper.COUNTY_PATH
         reference.parent.mkdir(parents=True)
@@ -58,7 +58,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         pyogrio.write_dataframe(self.county[["GEOID", "geometry"]], self.land_mask, layer="county_land_mask")
         pyogrio.write_dataframe(
             self.county.assign(Mang_Type="FED", Des_Tp="NP", GAP_Sts="1"),
-            padus, layer="padus_input",
+            self.padus, layer="padus_input",
         )
         config_dir = self.data / "workflow_assets/county_integration"
         self.air_aliases = config_dir / "air_quality_county_aliases.csv"
@@ -73,7 +73,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         self.args = [
             "--runner", str(self.runner), "--bbb-by-county", str(self.bbb),
             "--land-mask", str(self.land_mask),
-            "--padus-path", str(padus), "--padus-layer", "padus_input",
+            "--padus-path", str(self.padus), "--padus-layer", "padus_input",
             "--counties", str(counties), "--run-id", self.run_id,
         ]
         self.calls = []
@@ -370,15 +370,13 @@ class ConusEcosystemServicesTests(unittest.TestCase):
                     wrapper.validate_shared_zonal_runner(self.runner, self.root)
 
     def test_add_pad_reuses_six_products_and_later_reuses_all_seven(self) -> None:
-        """Run only the additional batch, then follow both saved batches on revaluation."""
+        """Use the saved PAD-US source and run only the additional raster batch."""
         self.run_wrapper()
         original_bytes = {path: path.read_bytes() for path in self.results.rglob("*") if path.is_file()}
-        pad = self.root / "full-pad.gpkg"
         feature = self.county.assign(
             Mang_Type="TRIB", OBJECTID=7, feature_id="01001_7", area_ha=0.01,
             area_ha_land=0.01, county_land_share=1.0,
         )
-        pyogrio.write_dataframe(feature, pad, layer="full_pad")
         pad_run = "with-pad"
         zone, frozen, work, raw = wrapper.all_pad_paths(self.root, pad_run)
         six_sums = {product: pd.DataFrame({"GEOID": ["01001"]}) for product in wrapper.ZONE_PRODUCTS}
@@ -387,7 +385,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         extra_plan = SimpleNamespace(jobs=("pad-only-job",), skipped_products=(), frozen_config=frozen)
 
         def prepare(*args, **kwargs):
-            self.assertEqual(args[:2], (pad, "full_pad"))
+            self.assertEqual(args[:2], (self.padus, "padus_input"))
             self.assertEqual(args[2], self.zone_root / "counties" / f"counties_{self.run_id}.gpkg")
             self.assertEqual(args[-1], zone)
             self.assertEqual(kwargs["workers"], 4)
@@ -413,7 +411,7 @@ class ConusEcosystemServicesTests(unittest.TestCase):
                   {"sources": {"gdp": {"path": "gdp.csv"}}})
         args = wrapper.parse_args([
             "--reuse-zonals-from", self.run_id, "--run-id", pad_run, "--include-all-pad",
-            "--runner", str(self.runner), "--all-pad-path", str(pad), "--all-pad-layer", "full_pad",
+            "--runner", str(self.runner),
             "--zonal-workers", "16",
         ])
         with (
@@ -535,6 +533,22 @@ class ConusEcosystemServicesTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         for path in (self.results, self.work, self.frozen):
             self.assertFalse(path.exists())
+
+    def test_all_pad_preflight_uses_selected_padus_source_or_override(self) -> None:
+        """Show the actual fresh-run source before preparing or writing anything."""
+        alternate = self.root / "alternate_pad.gpkg"
+        pyogrio.write_dataframe(self.county.assign(Mang_Type="FED"), alternate, layer="alternate_pad")
+        for extras, expected in (
+            ([], (self.padus, "padus_input")),
+            (["--all-pad-path", str(alternate), "--all-pad-layer", "alternate_pad"],
+             (alternate, "alternate_pad")),
+        ):
+            with self.subTest(extras=extras):
+                with patch("builtins.print") as printed:
+                    self.assertIsNone(self.run_wrapper("--include-all-pad", "--validate-only", *extras))
+                printed.assert_any_call(f"All-PAD source: {expected[0]} / {expected[1]}", flush=True)
+                self.assertEqual(self.calls, [])
+                self.assertFalse(self.results.exists())
 
     def test_preflight_rejects_nonpolygon_land_mask(self) -> None:
         """Stop before creating run artifacts if the selected mask layer is not polygonal."""
