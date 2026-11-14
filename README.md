@@ -91,12 +91,11 @@ per county, or separate footprints for each manager type within the county.*
 
 #### Individual PAD-US features
 
-For the all-PAD output, we value individual features from the full
-`PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement` layer. We include
-every source feature with a positive-area intersection with a CONUS county,
-regardless of its manager type or GAP status. We split each feature at county
-boundaries and retain its source attributes, including ownership, management,
-designation, and source `OBJECTID`.
+For the all-PAD output, we use the same PAD-US VectorAnalysis layer as the
+public and conservation outputs. We include every source feature with a
+positive-area intersection with a CONUS county, regardless of its manager
+type or GAP status. We split each feature at county boundaries and retain
+the attributes supplied by the layer, including its `OBJECTID`.
 
 Features with the same manager type remain separate, and a multipart
 intersection remains one row. Overlapping source features each receive an
@@ -559,7 +558,7 @@ versus empty text; both appear as blank cells in the CSV.
 
 | Field | Meaning | Units |
 | --- | --- | --- |
-| `OBJECTID` | Original PAD-US feature identifier; can repeat when a feature crosses counties | Source identifier |
+| `OBJECTID` | Feature identifier in the selected source layer; can repeat when a feature crosses counties | Source identifier |
 | `feature_id` | Unique `GEOID_OBJECTID` identifier for the county-cut feature | Text identifier |
 | `GEOID` | County containing the feature piece | Five-character code |
 | `area_ha` | Full area of the county-cut feature, including water | Hectares |
@@ -577,8 +576,8 @@ than the land-only denominator used for the public, conservation, and BBB
 value-per-hectare fields listed below. Recreation and county comparison
 fields appear only in the county summary.
 
-We measure `area_ha` and `area_ha_land` in EPSG:6933. Original `GIS_Acres`,
-`SHAPE_Area`, and `SHAPE_Length` retain their source values; use `area_ha`
+We measure `area_ha` and `area_ha_land` in EPSG:6933. Source fields such as
+`GIS_Acres`, `Shape_Area`, and `Shape_Length` retain their supplied values; use `area_ha`
 for the county-cut piece. A missing service value gives a blank density
 and contributes zero to the total. Because source features can overlap,
 their service values must not be summed as an unduplicated county total.
@@ -675,7 +674,7 @@ Use the tracked workflow configuration files from this checkout.
 ```text
 data/
 ├── analysis_inputs/
-│   ├── padus/                                  PAD-US 4.1 VectorAnalysis and full geodatabase for all-PAD
+│   ├── padus/                                  PAD-US 4.1 VectorAnalysis geodatabase
 │   ├── zonal_units/
 │   │   ├── counties/                           2024 TIGER/Line county GeoPackage
 │   │   └── bbb_candidate_blm_lands_by_county/    BBB candidate county GeoPackage
@@ -698,7 +697,7 @@ The configuration files and command-line options identify the exact inputs:
 | To change | Where to set it |
 | --- | --- |
 | Public/conservation PAD-US | `--padus-path` and `--padus-layer`. The default is `PADUS4_1VectorAnalysis_PADUS_Only.gdb` in `data/analysis_inputs/padus/PADUS4_1VectorAnalysis_PADUS_Only (1)/`, layer `PADUS4_1VectorAnalysis_PADUS_Only_Simp_SingP`. |
-| All-PAD source | `--include-all-pad`, with `--all-pad-path` and `--all-pad-layer` to override the full geodatabase and combined layer. The [all-PAD launch instructions](#add-all-pad-features-while-reusing-existing-zonals) give the default path. This source is separate from VectorAnalysis. |
+| All-PAD source | `--include-all-pad` uses the same source layer as public and conservation lands. Use `--all-pad-path` and `--all-pad-layer` to select a different source for all-PAD only. |
 | County boundaries | `--counties` and `--counties-layer`. Counties require five-digit `GEOID` keys and `ALAND` in square metres. Keep the default national county file at `data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg` for coral assignments. |
 | Land mask and BBB footprint | `--land-mask` and `--bbb-by-county`, with `--land-mask-layer` and `--bbb-layer` as needed. Match the county release and `GEOID` keys. The mask must contain one footprint for every CONUS county; the BBB file contains one footprint per county with candidate land. |
 | Service TIFFs | The [raster inventory](data/workflow_assets/zonal_stats/snapp_assessment_tif_zonal_stats.yaml) names the required source TIFFs and their units. Place compatible replacements in `data/analysis_inputs/ecosystem_services/` with the expected names. |
@@ -872,12 +871,11 @@ all seven CSV/GeoPackage pairs in the new run directory. County, public,
 conservation, and BBB zonals are not rerun. Existing fisheries weights remain
 reusable; new PAD feature measurements have their own cache.
 
-The full PAD-US source defaults to
-`data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/PADUS4_1Geodatabase.gdb`.
-Its default layer is `PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement`.
-Use `--all-pad-path` and `--all-pad-layer` to select another location or layer.
-These are separate from the VectorAnalysis input used for public and
-conservation lands.
+The all-PAD source defaults to the PAD-US path and layer recorded by the saved
+six-product run. The command prints the selected source before processing.
+To build the seventh product from a different PAD-US source, start with a
+six-product run, choose a new run ID, and specify `--all-pad-path` and
+`--all-pad-layer`. The manifest records which layer supplied the features.
 
 For subsequent valuation-only runs, reuse the new run and omit the addition
 flag and runner. The manifest preserves both raster batches:

@@ -19,11 +19,6 @@ from assessment.prepare_assessment_zones import AREA_CRS, project_polygons, read
 
 
 ALL_PAD_PRODUCT = "all_PAD_lands_by_county_and_manager_type"
-PADUS_FULL_PATH = Path(
-    "data/analysis_inputs/padus/PADUS4_1Geodatabase.gdb-20260513T025718Z-3-001/"
-    "PADUS4_1Geodatabase.gdb"
-)
-PADUS_FULL_LAYER = "PADUS4_1Combined_Proclamation_Marine_Fee_Designation_Easement"
 _GENERATED_FIELDS = ("feature_id", "GEOID", "area_ha", "area_ha_land", "county_land_share")
 
 
@@ -41,10 +36,10 @@ def _read_padus(
     """Read all source fields and stable source IDs, clipping remote overhangs."""
     info = pyogrio.read_info(path, layer=layer)
     if not info["crs"] or info["geometry_type"] not in {"Polygon", "MultiPolygon"}:
-        raise ValueError("The full PAD-US source must contain polygons with a defined CRS")
+        raise ValueError("The all-PAD source must contain polygons with a defined CRS")
     fields = list(info["fields"])
     if "Mang_Type" not in fields:
-        raise ValueError("The full PAD-US source must contain Mang_Type")
+        raise ValueError("The all-PAD source must contain Mang_Type")
     collisions = {field for field in fields if field.casefold() in {
         generated.casefold() for generated in _GENERATED_FIELDS
     }}
@@ -53,7 +48,7 @@ def _read_padus(
     if len({field.casefold() for field in fields}) != len(fields):
         raise ValueError("PAD-US source contains case-insensitive duplicate field names")
     bbox = county_bounds_in_crs(counties, info["crs"])
-    print("Read full PAD-US geometry and original attributes", flush=True)
+    print("Read all-PAD source geometry and attributes", flush=True)
     frame = pyogrio.read_dataframe(path, layer=layer, bbox=bbox, fid_as_index=True)
     print(f"Read {len(frame):,} PAD-US features in the county extent", flush=True)
     # FileGDB exposes OBJECTID as the feature ID, outside the ordinary fields.
@@ -92,8 +87,8 @@ def _read_padus(
             frame.loc[clipped_rows[area > 0], frame.geometry.name] = gpd.GeoSeries(
                 repaired, index=clipped_rows[area > 0], crs=frame.crs,
             )
-    print("Project and validate full PAD-US feature geometry", flush=True)
-    return project_polygons(frame, "full PAD-US").sort_values("OBJECTID").reset_index(drop=True), {
+    print("Project and validate all-PAD source geometry", flush=True)
+    return project_polygons(frame, "all-PAD source").sort_values("OBJECTID").reset_index(drop=True), {
         "path": str(path.resolve()), "layer": layer, "rows_before_scope": info["features"],
         "rows_read_in_county_extent": rows_read, "source_fields": fields,
         "source_feature_id": info["fid_column"],
@@ -173,7 +168,7 @@ def prepare_all_pad_zones(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         pieces = list(tqdm(
             pool.map(process_county, range(len(counties))), total=len(counties),
-            desc="Cut original PAD-US features by county", unit="county",
+            desc="Cut PAD-US source features by county", unit="county",
         ))
     output = gpd.GeoDataFrame(pd.concat(pieces, ignore_index=True), geometry=source.geometry.name, crs=AREA_CRS)
     if output["feature_id"].duplicated().any():

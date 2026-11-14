@@ -32,9 +32,7 @@ from assessment.assessment_valuation import CONFIG_FILES, load_valuation_config,
 from assessment.assessment_zone_geometry import ZONE_PRODUCTS
 from assessment.build_county_ecosystem_service_valuations_2026 import BASE_FIELDS, sha256
 from assessment.prepare_tif_zonal_stats_config import DEFAULT_CONFIG
-from assessment.prepare_all_pad_zones import (
-    ALL_PAD_PRODUCT, PADUS_FULL_LAYER, PADUS_FULL_PATH, prepare_all_pad_zones,
-)
+from assessment.prepare_all_pad_zones import ALL_PAD_PRODUCT, prepare_all_pad_zones
 
 
 COUNTY_PATH = Path("data/analysis_inputs/zonal_units/counties/tl_2024_us_county_50_states.gpkg")
@@ -85,19 +83,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Reuse a prior run's prepared zones and verified raster sums",
     )
     parser.add_argument("--include-all-pad", action="store_true",
-                        help="Add original PAD-US features cut by county; run only their new zonals when reusing")
-    parser.add_argument("--all-pad-path", type=Path, default=PADUS_FULL_PATH,
-                        help="Full original PAD-US geodatabase for --include-all-pad")
-    parser.add_argument("--all-pad-layer", default=PADUS_FULL_LAYER,
-                        help="Original combined PAD-US source layer, preserving all its attributes")
+                        help="Add unfiltered PAD-US features cut by county; run only their new zonals when reusing")
+    parser.add_argument("--all-pad-path", type=Path,
+                        help="Override the public/conservation PAD-US dataset for the all-PAD product")
+    parser.add_argument("--all-pad-layer",
+                        help="Override the public/conservation PAD-US layer for the all-PAD product")
     parser.add_argument("--validate-only", action="store_true", help="Check inputs without creating run files")
     args = parser.parse_args(argv)
     if args.resume_run:
         if (args.run_id is not None or args.reuse_zonals_from or args.include_all_pad
                 or any(value is not None for value in (args.bbb_by_county, args.bbb_layer,
-                    args.land_mask, args.land_mask_layer, args.counties_layer))
-                or (args.padus_path, args.padus_layer, args.counties, args.all_pad_path, args.all_pad_layer)
-                != (PADUS_ANALYSIS_PATH, PADUS_ANALYSIS_LAYER, COUNTY_PATH, PADUS_FULL_PATH, PADUS_FULL_LAYER)):
+                    args.land_mask, args.land_mask_layer, args.counties_layer, args.all_pad_path, args.all_pad_layer))
+                or (args.padus_path, args.padus_layer, args.counties)
+                != (PADUS_ANALYSIS_PATH, PADUS_ANALYSIS_LAYER, COUNTY_PATH)):
             parser.error("--resume-run uses the saved run ID and inputs; omit run/source/zone overrides")
         if args.runner is None:
             parser.error("--resume-run requires --runner")
@@ -124,7 +122,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--include-all-pad requires --runner for the new feature zonals")
     if args.reuse_zonals_from and args.runner is not None and not args.include_all_pad:
         parser.error("--runner with --reuse-zonals-from requires --include-all-pad")
-    if not args.include_all_pad and (args.all_pad_path, args.all_pad_layer) != (PADUS_FULL_PATH, PADUS_FULL_LAYER):
+    if not args.include_all_pad and (args.all_pad_path is not None or args.all_pad_layer is not None):
         parser.error("--all-pad-path and --all-pad-layer require --include-all-pad")
     return args
 
@@ -579,13 +577,16 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
         blocked = source_manifest["blocked_rasters"]
         config_files.extend(saved.frozen_configs)
     if args.include_all_pad:
-        full_pad_path = (root / args.all_pad_path).resolve()
-        if not full_pad_path.exists():
-            raise FileNotFoundError(f"Full PAD-US source not found: {full_pad_path}")
-        info = pyogrio.read_info(full_pad_path, layer=args.all_pad_layer)
+        padus_path, padus_layer = input_paths["padus"]
+        all_pad_path = (root / (args.all_pad_path or padus_path)).resolve()
+        all_pad_layer = args.all_pad_layer if args.all_pad_layer is not None else padus_layer
+        if not all_pad_path.exists():
+            raise FileNotFoundError(f"All-PAD source not found: {all_pad_path}")
+        info = pyogrio.read_info(all_pad_path, layer=all_pad_layer)
         if (not info["crs"] or "Mang_Type" not in info["fields"]
                 or info["geometry_type"] not in {"Polygon", "MultiPolygon"}):
-            raise ValueError("Full PAD-US source must contain polygon geometry, a CRS, and Mang_Type")
+            raise ValueError("All-PAD source must contain polygon geometry, a CRS, and Mang_Type")
+        print(f"All-PAD source: {all_pad_path} / {all_pad_layer}", flush=True)
         mask_path, mask_layer = input_paths["land_mask"]
         info = pyogrio.read_info(mask_path, layer=mask_layer)
         if not info["crs"] or "GEOID" not in info["fields"]:
@@ -722,7 +723,7 @@ def run_assessment(args: argparse.Namespace, root: Path = ROOT) -> Path | None:
                     stage = _PREPARE_PAD
                     record(stage, "running")
                     provenance = prepare_all_pad_zones(
-                        full_pad_path, args.all_pad_layer, *zones["counties"],
+                        all_pad_path, all_pad_layer, *zones["counties"],
                         Path(input_paths["land_mask"][0]), input_paths["land_mask"][1], pad_zone,
                         workers=args.workers,
                     )
