@@ -543,14 +543,16 @@ def write_zone_pair(
         expected = pd.DataFrame(frame.drop(columns=frame.geometry.name))
         pd.testing.assert_frame_equal(attributes, expected, check_dtype=False, check_exact=False, rtol=1e-12)
         attributes.to_csv(staged[0], index=False)
-        text_fields = {name: str for name in attributes if not pd.api.types.is_numeric_dtype(attributes[name])}
+        text_fields = {
+            name: "string" for name in attributes if not pd.api.types.is_numeric_dtype(attributes[name])
+        }
         readback = pd.read_csv(staged[0], dtype=text_fields, keep_default_na=False, na_values=[""],
                                float_precision="round_trip")
         # CSV blank cells represent both nulls and empty source strings. The
         # GeoPackage comparison above preserves that distinction exactly.
-        csv_expected = attributes.copy()
+        csv_expected = attributes.copy(deep=False)
         for name in text_fields:
-            csv_expected[name] = csv_expected[name].replace("", np.nan)
+            csv_expected[name] = attributes[name].astype("string").replace("", pd.NA)
         pd.testing.assert_frame_equal(csv_expected, readback, check_dtype=False, check_exact=False, rtol=1e-12)
         published = []
         try:
