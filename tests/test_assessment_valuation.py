@@ -350,6 +350,34 @@ def test_adjustment_and_recreation_are_applied_once(
             valuation.write_zone_pair(outputs[product], path, product, {})
 
 
+def test_zone_export_accepts_null_text_and_preserves_literal_values(tmp_path):
+    """CSV blanks compare equal, but GeoPackage null and empty text stay distinct."""
+    frame = gpd.GeoDataFrame(
+        {
+            "GEOID": ["01001", "01003", "01005", "01007", "01009"],
+            "BndryName": [None] * 5,
+            "Unit_Nm": [None, "", "NA", "None", "0012"],
+            "total_ecosystem_services": [1.25, 0.0, np.nan, 4.5, 100.0],
+        },
+        geometry=[MultiPolygon([box(0, 0, 1, 1)])] * 5,
+        crs="EPSG:6933",
+    )
+    product = valuation.ALL_PAD_PRODUCT
+    csv_path, gpkg_path = valuation.write_zone_pair(frame, tmp_path / "pad.gpkg", product, {})
+    published = pyogrio.read_dataframe(gpkg_path, layer=product)
+    assert published["BndryName"].isna().all()
+    assert pd.isna(published["Unit_Nm"].iloc[0])
+    assert published["Unit_Nm"].iloc[1:].tolist() == ["", "NA", "None", "0012"]
+    table = pd.read_csv(csv_path, dtype={"GEOID": str, "Unit_Nm": str}, keep_default_na=False)
+    assert table["GEOID"].tolist() == frame["GEOID"].tolist()
+    assert table["BndryName"].eq("").all()
+    assert table["Unit_Nm"].tolist() == ["", "", "NA", "None", "0012"]
+    np.testing.assert_array_equal(
+        pd.to_numeric(table["total_ecosystem_services"].replace("", np.nan)),
+        frame["total_ecosystem_services"],
+    )
+
+
 def test_land_service_metrics_match_geoids_and_preserve_missing_totals(tmp_path):
     """Match county unions by GEOID and calculate manager densities independently."""
     config = REPO_ROOT / "data/workflow_assets/county_integration/derived_metrics.yaml"
