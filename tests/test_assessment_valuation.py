@@ -36,6 +36,23 @@ def test_invalid_pad_feature_keys_or_areas_fail_before_loading_sources(tmp_path,
                               coral_reference_counties=gpd.GeoDataFrame(), workers=1)
 
 
+@pytest.mark.parametrize(("geoids", "names", "message"), [
+    (["01003"], ["Baldwin County"], "All PAD GEOIDs missing"),
+    (["01001", "01001"], ["Autauga County", "Different name"], "Duplicate county GEOID"),
+    (["1001"], ["Autauga County"], "Invalid county GEOID"),
+    (["01001"], [None], "Missing county NAMELSAD"),
+])
+def test_all_pad_rejects_invalid_county_name_join(tmp_path, geoids, names, message):
+    zones = {name: gpd.GeoDataFrame() for name in ZONE_PRODUCTS}
+    zones["counties"] = gpd.GeoDataFrame({"GEOID": geoids, "NAMELSAD": names})
+    zones[ALL_PAD_PRODUCT] = gpd.GeoDataFrame({
+        "GEOID": ["01001"], "feature_id": ["01001_1"], "area_ha": [1.0],
+    })
+    with pytest.raises(ValueError, match=message):
+        valuation.value_zones(zones, {name: pd.DataFrame() for name in zones}, tmp_path, tmp_path,
+                              coral_reference_counties=zones["counties"], workers=1)
+
+
 @pytest.mark.parametrize("source_name", ["county_area", "county_area_inclusive", "natural_areas"])
 def test_missing_reporting_area_input_explains_preparation(monkeypatch, source_name):
     """Show the preparation command for each missing reporting-area artifact."""
@@ -124,7 +141,8 @@ def test_adjustment_and_recreation_are_applied_once(
     for product in products:
         fields = {"GEOID": ["46102"], "NAME": ["NA"]}
         if product == "counties":
-            fields.update(area_ha_county_land=[100.0], area_ha_public_lands=[50.0],
+            fields.update(NAMELSAD=["Oglala Lakota County"],
+                          area_ha_county_land=[100.0], area_ha_public_lands=[50.0],
                           area_ha_conservation_lands=[25.0], area_ha_bbb_lands=[bbb_area])
             if reuse_zones:
                 fields.update(pct_public_lands=[50.0], pct_conservation_lands=[25.0], pct_bbb_lands=[0.0])
@@ -175,6 +193,7 @@ def test_adjustment_and_recreation_are_applied_once(
         for name in ZONE_PRODUCTS:
             pd.testing.assert_frame_equal(outputs[name], original[name], check_exact=True)
         features = outputs[ALL_PAD_PRODUCT]
+        assert features.county_name.tolist() == ["Oglala Lakota County"] * 2
         adjusted_fields = [field for field in features if field.endswith("_adj")]
         assert len(adjusted_fields) == 26
         assert sum(field.endswith("_per_feature_ha") for field in features) == 27
@@ -325,6 +344,10 @@ def test_adjustment_and_recreation_are_applied_once(
         assert len(published) == len(outputs[product])
         for exported in (pd.read_csv(csv_path, dtype={"GEOID": str}), published):
             assert retired_service_fields.isdisjoint(exported.columns)
+            if product == ALL_PAD_PRODUCT:
+                assert exported["county_name"].tolist() == ["Oglala Lakota County"] * 2
+            else:
+                assert "county_name" not in exported
             if product == "counties":
                 np.testing.assert_allclose(exported[list(service_ratios)].iloc[0], expected_service_ratios)
                 np.testing.assert_allclose(exported[list(per_hectare)].iloc[0], expected_per_hectare,
