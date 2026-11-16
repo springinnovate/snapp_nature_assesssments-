@@ -36,7 +36,7 @@ from assessment.build_county_ecosystem_service_valuations_2026 import (
     validate_crosswalk,
 )
 from assessment.county_derived_metrics import calculate_county_metrics
-from assessment.prepare_all_pad_zones import ALL_PAD_PRODUCT
+from assessment.prepare_all_pad_zones import ALL_PAD_PRODUCT, COUNTY_NAME_FIELD, county_name_lookup
 
 
 COUNTY_TABLES = ("grazing", "timber", "air_quality", "urban_heat", "physical_health", "jobs", "recreation")
@@ -358,6 +358,16 @@ def value_zones(
         ids = features["feature_id"].astype("string")
         if not ids.str.strip().ne("").fillna(False).all() or ids.duplicated().any():
             raise ValueError("All PAD feature IDs must be nonblank and unique")
+        if COUNTY_NAME_FIELD in {name.casefold() for name in features.columns}:
+            raise ValueError(f"All PAD source already contains {COUNTY_NAME_FIELD}")
+        county_keys = zones["counties"]
+        if "NAMELSAD" not in county_keys:
+            raise ValueError("All PAD county names require NAMELSAD in the counties layer")
+        names = county_name_lookup(county_keys[["GEOID", "NAMELSAD"]].itertuples(index=False, name=None))
+        pad_county_names = features["GEOID"].map(names)
+        if pad_county_names.isna().any():
+            missing = features.loc[pad_county_names.isna(), "GEOID"].unique()
+            raise ValueError(f"All PAD GEOIDs missing from the counties layer: {list(missing[:10])}")
     paths, factors, rules, derived = load_valuation_config(data_root, config_dir)
     counties = zones["counties"].drop(
         columns=["pct_public_lands", "pct_conservation_lands", "pct_bbb_lands"], errors="ignore")
@@ -485,6 +495,9 @@ def value_zones(
             raise ValueError(f"{product}: exported valuation fields collide with zone attributes")
         result_frames[product] = gpd.GeoDataFrame(pd.concat([zone, adjusted], axis=1),
                                                  geometry=zone.geometry.name, crs=zone.crs)
+        if product == ALL_PAD_PRODUCT:
+            result = result_frames[product]
+            result.insert(result.columns.get_loc("GEOID") + 1, COUNTY_NAME_FIELD, pad_county_names)
     county_land_metrics, footprint_densities = calculate_land_service_metrics(
         result_frames,
         derived["county_ecosystem_service_ratios"],

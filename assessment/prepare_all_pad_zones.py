@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import re
 
 import geopandas as gpd
 import numpy as np
@@ -19,7 +21,22 @@ from assessment.prepare_assessment_zones import AREA_CRS, project_polygons, read
 
 
 ALL_PAD_PRODUCT = "all_PAD_lands_by_county_and_manager_type"
-_GENERATED_FIELDS = ("feature_id", "GEOID", "area_ha", "area_ha_land", "county_land_share")
+COUNTY_NAME_FIELD = "county_name"
+_GENERATED_FIELDS = ("feature_id", "GEOID", "area_ha", "area_ha_land", "county_land_share", COUNTY_NAME_FIELD)
+
+
+def county_name_lookup(rows: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """Map unique, five-digit GEOIDs to their full Census county names."""
+    names = {}
+    for geoid, name in rows:
+        if not isinstance(geoid, str) or not re.fullmatch(r"[0-9]{5}", geoid):
+            raise ValueError(f"Invalid county GEOID: {geoid!r}")
+        if geoid in names:
+            raise ValueError(f"Duplicate county GEOID: {geoid}")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Missing county NAMELSAD for GEOID {geoid}")
+        names[geoid] = name
+    return names
 
 
 def _county_ids(frame: gpd.GeoDataFrame, label: str) -> gpd.GeoDataFrame:

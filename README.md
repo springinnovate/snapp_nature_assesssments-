@@ -561,6 +561,7 @@ versus empty text; both appear as blank cells in the CSV.
 | `OBJECTID` | Feature identifier in the selected source layer; can repeat when a feature crosses counties | Source identifier |
 | `feature_id` | Unique `GEOID_OBJECTID` identifier for the county-cut feature | Text identifier |
 | `GEOID` | County containing the feature piece | Five-character code |
+| `county_name` | Full Census county name (`NAMELSAD`), joined by `GEOID` | Text |
 | `area_ha` | Full area of the county-cut feature, including water | Hectares |
 | `area_ha_land` | Feature's intersection with the Census county land mask | Hectares |
 | `county_land_share` | Land intersection area divided by county Census land area | Fraction from 0 to 1 |
