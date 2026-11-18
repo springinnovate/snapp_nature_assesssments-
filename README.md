@@ -23,7 +23,7 @@ Each source feature remains separate within each county it intersects.
 equivalents. The maps use local assessment data; their sources and rendering
 settings are recorded in the [figure provenance](docs/images/map_sources.json).*
 
-## How the assessment works
+## Data processing pipeline
 
 The assessment brings together ecosystem-service estimates supplied as raster
 maps, county and state tables, and mapped study sites. We summarize or
